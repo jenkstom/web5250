@@ -199,6 +199,11 @@ attempts lock administration for 60 s after 5 tries.
 
 ## Automated data-entry launches
 
+> **Embedding in another app?** See [docs/angular-integration.md](docs/angular-integration.md)
+> for the full integration guide written for the embedding side (Angular):
+> launch URL reference, the `postMessage` contract, a ready-to-adapt
+> component, local development with the mock host, and troubleshooting.
+
 For embedding a single data-entry session inside another app (e.g. Angular),
 open the gateway in an **iframe** with `?auto=1` and optional launch
 parameters:
