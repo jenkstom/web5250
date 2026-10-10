@@ -128,7 +128,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `PORT` | Local web listen port | `8080` |
+| `PORT` | Published web port on the host (the container always listens on 8080 internally) | `8080` |
 | `HOST` | Bind address | `0.0.0.0` |
 | `IBM_I_HOST` | Target IBM i IP or hostname | `127.0.0.1` |
 | `IBM_I_PORT` | TN5250 port (23 telnet, 992 TLS) | `23` |

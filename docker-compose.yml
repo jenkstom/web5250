@@ -25,7 +25,10 @@ services:
     container_name: web5250
     restart: unless-stopped
     environment:
-      PORT: ${PORT:-8080}
+      # NOTE: PORT is deliberately NOT passed into the container - the app
+      # always listens on 8080 inside (image default) and PORT below only
+      # selects the published HOST port in the ports mapping. Passing PORT
+      # here would move the app off the mapped container port.
       # Target IBM i. Use a DNS name/IP reachable from this container
       # (the Pangolin connector network usually reaches the LAN/VLAN).
       IBM_I_HOST: ${IBM_I_HOST:-127.0.0.1}
@@ -43,7 +46,11 @@ services:
       # SQLite system catalog; the named volume persists admin edits.
       WEB5250_DB: /data/web5250.db
     ports:
-      - "${PORT:-8080}:8080" # remove if the Pangolin connector reaches it over the compose network
+      # Explicit 0.0.0.0 = reachable from other hosts (Docker's short syntax
+      # already binds all interfaces; this just documents it).
+      # Remove the ports mapping entirely if the Pangolin connector reaches
+      # the container over the compose network.
+      - "0.0.0.0:${PORT:-8080}:8080"
     expose:
       - "8080"
     volumes:
