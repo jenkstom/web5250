@@ -17,6 +17,14 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
 const term = new Terminal($('screen-canvas'));
 const mobileInput = $<HTMLInputElement>('mobile-input');
 
+// Automated-launch mode (?auto=1): the gateway signs on with server-held
+// credentials and this page is embedded in the caller's iframe. When the
+// session ends the parent page is notified via postMessage so it can remove
+// the iframe; parentorigin restricts the message target when set.
+const launchParams = new URLSearchParams(window.location.search);
+const autoLaunch = ['1', 'true'].includes(launchParams.get('auto') ?? '');
+const parentOrigin = launchParams.get('parentorigin') || '*';
+
 // ---------------------------------------------------------------- transport
 interface SessionTarget {
   system?: MenuSystem;
@@ -47,6 +55,15 @@ let ws: WebSocket | null = null;
 // generic message.
 let sessionEndedByHost = false;
 
+// One session-end notification per automated launch: the embedding page
+// (Angular) listens for it and removes the iframe.
+let signalledEnd = false;
+function signalSessionEnd(reason: string, detail: string): void {
+  if (!autoLaunch || signalledEnd) return;
+  signalledEnd = true;
+  window.parent.postMessage({ source: 'web5250', type: 'session-end', reason, detail }, parentOrigin);
+}
+
 function sendKey(k: string, ch?: string): void {
   if (k === 'char' && ch !== undefined) {
     send({ t: 'key', k: 'char', ch });
@@ -70,6 +87,7 @@ function connect(): void {
 
   const sock = new WebSocket(wsUrl());
   ws = sock;
+  signalledEnd = false;
 
   // App-level keepalive: proxies that only track data frames (and mishandle
   // WS control frames) keep the tunnel open; the gateway's pong doubles as
@@ -95,6 +113,9 @@ function connect(): void {
       sessionEndedByHost = false;
       return;
     }
+    // Close without a preceding status message (e.g. the upgrade itself was
+    // refused): still the end of the launch as far as the embedder cares.
+    signalSessionEnd('closed', '');
     setConnState('closed');
     showOverlay('Session ended', 'The 5250 session closed.', ['menu', 'reconnect']);
   });
@@ -134,6 +155,7 @@ function handleMessage(data: string): void {
         hideOverlay();
       } else if (status === 'error' || status === 'closed') {
         sessionEndedByHost = true;
+        signalSessionEnd(status, typeof msg.detail === 'string' ? msg.detail : '');
         showOverlay(
           status === 'error' ? 'Connection failed' : 'Session ended',
           typeof msg.detail === 'string' ? msg.detail : '',
@@ -141,6 +163,22 @@ function handleMessage(data: string): void {
         );
       } else {
         showOverlay(status === 'negotiating' ? 'Negotiating with host…' : 'Connecting…', '', []);
+      }
+      break;
+    }
+    case 'auto': {
+      // Launch automation lifecycle. `ended` precedes the teardown the
+      // gateway performs itself (sign-on rejected / screen timeout), so the
+      // generic close handler must not overwrite this overlay.
+      if (msg.phase === 'ended') {
+        sessionEndedByHost = true;
+        const reason = String(msg.reason ?? '');
+        signalSessionEnd(reason, typeof msg.detail === 'string' ? msg.detail : '');
+        showOverlay(
+          reason === 'signon-failed' ? 'Sign-on failed' : 'Session ended',
+          typeof msg.detail === 'string' ? msg.detail : '',
+          ['menu', 'reconnect']
+        );
       }
       break;
     }
@@ -232,11 +270,14 @@ function setConnState(state: string): void {
 type OverlayAction = 'menu' | 'reconnect';
 
 function showOverlay(title: string, detail: string, actions: OverlayAction[]): void {
+  // Embedded launches have no menu to go back to: reconnect is the only
+  // meaningful action (it replays the automated sign-on).
+  const acts = autoLaunch ? actions.filter((a) => a !== 'menu') : actions;
   $('overlay-title').textContent = title;
   $('overlay-detail').textContent = detail;
-  $('overlay-actions').classList.toggle('hidden', actions.length === 0);
-  $('overlay-menu').classList.toggle('hidden', !actions.includes('menu'));
-  $('overlay-action').classList.toggle('hidden', !actions.includes('reconnect'));
+  $('overlay-actions').classList.toggle('hidden', acts.length === 0);
+  $('overlay-menu').classList.toggle('hidden', !acts.includes('menu'));
+  $('overlay-action').classList.toggle('hidden', !acts.includes('reconnect'));
   $('overlay').classList.remove('hidden');
 }
 function hideOverlay(): void {
@@ -248,7 +289,9 @@ function startSession(system: MenuSystem): void {
   target = { system };
   endingSession = false;
   hideMenu();
-  $('btn-systems').classList.remove('hidden');
+  // Embedded data-entry launches stay locked into their session: there is
+  // no menu to return to behind the iframe.
+  if (!autoLaunch) $('btn-systems').classList.remove('hidden');
   showOverlay('Connecting…', '', []);
   connect();
 }
@@ -279,10 +322,12 @@ function boot(): void {
       .catch(() => void showMenu(startSession));
     return;
   }
-  if (params.has('host')) {
-    // Legacy custom-host deep link (?host=...&port=... with ALLOW_CUSTOM_HOST).
+  if (params.has('host') || autoLaunch) {
+    // Legacy custom-host deep link (?host=...&port=... with ALLOW_CUSTOM_HOST),
+    // or an automated launch (?auto=1) without a ?system= selection: connect
+    // straight to the environment-default host - a menu has no role embedded.
     target = {};
-    $('btn-systems').classList.remove('hidden');
+    if (!autoLaunch) $('btn-systems').classList.remove('hidden');
     showOverlay('Connecting…', '', []);
     connect();
     return;

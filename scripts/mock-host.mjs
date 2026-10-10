@@ -61,6 +61,9 @@ class HostSession {
     this.gotTtype = false;
     this.gotDevname = false;
     this.started = false;
+    // MOCK_SIGNON_REJECT=1: refuse every sign-on like a real host does
+    // (full QDSIGNON redraw with the error line, keyboard unlocked).
+    this.rejectSignon = process.env.MOCK_SIGNON_REJECT === '1';
     // inbound state machine
     this.mode = 'data'; // data | iac | iac2 | sb | sbiac
     this.iacCmd = 0;
@@ -125,7 +128,7 @@ class HostSession {
   }
 
   // ----------------------------------------------------------------- screens
-  sendSignon() {
+  sendSignon(errorText) {
     this.state = 'signon';
     this.currentFields = [
       { row: 9, col: 44, len: 11 },
@@ -134,26 +137,25 @@ class HostSession {
       { row: 14, col: 44, len: 11 },
       { row: 16, col: 44, len: 11 }
     ];
-    this.screen(
-      [
-        this.text(2, 27, 0x22, 'AS/400 Sign On'),
-        this.text(4, 27, null, 'System  . . . . . . :  MOCK400'),
-        this.text(5, 27, null, 'Subsystem  . . . . :  QINTER'),
-        this.text(6, 27, null, 'Display  . . . . . :  ' + this.dev),
-        this.text(9, 27, null, 'User  . . . . . .'),
-        this.field(9, 44, 0x20, 11),
-        this.text(10, 27, null, 'Password . . . . .'),
-        this.field(10, 44, 0x24, 11), // non-display
-        this.text(12, 27, null, 'Program/procedure'),
-        this.field(12, 44, 0x20, 11),
-        this.text(14, 27, null, 'Menu  . . . . . .'),
-        this.field(14, 44, 0x20, 11),
-        this.text(16, 27, null, 'Current library'),
-        this.field(16, 44, 0x20, 11),
-        this.text(22, 25, null, '(c) Copyright Mock Corp. 2026')
-      ],
-      [9, 45]
-    );
+    const defs = [
+      this.text(2, 27, 0x22, 'AS/400 Sign On'),
+      this.text(4, 27, null, 'System  . . . . . . :  MOCK400'),
+      this.text(5, 27, null, 'Subsystem  . . . . :  QINTER'),
+      this.text(6, 27, null, 'Display  . . . . . :  ' + this.dev),
+      this.text(9, 27, null, 'User  . . . . . .'),
+      this.field(9, 44, 0x20, 11),
+      this.text(10, 27, null, 'Password . . . . .'),
+      this.field(10, 44, 0x24, 11), // non-display
+      this.text(12, 27, null, 'Program/procedure'),
+      this.field(12, 44, 0x20, 11),
+      this.text(14, 27, null, 'Menu  . . . . . .'),
+      this.field(14, 44, 0x20, 11),
+      this.text(16, 27, null, 'Current library'),
+      this.field(16, 44, 0x20, 11),
+      this.text(22, 25, null, '(c) Copyright Mock Corp. 2026')
+    ];
+    if (errorText) defs.push(this.text(24, 1, 0x28, errorText));
+    this.screen(defs, [9, 45]);
   }
 
   sendMain(user) {
@@ -400,7 +402,9 @@ class HostSession {
     switch (this.state) {
       case 'signon':
         if (aid === AID_ENTER) {
-          if (!user || !password) {
+          if (this.rejectSignon) {
+            this.sendSignon('Sign on information not valid; try again.');
+          } else if (!user || !password) {
             this.sendError('Sign on information not valid; try again.');
           } else {
             this.sendMain(user);

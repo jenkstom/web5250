@@ -11,6 +11,7 @@ import type { Config } from './config.ts';
 import { makeDeviceName } from './config.ts';
 import { devices } from './devices.ts';
 import type { SystemRow } from './systems.ts';
+import { Automation } from './automation.ts';
 
 export interface SessionQuery {
   host?: string;
@@ -21,6 +22,14 @@ export interface SessionQuery {
   devName?: string;
   /** Menu selection (?system=<id>) resolved by the HTTP layer. */
   systemId?: number;
+  /** ?auto=1 automated data-entry launch parameters. */
+  auto?: AutoQuery;
+}
+
+export interface AutoQuery {
+  input?: string;
+  inputEnter: boolean;
+  inputDelayMs: number;
 }
 
 const KEY_TO_AID: Record<string, number> = {
@@ -36,6 +45,7 @@ const LOCK_SAFE_KEYS = new Set(['reset', 'sysreq', 'attn', 'print']);
 
 export class GatewaySession {
   private client: Tn5250Client;
+  private automation: Automation | null = null;
   private flushTimer: NodeJS.Timeout | null = null;
   private closed = false;
   private lastSentCursor = -1;
@@ -87,7 +97,34 @@ export class GatewaySession {
       this.sendStatus(s, detail);
       if (s === 'closed' || s === 'error') this.destroy();
     };
-    this.client.onScreenChange = () => this.scheduleFlush();
+    // ?auto=1 launch: sign on with the configured assumed-identity account
+    // and pre-fill the initial program's screen. The HTTP layer refuses
+    // auto upgrades without AUTO_SIGNON_USER/AUTO_SIGNON_PASSWORD, so both
+    // are present whenever query.auto is set.
+    if (query.auto && cfg.autoSignOnUser && cfg.autoSignOnPassword) {
+      this.automation = new Automation(
+        this.client,
+        {
+          user: cfg.autoSignOnUser,
+          password: cfg.autoSignOnPassword,
+          input: query.auto.input,
+          inputEnter: query.auto.inputEnter,
+          inputDelayMs: query.auto.inputDelayMs
+        },
+        {
+          onEnd: (reason, detail) => {
+            this.send('auto', { phase: 'ended', reason, detail });
+            this.destroy();
+          },
+          onChange: () => this.scheduleFlush()
+        }
+      );
+      console.log(`[ws] auto-launch session (sign-on user ${cfg.autoSignOnUser})`);
+    }
+    this.client.onScreenChange = () => {
+      this.automation?.onScreen();
+      this.scheduleFlush();
+    };
   }
 
   start(): void {
@@ -98,6 +135,10 @@ export class GatewaySession {
       rows: this.client.screen.rows,
       cols: this.client.screen.cols
     });
+    if (this.automation) {
+      this.send('auto', { phase: 'started' });
+      this.automation.start();
+    }
     this.client.connect();
   }
 
@@ -137,6 +178,15 @@ export class GatewaySession {
   private handleKey(k: string | undefined, ch: string | undefined, msg: Record<string, unknown>): void {
     if (!k) return;
     const screen = this.client.screen;
+
+    // While the launch automation is signing on / pre-filling, browser keys
+    // could interleave with injected ones: ignore them (with a beep) until
+    // the automation hands over control.
+    if (this.automation?.suppressUserKeys) {
+      this.beeped = true;
+      this.scheduleFlush();
+      return;
+    }
 
     // Mouse click: place the cursor (validated against the field layout).
     if (k === 'click') {
@@ -286,6 +336,7 @@ export class GatewaySession {
     if (this.closed) return;
     this.closed = true;
     if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.automation?.destroy();
     devices.release(this.devName);
     this.client.destroy();
     // Server-initiated teardown (host death): close the browser socket too,

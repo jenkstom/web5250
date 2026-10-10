@@ -21,6 +21,11 @@ export interface Config {
   wsPingIntervalMs: number;
   /** Missed pongs tolerated before a dead browser's host session is torn down. */
   wsPingMaxMisses: number;
+  /** Shared assumed-identity account for ?auto=1 launches (server-held). */
+  autoSignOnUser: string | null;
+  autoSignOnPassword: string | null;
+  /** When set, HTML responses carry `Content-Security-Policy: frame-ancestors …`. */
+  frameAncestors: string | null;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -66,7 +71,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminPin,
     dbPath: env.WEB5250_DB ?? 'data/web5250.db',
     wsPingIntervalMs: int(env.WS_PING_INTERVAL_MS, 30000),
-    wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 2)
+    wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 2),
+    autoSignOnUser: env.AUTO_SIGNON_USER?.trim() || null,
+    autoSignOnPassword: env.AUTO_SIGNON_PASSWORD ?? null,
+    frameAncestors: env.FRAME_ANCESTORS?.trim() || null
   };
 }
 

@@ -14,7 +14,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { loadConfig } from './config.ts';
-import { GatewaySession, type SessionQuery } from './gateway.ts';
+import { GatewaySession, type SessionQuery, type AutoQuery } from './gateway.ts';
 import { Systems } from './systems.ts';
 import { createApiHandler } from './api.ts';
 
@@ -90,7 +90,13 @@ function serveStatic(pathname: string, res: http.ServerResponse): void {
   }
   const ext = path.extname(file).toLowerCase();
   const type = MIME[ext] ?? 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
+  const headers: Record<string, string> = { 'content-type': type, 'cache-control': 'no-cache' };
+  // Optional lockdown for iframe embedding (automated launches): when
+  // FRAME_ANCESTORS is set, only those origins may frame the app.
+  if (ext === '.html' && cfg.frameAncestors) {
+    headers['content-security-policy'] = `frame-ancestors ${cfg.frameAncestors}`;
+  }
+  res.writeHead(200, headers);
   fs.createReadStream(file).pipe(res);
 }
 
@@ -110,6 +116,14 @@ server.on('upgrade', (req, socket, head) => {
   const system = query.systemId !== undefined ? systems.get(query.systemId) : undefined;
   if (query.systemId !== undefined && !system) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  // Automated launches need the server-held sign-on credential; refuse before
+  // any session resources are spent rather than failing mid-sign-on.
+  if (query.auto && (!cfg.autoSignOnUser || !cfg.autoSignOnPassword)) {
+    console.log('[ws] auto-launch rejected: AUTO_SIGNON_USER/AUTO_SIGNON_PASSWORD not configured');
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
     return;
   }
@@ -148,8 +162,27 @@ function parseSessionQuery(url: URL): SessionQuery {
     termType: sanitize(q.get('term'), 20),
     codePage: sanitize(q.get('cp'), 10),
     devName: sanitizeDevName(q.get('devname')),
-    systemId: int(q.get('system'))
+    systemId: int(q.get('system')),
+    auto: parseAuto(q)
   };
+}
+
+function parseAuto(q: URLSearchParams): AutoQuery | undefined {
+  const on = q.get('auto');
+  if (on !== '1' && on !== 'true') return undefined;
+  const delay = Number.parseInt(q.get('inputdelay') ?? '', 10);
+  return {
+    input: printable(q.get('input'), 256),
+    inputEnter: q.get('inputenter') !== '0',
+    inputDelayMs: Number.isFinite(delay) && delay >= 0 && delay <= 10000 ? delay : 500
+  };
+}
+
+/** Printable-ASCII run (what a 5250 field can hold); others are dropped. */
+function printable(v: string | null, max: number): string | undefined {
+  if (!v) return undefined;
+  const s = [...v].filter((ch) => ch >= ' ' && ch <= '~').join('');
+  return s.slice(0, max) || undefined;
 }
 
 function sanitize(v: string | null, max: number): string | undefined {

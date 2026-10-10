@@ -21,6 +21,7 @@
     "visual": "node scripts/visual-test.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "test:real": "node scripts/real-signon-test.mjs",
+    "test:auto": "node scripts/auto-test.mjs",
     "test:reads": "node scripts/read-commands-test.mjs"
   },
   "dependencies": {

@@ -50,6 +50,11 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   click-to-position, and reconnect handling. Screen state is edited
   server-side; only diffs travel over the WebSocket, and non-display field
   contents are blanked server-side so **passwords never reach the browser**.
+- **Automated data-entry launches**: open the app in an iframe with `?auto=1`
+  and it signs on with a server-held identity (`AUTO_SIGNON_*`), types a
+  caller-supplied string into the user profile's initial-program screen, and
+  `postMessage`s the embedding page when the user exits and the host drops
+  the session — one-line deep links for other apps' data-entry screens.
 - **Proxy-friendly**: relative asset paths (works under any sub-path),
   accepts upgrades on any `…/ws` path, WebSocket keepalive pings, `/healthz`
   for uptime checks, zero client-side dependencies beyond static assets.
@@ -142,6 +147,9 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for host TLS (IBM i certs are usually self-signed) | `false` |
 | `WS_PING_INTERVAL_MS` | Browser-liveness ping cadence; a vanished front-end is terminated (freeing its iSeries session) after `WS_PING_MAX_MISSES` missed pongs — grace ≈ interval × misses | `30000` |
 | `WS_PING_MAX_MISSES` | Consecutive missed pongs tolerated before a dead browser session is torn down | `2` |
+| `AUTO_SIGNON_USER` | User profile for `?auto=1` automated data-entry launches (server-held; required together with `AUTO_SIGNON_PASSWORD`, otherwise auto upgrades are refused) | – |
+| `AUTO_SIGNON_PASSWORD` | Its password — never leaves the server or crosses the WebSocket | – |
+| `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
 | `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
 
 Each browser session gets its own 5250 device. Device names are generated as
@@ -188,6 +196,58 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 WebSocket sessions target a system with `?system=<id>` (rejected with 404 if
 the id no longer exists — the browser falls back to the menu). Failed PIN
 attempts lock administration for 60 s after 5 tries.
+
+## Automated data-entry launches
+
+For embedding a single data-entry session inside another app (e.g. Angular),
+open the gateway in an **iframe** with `?auto=1` and optional launch
+parameters:
+
+```
+https://gateway.example/?system=3&auto=1&input=CUST123&parentorigin=https://angular.internal
+```
+
+| Param | Default | Meaning |
+| :--- | :--- | :--- |
+| `auto` | – | `1` activates the automated launch |
+| `input` | – | String (≤ 256 printable ASCII) typed into the initial program's screen |
+| `inputenter` | `1` | Press Enter after typing `input` (`0` = type only) |
+| `inputdelay` | `500` | Minimum wait (ms, 0–10000) after the screen is ready before typing |
+| `parentorigin` | `*` | `targetOrigin` used for the end-of-session `postMessage` to the parent page |
+
+What happens:
+
+1. The gateway signs on itself using `AUTO_SIGNON_USER` / `AUTO_SIGNON_PASSWORD`
+   — the credentials live only in the server environment; the password is
+   typed into the non-display field server-side and never reaches the browser.
+2. The user profile's **initial program** (INLPGM) on the IBM i opens the
+   data-entry screen — nothing is typed by the gateway beyond the sign-on.
+3. Once that screen invites input (plus `inputdelay` ms), the gateway types
+   `input` and optionally presses Enter. User keystrokes are held back only
+   during the injection; from then on the user works the screen normally
+   (the system menu is hidden in this mode).
+4. When the user exits the program, the IBM i signs off and drops the
+   connection; the gateway tears the session down.
+5. The page notifies its parent via `postMessage` so the embedding app can
+   remove the iframe:
+
+```js
+// Angular side
+window.addEventListener('message', (e) => {
+  if (e.data?.source === 'web5250' && e.data?.type === 'session-end') {
+    // e.data.reason: 'closed' | 'error' | 'signon-failed' | 'timeout'
+    removeTerminalIframe();
+  }
+});
+iframe.src = 'https://gateway.example/?system=3&auto=1&input=CUST123';
+// The iframe needs focus (a click) before keyboard input reaches the terminal.
+```
+
+Failure modes end the launch the same way: a rejected sign-on or a screen
+that never appears (30 s) produce `session-end` with `signon-failed` /
+`timeout`, and an unconfigured gateway (`AUTO_SIGNON_*` unset) refuses the
+WebSocket upgrade outright. Set `FRAME_ANCESTORS` to restrict which origins
+may embed the app at all.
 
 ## Connecting to IBM i
 
