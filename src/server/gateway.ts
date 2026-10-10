@@ -110,6 +110,12 @@ export class GatewaySession {
       // (see the ping loop in index.ts).
       (this.ws as unknown as { alive?: boolean }).alive = true;
       this.send('pong', {});
+      return;
+    }
+    if (t === 'diag') {
+      // One-click bug reports: raw records + parsed state for this session.
+      this.send('diag', { text: this.client.getDiagnostics() });
+      return;
     }
   }
 

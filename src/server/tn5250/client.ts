@@ -55,18 +55,35 @@ export class Tn5250Client {
 
   private warn(msg: string): void {
     console.warn(`[tn5250 ${this.opts.deviceName ?? '-'}] ${msg}`);
+    // Keep warnings in the diagnostic export too - they mark exactly where
+    // the host's stream surprised the parser.
+    this.diagLines.push(`[tn5250 ${this.opts.deviceName ?? '-'}] WARN ${msg}`);
   }
 
   /**
    * Session protocol capture in the server logs: raw hex of the first
    * records (the sign-on screens), the parsed field table whenever it
    * changes, and every outgoing AID payload. Enough to diagnose a real
-   * host's data-stream dialect from `docker logs` alone.
+   * host's data-stream dialect from `docker logs` alone. The same lines are
+   * kept in a bounded buffer so a browser can export them (diagnostics
+   * button) without container access.
    */
+  private readonly diagLines: string[] = [];
+
+  private diag(line: string): void {
+    this.diagLines.push(line);
+    if (this.diagLines.length > 300) this.diagLines.splice(0, this.diagLines.length - 300);
+    console.log(line);
+  }
+
+  getDiagnostics(): string {
+    return this.diagLines.join('\n');
+  }
+
   private capture(rx: Buffer): void {
     if (this.rxLogged < 8) {
       this.rxLogged++;
-      console.log(`[tn5250 ${this.opts.deviceName ?? '-'}] rx#${this.rxLogged} ${rx.toString('hex')}`);
+      this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] rx#${this.rxLogged} ${rx.toString('hex')}`);
     }
     const s = this.screen;
     const line = s.fields
@@ -77,7 +94,7 @@ export class Tn5250Client {
       .join(' ');
     if (line !== this.lastFieldLog) {
       this.lastFieldLog = line;
-      console.log(
+      this.diag(
         `[tn5250 ${this.opts.deviceName ?? '-'}] fields ${s.rows}x${s.cols}: ${line || '(none)'} ` +
           `cursor=${s.rowOf(s.cursorPos)},${s.colOf(s.cursorPos)} waiting=${s.waitingForInput}`
       );
@@ -189,7 +206,7 @@ export class Tn5250Client {
 
     const payload: number[] = [...this.cursorBytes(), aid];
     const body = this.dataIncludedFor(aid) ? this.screen.buildReadResponse() : Buffer.alloc(0);
-    console.log(
+    this.diag(
       `[tn5250 ${this.opts.deviceName ?? '-'}] aid 0x${aid.toString(16)} ` +
         `cursor=${this.screen.rowOf(this.screen.cursorPos)},${this.screen.colOf(this.screen.cursorPos)} ` +
         `read=0x${this.screen.readType.toString(16)} body=${body.toString('hex')}`

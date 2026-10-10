@@ -318,10 +318,11 @@ export class Parser5250 {
           const col = this.next();
           if (row >= 1 && row <= this.screen.rows && col >= 1 && col <= this.screen.cols) {
             this.screen.cursorPos = this.screen.posOf(row, col);
-            // MC cancels pending-insert homing: the cursor stays where the
-            // host put it instead of jumping to the IC/home position at the
-            // next read invite (tn5250j setPendingInsert(false, x, y)).
-            this.screen.pendingInsert = false;
+            // Note: MC does NOT cancel pending-insert homing here. tn5250j
+            // clears it (setPendingInsert(false, x, y)), but against at least
+            // one live IBM i QDSIGNON the IC position must win for the cursor
+            // to land in the User field - the host's MC appears to be for
+            // layout, not cursor placement.
             this.cursorChanged = true;
           } else {
             this.negativeResponse(C.NR_REQUEST_ERROR, 0x05, 0x01, 0x22);

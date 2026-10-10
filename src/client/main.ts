@@ -92,6 +92,14 @@ function handleMessage(data: string): void {
     return;
   }
   switch (msg.t) {
+    case 'diag': {
+      const text = String(msg.text ?? '');
+      navigator.clipboard
+        ?.writeText(text)
+        .then(() => window.alert(`Diagnostics (${text.length} chars) copied to clipboard - paste them into the bug report.`))
+        .catch(() => window.prompt('Copy the diagnostics below:', text));
+      break;
+    }
     case 'hello': {
       const parts = [msg.systemName, msg.devName, msg.host, msg.termType].map((v) => String(v ?? ''));
       $('dev-info').textContent = parts.filter(Boolean).join(' · ');
@@ -271,6 +279,9 @@ $('btn-systems').addEventListener('click', () => endSession());
 
 $('btn-keys').addEventListener('click', () => $('keys-modal').classList.toggle('hidden'));
 $('keys-close').addEventListener('click', () => $('keys-modal').classList.add('hidden'));
+// One-click diagnostics: raw 5250 records + parsed field tables + AID
+// payloads for this session, straight from the gateway to the clipboard.
+$('btn-diag').addEventListener('click', () => send({ t: 'diag' }));
 
 const keypad = $('keypad');
 if (window.matchMedia('(pointer: coarse)').matches) keypad.classList.remove('hidden');
