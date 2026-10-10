@@ -110,10 +110,10 @@ async function main() {
   const type = (s) => { for (const ch of s) key('char', ch); };
 
   console.log('\n1. QDSIGNON renders with enterable fields');
-  check('screen rendered', await waitFor(term, (t) => t.text().includes('SIGN ON') && t.text().includes('Password'), 8000, term.text().slice(0, 200)));
+  check('screen rendered', await waitFor(term, (t) => t.text().includes('SIGN ON') && t.text().includes('Password') && t.text().includes('Current library'), 8000, term.text().slice(0, 200)));
   check('cursor at User field (7,53)', term.cursor[0] === 7 && term.cursor[1] === 53, JSON.stringify(term.cursor));
   check('keyboard unlocked', await waitFor(term, (t) => t.oia.lock === 'none', 5000, JSON.stringify(term.oia)));
-  check('field layout pushed for underlines', Array.isArray(term.fields) && term.fields.length === 2, JSON.stringify(term.fields));
+  check('field layout pushed for underlines', Array.isArray(term.fields) && term.fields.length === 5, JSON.stringify(term.fields));
   check('user field extent covers 10 data cells', term.fields?.[0]?.[1] === 10, JSON.stringify(term.fields?.[0]));
 
   console.log('\n2. Typing lands in the User field');
@@ -127,10 +127,16 @@ async function main() {
   await sleep(300);
   check('password hidden in browser', !term.text().includes('SECRETPW') && !term.rawLog.some((m) => m.includes('SECRETPW')));
 
-  console.log('\n4. Enter transmits both fields');
+  console.log('\n4. Tab through empty fields into Current library (run-shift regression)');
+  key('tab'); key('tab'); key('tab');
+  check('cursor moved to Current library (14,53)', await waitFor(term, (t) => t.cursor[0] === 14 && t.cursor[1] === 53, 3000, JSON.stringify(term.cursor)));
+  type('MYLIB');
+  await sleep(300);
+
+  console.log('\n5. Enter transmits all five fields positionally');
   key('enter');
   const sawReply = await waitFor(term, (t) => t.row(24).includes('CPF1120'), 5000, `"${term.row(24)}"`);
-  check('host accepted field data (CPF1120 wrong-password, NOT CPF1296)', sawReply, `"${term.row(24)}"`);
+  check('host accepted exact field data (CPF1120, not shifted/CPF1296)', sawReply, `"${term.row(24)}"`);
   check('session still alive after signon attempt', await waitFor(term, () => true, 100) && ws.readyState === WebSocket.OPEN);
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);

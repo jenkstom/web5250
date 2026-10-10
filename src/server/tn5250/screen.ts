@@ -609,6 +609,10 @@ export class Screen5250 {
           text = text.slice(0, -1);
         }
 
+        // READ INPUT FIELDS transmits EVERY input field at full width, in
+        // format-table order - empty fields included - because the host maps
+        // the runs positionally (lib5250 send_fields). Truncating empty
+        // fields would shift every following run into the wrong field.
         if (text.length > 0 || isMdtRead) {
           if (isMdtRead) {
             // SBA addresses the first DATA cell (tn5250j readFormatTable,
@@ -626,6 +630,8 @@ export class Screen5250 {
               out.push(this.ebcdic.uni2ebcdic(ch));
             }
           }
+        } else {
+          for (let i = 0; i < f.length; i++) out.push(0x40); // blank run
         }
       }
     }

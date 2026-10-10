@@ -215,21 +215,27 @@ export class Parser5250 {
           const fromCol = this.screen.colOf(this.screen.writePos);
           const toRow = this.nextSigned();
           const toCol = this.next();
-          if (toRow >= fromRow) {
+          // Errors abort only this order - never the whole WTD. A host order
+          // we reject must not desync the remaining orders (lib5250 skips
+          // the order and keeps parsing).
+          const raInvalid =
+            toRow < 1 || toRow > this.screen.rows || toCol < 1 || toCol > this.screen.cols;
+          if (raInvalid || toRow < fromRow) {
             const repeatChar = this.next();
-            const to = this.screen.posOf(toRow, toCol);
-            const from = this.screen.posOf(fromRow, fromCol);
-            const ch =
-              repeatChar === 0
-                ? ' '
-                : repeatChar >= 0x40 && repeatChar < 0xff
-                  ? this.ebcdic.ebcdic2uni(repeatChar)
-                  : String.fromCharCode(repeatChar);
-            for (let p = from; p <= to; p++) this.screen.writeChar(ch);
-          } else {
+            this.warn(`RA order skipped (target ${toRow},${toCol} from ${fromRow},${fromCol})`);
             this.negativeResponse(C.NR_REQUEST_ERROR, 0x05, 0x01, 0x23);
-            return;
+            break;
           }
+          const repeatChar = this.next();
+          const to = this.screen.posOf(toRow, toCol);
+          const from = this.screen.posOf(fromRow, fromCol);
+          const ch =
+            repeatChar === 0
+              ? ' '
+              : repeatChar >= 0x40 && repeatChar < 0xff
+                ? this.ebcdic.ebcdic2uni(repeatChar)
+                : String.fromCharCode(repeatChar);
+          for (let p = from; p <= to && p < this.screen.size; p++) this.screen.writeChar(ch);
           break;
         }
 

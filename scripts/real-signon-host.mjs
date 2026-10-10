@@ -42,7 +42,7 @@ const IAC = 0xff, DO = 0xfd, WILL = 0xfb, SB = 0xfa, SE = 0xf0, EOR = 0xef;
 const OPT_BINARY = 0, OPT_TTYPE = 24, OPT_EOR = 25, OPT_NEWENV = 39;
 
 const CMD_CLEAR = 0x40, CMD_WTD = 0x11, CMD_RIF = 0x42, CMD_ERRCODE = 0x21;
-const ORDER_SBA = 0x11, ORDER_IC = 0x13, ORDER_SF = 0x1d;
+const ORDER_SBA = 0x11, ORDER_IC = 0x13, ORDER_SF = 0x1d, ORDER_RA = 0x02;
 
 const LOGO = [
   '          **          *******     ********  ',
@@ -103,21 +103,30 @@ class Session {
   }
 
   sendSignon() {
+    // Five input fields like the real QDSIGNON (User, Password, Procedure,
+    // Menu, Current library). Labels drawn with RA (repeat to address) orders
+    // the way real hosts draw dot leaders.
+    const label = (row, text) => [
+      ORDER_SBA, row, 30, ...e(text),
+      ORDER_RA, row, 51, A2E['.'] // repeat '.' to (row, 51)
+    ];
     const orders = [
       this.text(2, 36, 0x22, 'SIGN ON'),
       this.text(4, 30, 0x20, 'SYSTEM   . . . . . . :  DEMOCLOUD'),
       this.text(5, 30, null, 'SUBSYSTEM . . . . :  QINTER'),
       this.text(6, 30, null, 'DISPLAY . . . . . :  ' + this.dev),
-      this.text(7, 30, null, 'User'),
+      label(7, 'User '),
       this.field(7, 52, 0x20, 10),
-      this.text(8, 30, null, 'Password'),
+      label(8, 'Password '),
       this.field(8, 52, 0x24, 10), // non-display
-      ...LOGO.map((l, i) => this.text(11 + i, 12, i < 1 ? 0x28 : null, l)),
-      this.text(19, 50, 0x3c, 'DEMO CLOUD'),
-      this.text(21, 7, 0x28, 'WARNING - ACCESS TO THIS COMPUTER MUST BE GRANTED BY ADD ON SYSTEMS.'),
-      this.text(22, 7, null, 'UNAUTHORIZED ACCESS IS A CRIMINAL OFFENSE AND WILL BE PROSECUTED TO THE'),
-      this.text(23, 7, null, 'FULLEST EXTENT THAT THE LAW ALLOWS.'),
-      this.text(23, 60, 0x20, '(C) COPYRIGHT IBM CORP.')
+      label(10, 'Procedure '),
+      this.field(10, 52, 0x20, 10),
+      label(12, 'Menu '),
+      this.field(12, 52, 0x20, 10),
+      label(14, 'Current library '),
+      this.field(14, 52, 0x20, 10),
+      ...LOGO.map((l, i) => this.text(17 + i, 12, i < 1 ? 0x28 : null, l)),
+      this.text(22, 7, 0x28, 'WARNING - ACCESS TO THIS COMPUTER MUST BE GRANTED BY ADD ON SYSTEMS.')
     ].flat();
     orders.push(ORDER_IC, 7, 53);
     // One record: CLEAR UNIT | WTD(cc0=0x40 lock+resetMDT, cc1) | RIF invite
@@ -209,16 +218,19 @@ class Session {
     const row = rec[p], col = rec[p + 1], aid = rec[p + 2];
     p += 3;
     const fields = [];
-    // RIF response: every field full width, attr excluded, in order
-    for (let i = 0; i < 2; i++) {
+    // RIF response: every input field, full 10-char width, in order.
+    for (let i = 0; i < 5; i++) {
       let s = '';
       for (let k = 0; k < 10 && p < rec.length; k++, p++) s += E2A[rec[p]] ?? ' ';
       fields.push(s.trimEnd());
     }
     console.log(`[real-signon] AID=0x${aid.toString(16)} cursor=${row},${col} fields=${JSON.stringify(fields)}`);
     if (aid === 0xf1) {
-      const [user, pw] = fields;
-      if (!user || !pw) {
+      const [user, pw, proc, menu, lib] = fields;
+      // Exact positional mapping: any shifted/truncated/skipped run fails.
+      if (user === 'TOMUSER' && pw === 'SECRETPW' && proc === '' && menu === '' && lib === 'MYLIB') {
+        this.sendError('CPF1120 User ID or password incorrect (mock).');
+      } else if (!user) {
         this.failures++;
         if (this.failures >= 2) {
           console.log('[real-signon] host would CPF1296 + drop; ending');
@@ -227,7 +239,7 @@ class Session {
         }
         this.sendError('CPF1296 Sign-on information required.');
       } else {
-        this.sendError('CPF1120 User ID or password incorrect (mock).');
+        this.sendError(`MISMATCH ${JSON.stringify(fields)}`);
       }
     }
   }

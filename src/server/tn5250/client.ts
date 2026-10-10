@@ -31,6 +31,9 @@ export class Tn5250Client {
   private connectTimer: NodeJS.Timeout | null = null;
   private destroyed = false;
   private recordsSeen = 0;
+  /** Bounded protocol capture for the server logs (first records of a session). */
+  private rxLogged = 0;
+  private lastFieldLog = '';
 
   status: SessionStatus = 'connecting';
   onStatus: (status: SessionStatus, detail?: string) => void = () => {};
@@ -52,6 +55,33 @@ export class Tn5250Client {
 
   private warn(msg: string): void {
     console.warn(`[tn5250 ${this.opts.deviceName ?? '-'}] ${msg}`);
+  }
+
+  /**
+   * Session protocol capture in the server logs: raw hex of the first
+   * records (the sign-on screens), the parsed field table whenever it
+   * changes, and every outgoing AID payload. Enough to diagnose a real
+   * host's data-stream dialect from `docker logs` alone.
+   */
+  private capture(rx: Buffer): void {
+    if (this.rxLogged < 8) {
+      this.rxLogged++;
+      console.log(`[tn5250 ${this.opts.deviceName ?? '-'}] rx#${this.rxLogged} ${rx.toString('hex')}`);
+    }
+    const s = this.screen;
+    const line = s.fields
+      .map(
+        (f) =>
+          `${s.rowOf(f.startPos)},${s.colOf(f.startPos)}:a${f.attr.toString(16).padStart(2, '0')}/n${f.length}${f.isBypass ? '!' : ''}`
+      )
+      .join(' ');
+    if (line !== this.lastFieldLog) {
+      this.lastFieldLog = line;
+      console.log(
+        `[tn5250 ${this.opts.deviceName ?? '-'}] fields ${s.rows}x${s.cols}: ${line || '(none)'} ` +
+          `cursor=${s.rowOf(s.cursorPos)},${s.colOf(s.cursorPos)} waiting=${s.waitingForInput}`
+      );
+    }
   }
 
   private setStatus(s: SessionStatus, detail?: string): void {
@@ -110,6 +140,7 @@ export class Tn5250Client {
   private handleRecord(rec: Buffer): void {
     try {
       this.parser.parse(rec);
+      this.capture(rec);
       if (this.parser.beep) this.onScreenChange(); // gateway also polls beep flag
       this.recordsSeen++;
       if (this.status !== 'connected') this.setStatus('connected');
@@ -158,6 +189,11 @@ export class Tn5250Client {
 
     const payload: number[] = [...this.cursorBytes(), aid];
     const body = this.dataIncludedFor(aid) ? this.screen.buildReadResponse() : Buffer.alloc(0);
+    console.log(
+      `[tn5250 ${this.opts.deviceName ?? '-'}] aid 0x${aid.toString(16)} ` +
+        `cursor=${this.screen.rowOf(this.screen.cursorPos)},${this.screen.colOf(this.screen.cursorPos)} ` +
+        `read=0x${this.screen.readType.toString(16)} body=${body.toString('hex')}`
+    );
 
     this.screen.waitingForInput = false;
     this.screen.lockSystem();
