@@ -38,6 +38,19 @@ let selected = 0;
 let onSelect: ((s: MenuSystem) => void) | null = null;
 let booted = false;
 
+// ------------------------------------------------------------- display name
+const DEVNAME_KEY = 'web5250.displayName';
+
+/** Legal 5250 device-name characters, uppercased, 10 chars max. */
+function cleanDisplayName(v: string): string {
+  return v.trim().toUpperCase().replace(/[^A-Z0-9#$@_]/g, '').slice(0, 10);
+}
+
+/** The browser's saved display name (or null) - sent as ?devname=. */
+export function displayName(): string | null {
+  return cleanDisplayName(localStorage.getItem(DEVNAME_KEY) ?? '') || null;
+}
+
 export function menuVisible(): boolean {
   return !$('menu').classList.contains('hidden');
 }
@@ -173,6 +186,17 @@ export function initMenu(): void {
 
   $('menu-go').addEventListener('click', () => connectTo(selected));
   $('menu-admin-btn').addEventListener('click', openAdmin);
+
+  // Display name: persisted per-browser; cleaned while typing. Empty means
+  // the gateway picks a name from the configured device prefix.
+  const dev = $<HTMLInputElement>('menu-devname');
+  dev.value = displayName() ?? '';
+  dev.addEventListener('input', () => {
+    const cleaned = cleanDisplayName(dev.value);
+    if (cleaned !== dev.value) dev.value = cleaned;
+    if (cleaned) localStorage.setItem(DEVNAME_KEY, cleaned);
+    else localStorage.removeItem(DEVNAME_KEY);
+  });
 
   initAdmin();
 }

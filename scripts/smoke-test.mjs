@@ -252,6 +252,40 @@ async function main() {
   check('unknown system id rejected', (await ghostClosed) === true);
   await sleep(200);
 
+  // -------------------------------------- 8b. display names stay unique
+  console.log('\n8b. Display names (?devname=)');
+  const sysId = seeded.systems[0].id;
+  const openNamed = async (name) => {
+    const sock = new WebSocket(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}&devname=${name}`);
+    let hello = null;
+    sock.addEventListener('message', (ev) => {
+      const msg = JSON.parse(String(ev.data));
+      if (msg.t === 'hello') hello = msg;
+    });
+    await new Promise((resolve, reject) => {
+      sock.addEventListener('open', resolve);
+      sock.addEventListener('error', reject);
+    });
+    for (let i = 0; i < 50 && !hello; i++) await sleep(60);
+    return { sock, hello };
+  };
+  const a = await openNamed('TESTDEV');
+  const b = await openNamed('TESTDEV');
+  check('first session keeps the requested name', a.hello?.devName === 'TESTDEV', JSON.stringify(a.hello));
+  check('second session gets a numeric suffix', b.hello?.devName === 'TESTDEV1', JSON.stringify(b.hello));
+  const long1 = await openNamed('ABCDEFGHIJ'); // 10 chars: twice to force a suffix
+  const long2 = await openNamed('ABCDEFGHIJ');
+  check('suffix fits the 10-char device limit', long2.hello?.devName === 'ABCDEFGHI1', JSON.stringify(long2.hello?.devName));
+  a.sock.close();
+  long1.sock.close();
+  long2.sock.close();
+  await sleep(400);
+  const c = await openNamed('TESTDEV');
+  check('name reusable after the session ends', c.hello?.devName === 'TESTDEV', JSON.stringify(c.hello));
+  b.sock.close();
+  c.sock.close();
+  await sleep(200);
+
   // ------------------------------------------------- 9. update/move/delete
   console.log('\n9. Admin edit, reorder, delete');
   const id = created.system.id;

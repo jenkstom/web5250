@@ -9,7 +9,7 @@ import './styles.css';
 import { Terminal, type OiaState } from './term.ts';
 import { attachKeyboard, type SendKey } from './keyboard.ts';
 import { buildKeypad } from './keypad.ts';
-import { fetchSystems, hideMenu, initMenu, menuVisible, showMenu, type MenuSystem } from './menu.ts';
+import { fetchSystems, hideMenu, initMenu, menuVisible, showMenu, displayName, type MenuSystem } from './menu.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -32,6 +32,11 @@ function wsUrl(): string {
   const params = new URLSearchParams(window.location.search);
   if (target.system) params.set('system', String(target.system.id));
   else params.delete('system');
+  // The browser's saved display name rides along; the gateway appends a
+  // numeric suffix automatically when another live session already has it.
+  const dev = displayName();
+  if (dev) params.set('devname', dev);
+  else params.delete('devname');
   const qs = params.toString();
   return `${proto}//${window.location.host}${path}ws${qs ? `?${qs}` : ''}`;
 }

@@ -9,6 +9,7 @@ import * as C from './tn5250/constants.ts';
 import { Tn5250Client } from './tn5250/client.ts';
 import type { Config } from './config.ts';
 import { makeDeviceName } from './config.ts';
+import { devices } from './devices.ts';
 import type { SystemRow } from './systems.ts';
 
 export interface SessionQuery {
@@ -58,7 +59,13 @@ export class GatewaySession {
     const termType = allowCustom && query.termType ? query.termType.toUpperCase() : (system?.termType ?? cfg.termType);
     const codePage = allowCustom && query.codePage ? query.codePage.toLowerCase() : (system?.codePage ?? cfg.codePage);
 
-    this.devName = makeDeviceName(system?.devPrefix ?? cfg.devPrefix, query.devName);
+    // Requested display names (and even random ones) are made unique across
+    // live sessions: a taken name gets a numeric suffix (TOM -> TOM1).
+    const requested = makeDeviceName(system?.devPrefix ?? cfg.devPrefix, query.devName);
+    this.devName = devices.allocate(requested);
+    if (requested && this.devName && requested !== this.devName) {
+      console.log(`[ws] display name ${requested} in use, using ${this.devName}`);
+    }
     this.sessionInfo = { host, port, ssl, termType, codePage };
     this.systemName = system?.name;
 
@@ -271,6 +278,7 @@ export class GatewaySession {
     if (this.closed) return;
     this.closed = true;
     if (this.flushTimer) clearTimeout(this.flushTimer);
+    devices.release(this.devName);
     this.client.destroy();
   }
 }

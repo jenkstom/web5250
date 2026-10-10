@@ -286,6 +286,29 @@ button.primary { border-color: var(--green); color: var(--green); }
   font-size: 0.85rem;
 }
 
+/* Display (device) name picker: same line language as the Option row. */
+#menu-dev {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.3rem 1rem 0;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+#menu-dev input {
+  width: 12ch;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--green);
+  color: var(--green);
+  font: inherit;
+  text-align: center;
+  caret-color: var(--green);
+  padding: 0.1rem 0.2rem;
+  outline: none;
+}
+
 /* Chunky square buttons inside the CRT panel — no modern rounded corners. */
 #menu-frame button {
   border-radius: 0;

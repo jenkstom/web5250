@@ -147,7 +147,7 @@ function parseSessionQuery(url: URL): SessionQuery {
     ssl: q.get('ssl') === '1' || q.get('ssl') === 'true' ? true : undefined,
     termType: sanitize(q.get('term'), 20),
     codePage: sanitize(q.get('cp'), 10),
-    devName: sanitize(q.get('devname'), 10),
+    devName: sanitizeDevName(q.get('devname')),
     systemId: int(q.get('system'))
   };
 }
@@ -156,6 +156,13 @@ function sanitize(v: string | null, max: number): string | undefined {
   if (!v) return undefined;
   const s = v.replace(/[^A-Za-z0-9._:-]/g, '');
   return s.slice(0, max) || undefined;
+}
+
+/** Device-name characters per the 5250 spec: letters, digits, $ # @ _ . */
+function sanitizeDevName(v: string | null): string | undefined {
+  if (!v) return undefined;
+  const s = v.trim().toUpperCase().replace(/[^A-Z0-9#$@_]/g, '').slice(0, 10);
+  return s || undefined;
 }
 
 // Heartbeat: ping every 30s; drop a browser only after two consecutive

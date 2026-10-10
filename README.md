@@ -162,6 +162,15 @@ volume) and apply immediately — no restart needed. Every system carries its
 own host, port, TLS flag, terminal model, code page and optional device
 prefix.
 
+**Display name** (the `Display` field on the menu): an optional 5250
+device name for this browser's sessions, saved in `localStorage` and sent
+as `?devname=` on connect. The gateway keeps live display names unique —
+if another session already holds yours it appends a number (`TOM` →
+`TOM1` → `TOM2`, always within the 10-character device-name limit) and
+logs the substitution; the actual name is shown next to the connection
+state once the session opens. Leave it empty to use the configured device
+prefix with a random suffix.
+
 The JSON API behind it (all sub-path tolerant, like `/healthz`):
 
 | Method & path | Auth | Purpose |
