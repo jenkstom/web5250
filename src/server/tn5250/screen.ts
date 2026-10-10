@@ -149,12 +149,15 @@ export class Screen5250 {
     this.writePos = (this.writePos + n) % this.size;
   }
 
-  /** Plain character write at the current write position. */
+  /** Plain character write at the current write position. Characters never
+   *  touch the attribute plane: an SF field's attribute covers exactly its
+   *  own cells (set in addField) and bare attribute bytes propagate on
+   *  their own - a label written right after a non-display field must stay
+   *  visible (tn5250j keeps char and attribute planes separate). */
   writeChar(ch: string): void {
     const pos = this.writePos;
     if (!this.attrPlace[pos]) {
       this.chars[pos] = ch;
-      this.attrs[pos] = this.lastAttr;
       this.markDirty(pos);
     }
     this.advanceWrite();
@@ -245,7 +248,29 @@ export class Screen5250 {
       };
     if (!existing) this.fields.push(field);
     if (field.mdt) this.masterMDT = true;
-    this.writeAttribute(attr);
+
+    // The SF attribute covers EXACTLY the attribute cell plus the field's
+    // data cells; the cell after the field reverts to the default
+    // attribute (tn5250j addField walks the field then setEndingAttr).
+    // Propagating the attribute further would hide everything after a
+    // non-display (password) field.
+    const start = this.writePos;
+    this.lastAttr = attr;
+    this.attrPlace[start] = true;
+    this.chars[start] = ' ';
+    this.attrs[start] = attr;
+    this.markDirty(start);
+    for (let p = field.dataStart; p <= field.endPos && p < this.size; p++) {
+      if (this.chars[p] === '\u0000') this.chars[p] = ' ';
+      this.attrs[p] = attr;
+      this.markDirty(p);
+    }
+    const after = field.endPos + 1;
+    if (after < this.size && !this.attrPlace[after] && this.attrs[after] !== 0x20) {
+      this.attrs[after] = 0x20; // initAttr default
+      this.markDirty(after);
+    }
+    this.writePos = field.dataStart;
     this.structureDirty = true;
   }
 
@@ -442,15 +467,26 @@ export class Screen5250 {
     this.normalizeCursor();
   }
 
-  /** Read invite arrived: home the cursor per spec (tn5250j goHome). */
+  /**
+   * Read invite arrived: home the cursor per spec. The first input field is
+   * selected ABSOLUTELY (not relative to the cursor): when the cursor
+   * already sits in the first field - e.g. placed there by CC1 cursor
+   * homing - a cursor-relative "next field" search would wrongly advance to
+   * the second field (live QDSIGNONs send no IC order and start the cursor
+   * in the PASSWORD field this way).
+   */
   goHome(): void {
     if (this.pendingInsert && this.homePos > 0) {
       this.cursorPos = this.homePos;
-    } else if (!this.gotoField(1)) {
-      this.cursorPos = 0;
-      this.homePos = 0;
     } else {
-      this.homePos = this.cursorPos;
+      const first = this.fields.find((f) => !f.isBypass);
+      if (first) {
+        this.cursorPos = first.dataStart;
+        this.homePos = this.cursorPos;
+      } else {
+        this.cursorPos = 0;
+        this.homePos = 0;
+      }
     }
     this.normalizeCursor();
   }

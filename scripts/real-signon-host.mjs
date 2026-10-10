@@ -1,13 +1,11 @@
-// Realistic IBM i QDSIGNON host: byte-shape faithful to what a real IBM i
-// sends (unlike mock-host.mjs, which speaks a simplified dialect):
-//   - WTD CC0=0x40 (keyboard lock + reset MDT) — real hosts lock on write
-//   - SF orders WITHOUT field format words: <attr> <lenHi> <lenLo>
-//     (attr bytes 0x20-0x3F never carry 0x40, the FFW "extended" bit)
-//   - attribute bytes re-asserted before text runs (color banding)
-//   - password field attr 0x24 (non-display) written mid-screen, with
-//     plain text (logo/warning) written AFTER it
-//   - IC at first input cell, then READ INPUT FIELDS invite
-//   - on AID with field data: replies WRITE ERROR CODE (CPF-style row 24)
+// Realistic IBM i QDSIGNON host, byte-shaped from a live capture:
+//   - SOH order (len 7) opens the WTD; no IC order (the terminal must home
+//     to the first enterable field by format-table position)
+//   - User field attr 0x26 (non-display), Password 0x27; the optional
+//     fields carry FFW1=0x60 (bypass) so Tab skips them - the live layout
+//   - READ MDT FIELDS (0x52) invite; SBA-prefixed runs in the response
+//   - on success: a "Job ... started" message screen whose WTD opens with
+//     SOH len 16 (beyond the classic 1..7 range - regression guard)
 // Usage: node scripts/real-signon-host.mjs [port]
 import net from 'node:net';
 
@@ -41,24 +39,23 @@ for (const [ch, b] of Object.entries(A2E)) E2A[b] = ch;
 const IAC = 0xff, DO = 0xfd, WILL = 0xfb, SB = 0xfa, SE = 0xf0, EOR = 0xef;
 const OPT_BINARY = 0, OPT_TTYPE = 24, OPT_EOR = 25, OPT_NEWENV = 39;
 
-const CMD_CLEAR = 0x40, CMD_WTD = 0x11, CMD_RIF = 0x42, CMD_ERRCODE = 0x21;
-const ORDER_SBA = 0x11, ORDER_IC = 0x13, ORDER_SF = 0x1d, ORDER_RA = 0x02;
+const CMD_CLEAR = 0x40, CMD_WTD = 0x11, CMD_RMD = 0x52, CMD_ERRCODE = 0x21;
+const ORDER_SBA = 0x11, ORDER_SF = 0x1d, ORDER_SOH = 0x01;
 
-const LOGO = [
-  '          **          *******     ********  ',
-  '        ****        **//////**   **//////** ',
-  '       **//**      **      //**  **     ////',
-  '      **  //**     /**         /**         ',
-  '     **********    /**         /**   *********',
-  '    /**///////**   //**    **  /**   ///////**',
-  '    /**     /**     //******   /**         /**',
-  '    //      //       //////    ////////  //////'
+// Five signon fields at rows 6..10, data col 53..62, exactly like the
+// capture: user 0x26 hidden, password 0x27 hidden, options bypassed.
+const FIELDS = [
+  { row: 6, label: 'User', attr: 0x26, bypass: false },
+  { row: 7, label: 'Password', attr: 0x27, bypass: false },
+  { row: 8, label: 'Procedure', attr: 0x27, bypass: true },
+  { row: 9, label: 'Menu', attr: 0x27, bypass: true },
+  { row: 10, label: 'Current library', attr: 0x27, bypass: true }
 ];
 
 class Session {
   constructor(sock) {
     this.sock = sock;
-    this.dev = 'PANG_CZS2I';
+    this.dev = 'PANG_TEST01';
     this.mode = 'data';
     this.iacCmd = 0;
     this.recbits = [];
@@ -66,6 +63,7 @@ class Session {
     this.started = false;
     this.gotTtype = false;
     this.confirmed = new Set();
+    this.values = {};
     this.failures = 0;
   }
 
@@ -78,7 +76,8 @@ class Session {
   record(...streams) {
     const commands = streams.flat();
     const body = [0x12, 0xa0, 0x00, 0x00, 0x04, 0x00, 0x00, 0x03, ...commands];
-    const out = [(body.length >> 8) & 0xff, body.length & 0xff];
+    const total = body.length + 2; // RFC 1205: length counts itself
+    const out = [(total >> 8) & 0xff, total & 0xff];
     for (const b of body) {
       if (b === IAC) out.push(IAC);
       out.push(b);
@@ -97,55 +96,58 @@ class Session {
     return out;
   }
 
-  /** Real hosts: SBA, SF, attr, lenHi, lenLo (no FFW bytes). len = data cells. */
-  field(row, col, attr, dataLen) {
-    return [ORDER_SBA, row, col, ORDER_SF, attr, (dataLen >> 8) & 0xff, dataLen & 0xff];
+  /** SF with FFW pair (0x40/0x60 first byte), attr, 10 data cells. */
+  field(row, attr, bypass) {
+    return [ORDER_SBA, row, 52, ORDER_SF, bypass ? 0x60 : 0x40, 0x20, attr, 0x00, 0x0a];
   }
 
   sendSignon() {
-    // Five input fields like the real QDSIGNON (User, Password, Procedure,
-    // Menu, Current library). Labels drawn with RA (repeat to address) orders
-    // the way real hosts draw dot leaders.
-    const label = (row, text) => [
-      ORDER_SBA, row, 30, ...e(text),
-      ORDER_RA, row, 51, A2E['.'] // repeat '.' to (row, 51)
-    ];
     const orders = [
-      this.text(2, 36, 0x22, 'SIGN ON'),
-      this.text(4, 30, 0x20, 'SYSTEM   . . . . . . :  DEMOCLOUD'),
-      this.text(5, 30, null, 'SUBSYSTEM . . . . :  QINTER'),
-      this.text(6, 30, null, 'DISPLAY . . . . . :  ' + this.dev),
-      label(7, 'User '),
-      this.field(7, 52, 0x20, 10),
-      label(8, 'Password '),
-      this.field(8, 52, 0x24, 10), // non-display
-      label(10, 'Procedure '),
-      this.field(10, 52, 0x20, 10),
-      label(12, 'Menu '),
-      this.field(12, 52, 0x20, 10),
-      label(14, 'Current library '),
-      this.field(14, 52, 0x20, 10),
-      ...LOGO.map((l, i) => this.text(17 + i, 12, i < 1 ? 0x28 : null, l)),
-      this.text(22, 7, 0x28, 'WARNING - ACCESS TO THIS COMPUTER MUST BE GRANTED BY ADD ON SYSTEMS.')
-    ].flat();
-    orders.push(ORDER_IC, 7, 53);
-    // One record: CLEAR UNIT | WTD(cc0=0x40 lock+resetMDT, cc1) | RIF invite
+      [ORDER_SOH, 0x07, 0x00, 0x00, 0x00, 0x19, 0x00, 0x00, 0x00],
+      this.text(1, 22, 0x22, 'SIGN ON'),
+      this.text(2, 19, null, 'System  . . . . . :'),
+      this.text(2, 45, null, 'DEMOSYS01'),
+      this.text(3, 19, null, 'Subsystem . . . . :  QINTER'),
+      this.text(4, 19, null, 'Display  . . . . . :  ' + this.dev.replace('_', '=')),
+      ...FIELDS.map((f) => [
+        this.text(f.row, 16, null, (f.label + ' ').padEnd(29, '.')),
+        this.field(f.row, f.attr, f.bypass)
+      ])
+    ].flat(2);
+    // No IC order - the terminal must home to the first enterable field.
     this.record(
       this.esc(CMD_CLEAR),
-      this.esc(CMD_WTD, 0x40, 0x20, ...orders),
-      this.esc(CMD_RIF, 0x00, 0x00)
+      this.esc(CMD_WTD, 0x00, 0x18, ...orders),
+      this.esc(CMD_RMD, 0x00, 0x00)
     );
+  }
+
+  /** Post-signon message screen: WTD opening with SOH len 16 (live shape). */
+  sendJobStarted(user) {
+    const msg = `Job 014572/${user.padEnd(10).slice(0, 10)}/${this.dev} started on 010/2026.`;
+    const orders = [
+      [ORDER_SOH, 0x10, 0x30, 0x12, 0x2d, 0x19, 0x68, 0x24,
+       0x0f, 0x0f, 0x1f, 0x4f, 0x5f, 0x7f, 0x26, 0x1e, 0x3d, 0x6d],
+      this.text(3, 1, 0x20, msg),
+      this.text(5, 1, null, 'Press Enter to continue.'),
+      [ORDER_SBA, 23, 1, 0x20, ...e('F3=Exit')]
+    ].flat();
+    this.record(
+      this.esc(CMD_CLEAR),
+      this.esc(CMD_WTD, 0x00, 0x20, ...orders)
+    );
+    this.record(this.esc(CMD_RMD, 0x00, 0x00));
   }
 
   sendError(msg) {
     this.record([
       0x04, CMD_ERRCODE,
       ORDER_SBA, 24, 1, 0x28, ...e(msg),
-      0x04, CMD_RIF, 0x00, 0x00
+      0x04, CMD_RMD, 0x00, 0x00
     ]);
   }
 
-  // ---- inbound telnet/record framing (same FSM as mock-host) ----
+  // ---- inbound telnet/record framing ----
   ingest(chunk) {
     for (const raw of chunk) {
       const b = raw & 0xff;
@@ -206,40 +208,42 @@ class Session {
   maybeStart() {
     if (this.started || !this.gotTtype) return;
     this.started = true;
-    console.log('[real-signon] starting, sending QDSIGNON');
+    console.log('[real-signon] starting, sending QDSIGNON (live dialect)');
     setTimeout(() => this.sendSignon(), 30);
   }
 
   onRecord(rec) {
     if (rec.length < 10) return;
-    const flags = rec[7];
     let p = 10;
     if (p + 3 > rec.length) return;
     const row = rec[p], col = rec[p + 1], aid = rec[p + 2];
     p += 3;
-    const fields = [];
-    // RIF response: every input field, full 10-char width, in order.
-    for (let i = 0; i < 5; i++) {
+    // RMD response: SBA-prefixed runs; assign by proximity to field rows.
+    while (p + 3 <= rec.length && rec[p] === ORDER_SBA) {
+      const r = rec[p + 1], c = rec[p + 2];
+      p += 3;
       let s = '';
-      for (let k = 0; k < 10 && p < rec.length; k++, p++) s += E2A[rec[p]] ?? ' ';
-      fields.push(s.trimEnd());
+      while (p < rec.length && rec[p] !== ORDER_SBA) {
+        s += E2A[rec[p]] ?? ' ';
+        p++;
+      }
+      const f = FIELDS.find((x) => x.row === r);
+      if (f) this.values[f.label] = s.replace(/ +$/, '');
     }
-    console.log(`[real-signon] AID=0x${aid.toString(16)} cursor=${row},${col} fields=${JSON.stringify(fields)}`);
+    console.log(`[real-signon] AID=0x${aid.toString(16)} cursor=${row},${col} values=${JSON.stringify(this.values)}`);
     if (aid === 0xf1) {
-      const [user, pw, proc, menu, lib] = fields;
-      // Exact positional mapping: any shifted/truncated/skipped run fails.
-      if (user === 'TOMUSER' && pw === 'SECRETPW' && proc === '' && menu === '' && lib === 'MYLIB') {
-        this.sendError('CPF1120 User ID or password incorrect (mock).');
-      } else if (!user) {
+      const user = this.values['User'] ?? '';
+      const pw = this.values['Password'] ?? '';
+      if (user && pw) {
+        this.sendJobStarted(user);
+      } else {
         this.failures++;
         if (this.failures >= 2) {
-          console.log('[real-signon] host would CPF1296 + drop; ending');
+          console.log('[real-signon] host would drop; ending');
           this.sock.end();
           return;
         }
         this.sendError('CPF1296 Sign-on information required.');
-      } else {
-        this.sendError(`MISMATCH ${JSON.stringify(fields)}`);
       }
     }
   }

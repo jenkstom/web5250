@@ -1,14 +1,13 @@
-// Regression test: drives the built gateway against scripts/real-signon-host.mjs,
-// which speaks the SF-order dialect real IBM i hosts use (no fabricated FFW
-// bytes, WCC0 lock bits, IC + READ INPUT FIELDS in one chained record).
+// Regression test against scripts/real-signon-host.mjs, which replays the
+// byte shapes captured from a live IBM i QDSIGNON:
+//   SOH(7) header, no IC order, hidden User (0x26) / Password (0x27)
+//   fields, bypass option fields (FFW1=0x60), RMD (0x52) invite, and a
+//   post-signon message screen opening with SOH len 16.
 //
-// Guards the exact symptoms seen against a live IBM i QDSIGNON:
-//   - screen renders, cursor sits at first input cell (7,53)
-//   - fields are enterable: typing lands, Tab advances to Password
-//   - password stays non-display in the browser
-//   - Enter transmits BOTH fields (host sees user+password, not CPF1296)
-//   - 'screen' push carries the field layout for underline rendering
-// Usage: npm run build && node scripts/real-signon-test.mjs
+// Guards the live bugs: cursor homing into Password instead of User,
+// SOH-length rejection desyncing message screens, and RMD field data
+// landing in the wrong host-side field.
+// Usage: npm run build && npm run test:real
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -109,35 +108,30 @@ async function main() {
   const key = (k, ch) => ws.send(JSON.stringify({ t: 'key', k, ch }));
   const type = (s) => { for (const ch of s) key('char', ch); };
 
-  console.log('\n1. QDSIGNON renders with enterable fields');
-  check('screen rendered', await waitFor(term, (t) => t.text().includes('SIGN ON') && t.text().includes('Password') && t.text().includes('Current library'), 8000, term.text().slice(0, 200)));
-  check('cursor at User field (7,53)', term.cursor[0] === 7 && term.cursor[1] === 53, JSON.stringify(term.cursor));
+  console.log('\n1. QDSIGNON renders (live dialect: SOH header, no IC order)');
+  check('screen rendered', await waitFor(term, (t) => t.text().includes('SIGN ON') && t.text().includes('Password'), 8000, term.text().slice(0, 200)));
   check('keyboard unlocked', await waitFor(term, (t) => t.oia.lock === 'none', 5000, JSON.stringify(term.oia)));
-  check('field layout pushed for underlines', Array.isArray(term.fields) && term.fields.length === 5, JSON.stringify(term.fields));
-  check('user field extent covers 10 data cells', term.fields?.[0]?.[1] === 10, JSON.stringify(term.fields?.[0]));
+  check('cursor homes to USER field (6,53), not Password', term.cursor[0] === 6 && term.cursor[1] === 53, JSON.stringify(term.cursor));
+  check('only enterable fields underlined (user+password, bypass skipped)', Array.isArray(term.fields) && term.fields.length === 2, JSON.stringify(term.fields));
 
-  console.log('\n2. Typing lands in the User field');
+  console.log('\n2. Username types into the User field (hidden per host attr 0x26)');
   type('TOMUSER');
-  check('typed text visible', await waitFor(term, (t) => t.row(7).includes('TOMUSER'), 3000, `"${term.row(7)}"`));
+  await sleep(400);
+  check('username accepted (cursor advanced inside field)', term.cursor[0] === 6 && term.cursor[1] >= 54, JSON.stringify(term.cursor));
+  check('username hidden in browser (non-display attr)', !term.text().includes('TOMUSER'));
 
-  console.log('\n3. Tab advances into Password (bypass-poison regression)');
+  console.log('\n3. Tab reaches Password; bypass fields skipped');
   key('tab');
-  check('cursor moved to Password (8,53)', await waitFor(term, (t) => t.cursor[0] === 8 && t.cursor[1] === 53, 3000, JSON.stringify(term.cursor)));
+  check('cursor moved to Password (7,53)', await waitFor(term, (t) => t.cursor[0] === 7 && t.cursor[1] === 53, 3000, JSON.stringify(term.cursor)));
   type('SECRETPW');
   await sleep(300);
-  check('password hidden in browser', !term.text().includes('SECRETPW') && !term.rawLog.some((m) => m.includes('SECRETPW')));
+  check('password never crosses the WebSocket', !term.rawLog.some((m) => m.includes('SECRETPW')));
 
-  console.log('\n4. Tab through empty fields into Current library (run-shift regression)');
-  key('tab'); key('tab'); key('tab');
-  check('cursor moved to Current library (14,53)', await waitFor(term, (t) => t.cursor[0] === 14 && t.cursor[1] === 53, 3000, JSON.stringify(term.cursor)));
-  type('MYLIB');
-  await sleep(300);
-
-  console.log('\n5. Enter transmits all five fields positionally');
+  console.log('\n4. Enter transmits RMD runs to the correct field addresses');
   key('enter');
-  const sawReply = await waitFor(term, (t) => t.row(24).includes('CPF1120'), 5000, `"${term.row(24)}"`);
-  check('host accepted exact field data (CPF1120, not shifted/CPF1296)', sawReply, `"${term.row(24)}"`);
-  check('session still alive after signon attempt', await waitFor(term, () => true, 100) && ws.readyState === WebSocket.OPEN);
+  const sawJob = await waitFor(term, (t) => t.text().includes('started on 010/2026'), 6000, term.text().slice(0, 300));
+  check('signon accepted - SOH-16 message screen rendered', sawJob, term.text().slice(0, 300));
+  check('session alive after signon', ws.readyState === WebSocket.OPEN);
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   ws.close();

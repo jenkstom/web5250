@@ -28,7 +28,7 @@ function record(...streams) {
   const commands = streams.flat();
   const body = [0x12, 0xa0, 0x00, 0x00, 0x04, 0x00, 0x00, 0x03, ...commands];
   // 2-byte length prefix counts every byte after itself (before IAC doubling).
-  return Buffer.from([(body.length >> 8) & 0xff, body.length & 0xff, ...body]);
+  return Buffer.from([((body.length + 2) >> 8) & 0xff, (body.length + 2) & 0xff, ...body]); // RFC 1205: length counts itself
 }
 const esc = (cmd, ...rest) => [0x04, cmd, ...rest];
 const SBA = 0x11, SF = 0x1d, IC = 0x13;

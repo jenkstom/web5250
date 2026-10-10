@@ -84,7 +84,7 @@ class HostSession {
   record(opcode, ...streams) {
     const commands = streams.flat();
     const body = [0x12, 0xa0, 0x00, 0x00, 0x04, 0x00, 0x00, opcode, ...commands];
-    const out = [(body.length >> 8) & 0xff, body.length & 0xff];
+    const out = [((body.length + 2) >> 8) & 0xff, (body.length + 2) & 0xff]; // RFC 1205: length counts itself
     for (const b of body) {
       if (b === IAC) out.push(IAC);
       out.push(b);

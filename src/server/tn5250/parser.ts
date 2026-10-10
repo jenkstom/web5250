@@ -61,14 +61,16 @@ export class Parser5250 {
     this.cursorChanged = false;
     if (record.length < 12) return; // too small to be a 5250 record
     const declared = (record[0] << 8) | record[1];
-    if (declared + 2 !== record.length) {
-      this.warn(`record length mismatch: declared ${declared}, got ${record.length - 2}`);
+    // RFC 1205: the length word counts itself and the record still carries
+    // it, so declared must equal the total length.
+    if (declared !== record.length) {
+      this.warn(`record length mismatch: declared ${declared}, got ${record.length}`);
     }
     if (record[2] !== 0x12 || record[3] !== 0xa0) {
       this.warn(`unexpected record header ${record[2]?.toString(16)} ${record[3]?.toString(16)}`);
     }
     this.buf = record;
-    this.end = Math.min(record.length, declared + 2);
+    this.end = Math.min(record.length, declared);
     this.pos = 6 + (record[6] ?? 4); // usually 10, per Stream5250
 
     try {
@@ -402,10 +404,16 @@ export class Parser5250 {
     this.screen.addField(attr, length, ffw0, ffw1, fcw1, fcw2);
   }
 
-  /** SOH order - S/36 EE support; carries error line + PF data-included bits. */
+  /**
+   * SOH order - S/36 EE support; carries error line + PF data-included bits.
+   * Live hosts send length words beyond the classic 1..7 (16 observed on
+   * IBM i message screens); the length counts the bytes that follow it.
+   * Bytes beyond the seventh are reserved and consumed verbatim - failing
+   * to consume them desyncs the whole write.
+   */
   private processStartOfHeader(): void {
     const len = this.next();
-    if (len <= 0 || len > 7) {
+    if (len <= 0 || len > 32) {
       this.negativeResponse(C.NR_REQUEST_ERROR, 0x05, 0x01, 0x2b);
       return;
     }
@@ -416,17 +424,16 @@ export class Parser5250 {
     if (len <= 3) return;
     this.screen.errorLineRow = this.next();
     const d = this.screen.dataIncluded;
-    if (len >= 5) {
+    for (let i = 5; i <= len; i++) {
+      if (!this.hasNext()) return;
       const b = this.next();
-      for (let i = 0; i < 8; i++) d[16 + i] = (b & (0x80 >> i)) !== 0;
-    }
-    if (len >= 6) {
-      const b = this.next();
-      for (let i = 0; i < 8; i++) d[8 + i] = (b & (0x80 >> i)) !== 0;
-    }
-    if (len >= 7) {
-      const b = this.next();
-      for (let i = 0; i < 8; i++) d[i] = (b & (0x80 >> i)) !== 0;
+      if (i === 5) {
+        for (let k = 0; k < 8; k++) d[16 + k] = (b & (0x80 >> k)) !== 0;
+      } else if (i === 6) {
+        for (let k = 0; k < 8; k++) d[8 + k] = (b & (0x80 >> k)) !== 0;
+      } else if (i === 7) {
+        for (let k = 0; k < 8; k++) d[k] = (b & (0x80 >> k)) !== 0;
+      }
     }
   }
 
