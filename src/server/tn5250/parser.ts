@@ -321,15 +321,27 @@ export class Parser5250 {
     this.processWcc1(control1);
   }
 
-  /** SF order - mirrors tn5250j's quirky-but-proven FCW scan. */
+  /**
+   * SF order. Three legal stream shapes (5494 Functions Reference;
+   * mirrors tn5250j + lib5250 interop against real hosts):
+   *
+   *   1D <FFW1> <FFW2> [FCW pairs...] <attr> <lenHi> <lenLo>   FFW1 bit 0x40 set
+   *   1D <FFW1> <FFW2> [FCW pairs...] <attr> <lenHi> <lenLo>   FFW1 < 0x20 (lib5250 form)
+   *   1D <attr> <lenHi> <lenLo>                                 no format words
+   *
+   * The length word counts DATA cells only; the attribute byte occupies its
+   * own cell ahead of them. Never confuse an attribute byte (0x20-0x3F) with
+   * FFW1: every attribute byte carries bit 0x20 (bypass), 0x08 (MDT) etc.,
+   * which silently poisons the field table.
+   */
   private processStartOfField(): void {
     let fcw1 = 0;
     let fcw2 = 0;
     let ffw1 = 0;
-    const ffw0 = this.next();
+    let ffw0 = this.next();
 
     let attr: number;
-    if ((ffw0 & C.FFW1_EXTEND) === C.FFW1_EXTEND) {
+    if ((ffw0 & C.FFW1_EXTEND) === C.FFW1_EXTEND || !C.isAttributeByte(ffw0)) {
       ffw1 = this.next();
       fcw1 = this.next();
       if (fcw1 === C.FCW_CONTINUED) {
@@ -352,7 +364,9 @@ export class Parser5250 {
         fcw1 = 0;
       }
     } else {
+      // No field format words: the first byte is the attribute itself.
       attr = ffw0;
+      ffw0 = 0;
     }
     const length = (this.next() << 8) | this.next();
     this.screen.addField(attr, length, ffw0, ffw1, fcw1, fcw2);

@@ -10,7 +10,7 @@ export interface Field {
   attr: number;
   startPos: number; // cell holding the attribute byte
   dataStart: number;
-  length: number; // total cells including the attribute cell
+  length: number; // DATA cells only (the attribute cell is not counted)
   endPos: number; // last data cell
   ffw0: number;
   ffw1: number;
@@ -195,30 +195,55 @@ export class Screen5250 {
     }
   }
 
-  /** START FIELD order. Length includes the attribute cell. */
+  /**
+   * START FIELD order. `length` counts DATA cells only (5494 Functions
+   * Reference; tn5250j/lib5250 agree) - the attribute byte occupies its own
+   * cell at startPos ahead of them.
+   */
   addField(attr: number, length: number, ffw0: number, ffw1: number, fcw1: number, fcw2: number): void {
     const startPos = this.writePos;
-    const endPos = startPos + length - 1;
-    const field: Field = {
-      attr,
-      startPos,
-      dataStart: startPos + 1,
-      length,
-      endPos,
-      ffw0,
-      ffw1,
-      fcw1,
-      fcw2,
-      mdt: (ffw0 & C.FFW1_MDT) === C.FFW1_MDT,
-      fieldId: fieldIdSeq++,
-      isBypass: (ffw0 & C.FFW1_BYPASS) === C.FFW1_BYPASS,
-      shift: ffw0 & C.FFW1_SHIFT_MASK,
-      autoEnter: (ffw1 & C.FFW2_AUTO_ENTER) === C.FFW2_AUTO_ENTER,
-      toUpper: (ffw1 & C.FFW2_TO_UPPER) === C.FFW2_TO_UPPER,
-      numeric: (ffw0 & C.FFW1_SHIFT_MASK) === 3,
-      signedNumeric: (ffw0 & C.FFW1_SHIFT_MASK) === 7
-    };
-    this.fields.push(field);
+    const endPos = Math.min(startPos + length, this.size - 1);
+    // A repeated SF at the same position redefines the existing field
+    // (tn5250j existsAtPos) instead of stacking a stale duplicate.
+    const existing = this.fields.find((f) => f.startPos === startPos);
+    if (existing) {
+      existing.attr = attr;
+      existing.length = length;
+      existing.endPos = endPos;
+      existing.ffw0 = ffw0;
+      existing.ffw1 = ffw1;
+      existing.fcw1 = fcw1;
+      existing.fcw2 = fcw2;
+      existing.mdt = (ffw0 & C.FFW1_MDT) === C.FFW1_MDT;
+      existing.isBypass = (ffw0 & C.FFW1_BYPASS) === C.FFW1_BYPASS;
+      existing.shift = ffw0 & C.FFW1_SHIFT_MASK;
+      existing.autoEnter = (ffw1 & C.FFW2_AUTO_ENTER) === C.FFW2_AUTO_ENTER;
+      existing.toUpper = (ffw1 & C.FFW2_TO_UPPER) === C.FFW2_TO_UPPER;
+      existing.numeric = (ffw0 & C.FFW1_SHIFT_MASK) === 3;
+      existing.signedNumeric = (ffw0 & C.FFW1_SHIFT_MASK) === 7;
+    }
+    const field: Field =
+      existing ??
+      {
+        attr,
+        startPos,
+        dataStart: startPos + 1,
+        length,
+        endPos,
+        ffw0,
+        ffw1,
+        fcw1,
+        fcw2,
+        mdt: (ffw0 & C.FFW1_MDT) === C.FFW1_MDT,
+        fieldId: fieldIdSeq++,
+        isBypass: (ffw0 & C.FFW1_BYPASS) === C.FFW1_BYPASS,
+        shift: ffw0 & C.FFW1_SHIFT_MASK,
+        autoEnter: (ffw1 & C.FFW2_AUTO_ENTER) === C.FFW2_AUTO_ENTER,
+        toUpper: (ffw1 & C.FFW2_TO_UPPER) === C.FFW2_TO_UPPER,
+        numeric: (ffw0 & C.FFW1_SHIFT_MASK) === 3,
+        signedNumeric: (ffw0 & C.FFW1_SHIFT_MASK) === 7
+      };
+    if (!existing) this.fields.push(field);
     if (field.mdt) this.masterMDT = true;
     this.writeAttribute(attr);
     this.structureDirty = true;
@@ -586,7 +611,9 @@ export class Screen5250 {
 
         if (text.length > 0 || isMdtRead) {
           if (isMdtRead) {
-            out.push(C.ORDER_SBA, this.rowOf(f.startPos) & 0xff, this.colOf(f.startPos) & 0xff);
+            // SBA addresses the first DATA cell (tn5250j readFormatTable,
+            // lib5250 field_data) - not the attribute cell.
+            out.push(C.ORDER_SBA, this.rowOf(f.dataStart) & 0xff, this.colOf(f.dataStart) & 0xff);
           }
           for (let i = 0; i < text.length; i++) {
             const ch = text[i];

@@ -109,6 +109,7 @@ function handleMessage(data: string): void {
     case 'screen': {
       term.resizeGrid(msg.rows as number, msg.cols as number);
       term.applyCells(msg.cells as (number | string)[][]);
+      if (Array.isArray(msg.fields)) term.setFields(msg.fields as number[][]);
       const cur = msg.cursor as number[];
       term.setCursor(cur[0], cur[1]);
       break;

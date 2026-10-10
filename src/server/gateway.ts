@@ -194,7 +194,12 @@ export class GatewaySession {
         rows: s.rows,
         cols: s.cols,
         cursor: [s.rowOf(s.cursorPos), s.colOf(s.cursorPos)],
-        cells: this.encodeCells(0, s.size)
+        cells: this.encodeCells(0, s.size),
+        // Input-field layout so browsers can underline enterable areas.
+        // [dataStart, dataCellCount, attr]; bypass fields are not enterable.
+        fields: s.fields
+          .filter((f) => !f.isBypass)
+          .map((f) => [f.dataStart, f.length, f.attr])
       });
       this.sendOia(true);
       this.beeped = false;

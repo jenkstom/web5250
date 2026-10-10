@@ -110,12 +110,11 @@ class HostSession {
   }
 
   /**
-   * @param len number of DATA positions (the SF length word counts the
-   *            attribute cell too, so we send len + 1).
+   * @param len number of DATA positions (the SF length word counts data
+   *            cells only; the attribute byte occupies its own cell).
    */
   field(row, col, attr, len) {
-    const total = len + 1;
-    return [ORDER_SBA, row, col, ORDER_SF, 0x40, 0x00, attr, (total >> 8) & 0xff, total & 0xff];
+    return [ORDER_SBA, row, col, ORDER_SF, 0x40, 0x00, attr, (len >> 8) & 0xff, len & 0xff];
   }
 
   screen(definitions, cursor, readCmd = CMD_RIF) {
@@ -375,9 +374,8 @@ class HostSession {
     if (this.lastReadCmd === CMD_RIF) {
       // RIF: every input field, full width (attr cell excluded), in order.
       for (const f of this.currentFields) {
-        const dataLen = f.len - 1;
         let s = '';
-        for (let i = 0; i < dataLen && p < rec.length; i++, p++) s += E2A[rec[p]] ?? ' ';
+        for (let i = 0; i < f.len && p < rec.length; i++, p++) s += E2A[rec[p]] ?? ' ';
         this.fields.push(s.trim());
       }
     } else {

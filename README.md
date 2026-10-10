@@ -267,6 +267,8 @@ Build + verify (Node ≥ 22.13 for `node:sqlite`):
 ```bash
 npm run build           # vite (SPA) + esbuild (server, mock) -> dist/
 npm run smoke           # end-to-end: mock host + gateway + WS client
+npm run test:real       # regression: real-IBM-i SF-order dialect (no FFW bytes,
+                        #   WCC0 lock bits, attr-only Start-of-Field orders)
 node scripts/mock-host.mjs &   # visual test drives real Chromium
 PORT=8080 IBM_I_HOST=127.0.0.1 IBM_I_PORT=8023 ADMIN_PIN=1234 npm start &
 npm run visual          # screenshots land in artifacts/
@@ -276,6 +278,12 @@ The smoke test covers: sign-on rendering, cursor placement, X II error +
 Reset, typing, Tab, Field Exit, password non-display over the wire, Enter →
 MAIN menu, F1/F3, option entry and sign-off — plus the menu API (list, PIN
 auth, system CRUD, `?system=` sessions, rate limiting).
+
+`test:real` replays a QDSIGNON-shaped stream the way a live IBM i emits it
+(field length counts data cells only, attribute-only SF orders, keyboard-lock
+WCC bits) and guards against the class of bugs where fields parse but turn
+out unenterable (bypass-poisoned) or the read response lands at the wrong
+buffer address (CPF1296 on valid input).
 
 ## How it works
 

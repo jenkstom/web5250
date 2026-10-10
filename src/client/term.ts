@@ -41,6 +41,8 @@ export class Terminal {
   private ctx: CanvasRenderingContext2D;
   private chars: string[] = [];
   private attrs: number[] = [];
+  /** Input fields as [dataStartPos, dataCellCount, attr] - underlined. */
+  private fields: number[][] = [];
   rows = 24;
   cols = 80;
   cursor: [number, number] = [1, 1]; // 1-based
@@ -63,12 +65,19 @@ export class Terminal {
     const n = rows * cols;
     this.chars = new Array(n).fill(' ');
     this.attrs = new Array(n).fill(0x20);
+    this.fields = [];
     this.measure();
     this.render();
   }
 
+  setFields(fields: number[][]): void {
+    this.fields = fields;
+    this.queueRender();
+  }
+
   private measure(): void {
     this.ctx.font = `${this.fontSize}px "IBM Plex Mono", monospace`;
+    this.ctx.textAlign = 'center';
     const m = this.ctx.measureText('M');
     this.cellW = Math.ceil(m.width);
     this.cellH = Math.round(this.fontSize * 1.25);
@@ -143,14 +152,30 @@ export class Terminal {
     ctx.fillStyle = PALETTE.black;
     ctx.fillRect(0, 0, cellW * cols, cellH * rows);
     ctx.font = `${fontSize}px "IBM Plex Mono", monospace`;
+    ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
     const [curR, curC] = this.cursor;
     const cursorPos = (curR - 1) * cols + (curC - 1);
 
+    // Input-field underlines (classic 5250 look). Non-display (password)
+    // fields are underlined too; the cursor cell is skipped - the cursor
+    // block takes its place.
+    const underlineH = Math.max(2, Math.round(cellH / 9));
+    for (const [start, len, attr] of this.fields) {
+      const fg = attrStyle(attr).fg;
+      for (let i = 0; i < len; i++) {
+        const pos = start + i;
+        if (pos >= rows * cols || pos === cursorPos) continue;
+        const r = Math.floor(pos / cols);
+        const c = pos % cols;
+        ctx.fillStyle = fg;
+        ctx.fillRect(c * cellW, (r + 1) * cellH - underlineH, cellW, underlineH);
+      }
+    }
+
     for (let pos = 0; pos < rows * cols; pos++) {
       const attr = this.attrs[pos];
-      if ((attr & 0x04) === 0x04) continue; // non-display: leave blank
       const r = Math.floor(pos / cols);
       const c = pos % cols;
       const x = c * cellW;
@@ -158,6 +183,8 @@ export class Terminal {
       const { fg, bg } = attrStyle(attr);
       const ch = this.chars[pos] ?? ' ';
 
+      // The cursor is drawn regardless of the non-display attribute: it
+      // reveals only the position, never the hidden content.
       if (pos === cursorPos) {
         // cursor cell: filled block with contrasting glyph
         ctx.fillStyle = this.focused ? fg : PALETTE.green;
@@ -168,6 +195,7 @@ export class Terminal {
         ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
         continue;
       }
+      if ((attr & 0x04) === 0x04) continue; // non-display: leave blank
       if (bg !== PALETTE.black) {
         ctx.fillStyle = bg;
         ctx.fillRect(x, y, cellW, cellH);
