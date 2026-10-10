@@ -140,6 +140,8 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
 | `WEB5250_DB` | SQLite file for the system catalog (compose mounts the `web5250-data` volume at `/data`) | `/data/web5250.db` in the container, `data/web5250.db` locally |
 | `IBM_I_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for host TLS (IBM i certs are usually self-signed) | `false` |
+| `WS_PING_INTERVAL_MS` | Browser-liveness ping cadence; a vanished front-end is terminated (freeing its iSeries session) after `WS_PING_MAX_MISSES` missed pongs — grace ≈ interval × misses | `30000` |
+| `WS_PING_MAX_MISSES` | Consecutive missed pongs tolerated before a dead browser session is torn down | `2` |
 | `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
 
 Each browser session gets its own 5250 device. Device names are generated as

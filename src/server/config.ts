@@ -17,6 +17,10 @@ export interface Config {
   adminPin: string | null;
   /** SQLite file holding the connection-menu systems (mount as a volume). */
   dbPath: string;
+  /** Browser-liveness ping cadence (ms) for reaping dead front-ends. */
+  wsPingIntervalMs: number;
+  /** Missed pongs tolerated before a dead browser's host session is torn down. */
+  wsPingMaxMisses: number;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -60,7 +64,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     devPrefix: devPrefix === undefined || devPrefix === '' ? null : devPrefix.toUpperCase(),
     allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false),
     adminPin,
-    dbPath: env.WEB5250_DB ?? 'data/web5250.db'
+    dbPath: env.WEB5250_DB ?? 'data/web5250.db',
+    wsPingIntervalMs: int(env.WS_PING_INTERVAL_MS, 30000),
+    wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 2)
   };
 }
 

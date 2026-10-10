@@ -78,7 +78,15 @@ export class GatewaySession {
       deviceName: this.devName,
       codePage
     });
-    this.client.onStatus = (s, detail) => this.sendStatus(s, detail);
+    // Terminal host state (connection failed, host dropped us): tear the
+    // session down right away - release the display name and close the
+    // browser socket after the status message is queued, so the client
+    // learns why before the close event. Without this, a dead host session
+    // lingers until page unload and leaks its name (TOM -> TOM1 -> ...).
+    this.client.onStatus = (s, detail) => {
+      this.sendStatus(s, detail);
+      if (s === 'closed' || s === 'error') this.destroy();
+    };
     this.client.onScreenChange = () => this.scheduleFlush();
   }
 
@@ -280,5 +288,9 @@ export class GatewaySession {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     devices.release(this.devName);
     this.client.destroy();
+    // Server-initiated teardown (host death): close the browser socket too,
+    // so no controller-side connection is left dangling. No-op when the
+    // browser or the shutdown path closed it first.
+    if (this.ws.readyState === 1) this.ws.close(1000, 'session ended');
   }
 }

@@ -105,6 +105,7 @@ async function main() {
         IBM_I_TERM_TYPE: 'IBM-3477-FC',
         IBM_I_CODEPAGE: 'cp037',
         ADMIN_PIN,
+        ALLOW_CUSTOM_HOST: '1', // lets section 10 aim a session at a dead port
         WEB5250_DB: join(mkdtempSync(join(tmpdir(), 'web5250-smoke-')), 'menu.db')
       }
     })
@@ -311,6 +312,48 @@ async function main() {
     lastStatus = r.status;
   }
   check('6th bad PIN is locked out (429)', lastStatus === 429, `status=${lastStatus}`);
+
+  // ------------------------------------- 10. host failure reaps the session
+  console.log('\n10. Host failure tears down the session');
+  const openSession = async (url) => {
+    const sock = new WebSocket(url);
+    const msgs = [];
+    let hello = null;
+    sock.addEventListener('message', (ev) => {
+      const msg = JSON.parse(String(ev.data));
+      if (msg.t === 'hello') hello = msg;
+      msgs.push(msg);
+    });
+    const closed = new Promise((resolve) => sock.addEventListener('close', (ev) => resolve(ev)));
+    await new Promise((resolve, reject) => {
+      sock.addEventListener('open', resolve);
+      sock.addEventListener('error', reject);
+    });
+    for (let i = 0; i < 50 && !hello; i++) await sleep(60);
+    return { sock, msgs, hello, closed };
+  };
+  const sawStatus = (s, name) => s.msgs.some((m) => m.t === 'status' && m.status === name);
+
+  // (a) connect failure: the gateway must release the display name and close
+  //     the browser socket instead of leaving a dead session behind.
+  const dead = await openSession(`ws://127.0.0.1:${HTTP_PORT}/ws?host=127.0.0.1&port=1&devname=DEADDEV`);
+  check('connect failure reports status error', await waitFor(dead, () => sawStatus(dead, 'error'), 8000), JSON.stringify(dead.msgs.filter((m) => m.t === 'status')));
+  const deadClose = await Promise.race([dead.closed, sleep(3000).then(() => null)]);
+  check('gateway closes the browser socket after the error', deadClose !== null);
+  const dead2 = await openSession(`ws://127.0.0.1:${HTTP_PORT}/ws?host=127.0.0.1&port=1&devname=DEADDEV`);
+  check('device name released after connect failure (no suffix creep)', dead2.hello?.devName === 'DEADDEV', JSON.stringify(dead2.hello?.devName));
+  dead2.sock.close();
+
+  // (b) host dies mid-session: same teardown, observable end to end.
+  const live = await openSession(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}&devname=DYINGDEV`);
+  check('session is live before the host dies', await waitFor(live, () => live.msgs.some((m) => m.t === 'screen'), 8000));
+  procs[0].kill(); // the mock host: its client sockets close underneath us
+  check('session reports closed when the host dies', await waitFor(live, () => sawStatus(live, 'closed'), 8000));
+  const liveClose = await Promise.race([live.closed, sleep(3000).then(() => null)]);
+  check('browser socket closed after host death', liveClose !== null);
+  const revived = await openSession(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}&devname=DYINGDEV`);
+  check('device name reusable after mid-session host death', revived.hello?.devName === 'DYINGDEV', JSON.stringify(revived.hello?.devName));
+  revived.sock.close();
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   cleanup();

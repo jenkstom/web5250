@@ -165,15 +165,18 @@ function sanitizeDevName(v: string | null): string | undefined {
   return s || undefined;
 }
 
-// Heartbeat: ping every 30s; drop a browser only after two consecutive
-// missed pongs (a single delayed control frame through a proxy must not
-// kill a live session).
+// Heartbeat: pings at WS_PING_INTERVAL_MS; drop a browser only after
+// WS_PING_MAX_MISSES consecutive missed pongs (a single delayed control
+// frame through a proxy must not kill a live session). Terminating a dead
+// browser tears down its host connection and releases the display name, so
+// the grace window - interval x misses - bounds how long an iSeries session
+// can outlive its front-end.
 const pingInterval = setInterval(() => {
   for (const ws of wss.clients) {
     const w = ws as unknown as { alive?: boolean; misses?: number };
     if (w.alive === false) {
       w.misses = (w.misses ?? 0) + 1;
-      if (w.misses >= 2) {
+      if (w.misses >= cfg.wsPingMaxMisses) {
         ws.terminate();
         continue;
       }
@@ -183,7 +186,7 @@ const pingInterval = setInterval(() => {
     w.alive = false;
     ws.ping();
   }
-}, 30000);
+}, cfg.wsPingIntervalMs);
 wss.on('connection', (ws) => {
   const w = ws as unknown as { alive?: boolean };
   w.alive = true;

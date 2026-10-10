@@ -42,6 +42,10 @@ function wsUrl(): string {
 }
 
 let ws: WebSocket | null = null;
+// Set when a terminal status message (host error/closed) already showed the
+// end overlay; the follow-up close event must not replace it with the
+// generic message.
+let sessionEndedByHost = false;
 
 function sendKey(k: string, ch?: string): void {
   if (k === 'char' && ch !== undefined) {
@@ -56,6 +60,14 @@ function send(msg: Record<string, unknown>): void {
 }
 
 function connect(): void {
+  // A reconnect must never orphan the previous socket server-side (e.g. the
+  // dead session left open after a host error): detach and close it first.
+  const old = ws;
+  ws = null;
+  old?.close();
+  endingSession = false;
+  sessionEndedByHost = false;
+
   const sock = new WebSocket(wsUrl());
   ws = sock;
 
@@ -77,6 +89,10 @@ function connect(): void {
     ws = null;
     if (endingSession) {
       endingSession = false;
+      return;
+    }
+    if (sessionEndedByHost) {
+      sessionEndedByHost = false;
       return;
     }
     setConnState('closed');
@@ -117,6 +133,7 @@ function handleMessage(data: string): void {
       if (status === 'connected') {
         hideOverlay();
       } else if (status === 'error' || status === 'closed') {
+        sessionEndedByHost = true;
         showOverlay(
           status === 'error' ? 'Connection failed' : 'Session ended',
           typeof msg.detail === 'string' ? msg.detail : '',
