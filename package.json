@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20.11"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "gen:ebcdic": "node scripts/gen-ebcdic.mjs",

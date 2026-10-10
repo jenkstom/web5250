@@ -13,6 +13,7 @@
         <span id="conn-state" class="conn-state" title="Connection state"></span>
         <span class="spacer"></span>
         <span id="dev-info" title="Session info"></span>
+        <button id="btn-systems" class="ghost hidden" type="button" title="End the session and pick another system">Systems</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
         <button id="btn-keypad" class="ghost" type="button" title="Toggle on-screen keypad">Pad</button>
       </header>
@@ -45,7 +46,92 @@
         <div id="overlay-card">
           <h2 id="overlay-title">Connecting…</h2>
           <p id="overlay-detail"></p>
-          <button id="overlay-action" type="button">Reconnect</button>
+          <div id="overlay-actions">
+            <button id="overlay-menu" type="button" class="primary">Return to systems</button>
+            <button id="overlay-action" type="button">Reconnect</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="menu" class="hidden">
+        <div id="menu-frame" role="dialog" aria-label="Select a system">
+          <div id="menu-title">SYSTEM SELECTION</div>
+          <p id="menu-sub">Select the system for your 5250 session</p>
+          <ul id="menu-list"></ul>
+          <p id="menu-empty" class="hidden"></p>
+          <p id="menu-error" class="hidden"></p>
+          <div id="menu-cmd">
+            <label for="menu-option">Option ==&gt;</label>
+            <input id="menu-option" autocomplete="off" autocapitalize="off" spellcheck="false"
+                   inputmode="numeric" maxlength="2" aria-label="System number" />
+            <button id="menu-go" type="button" class="primary">Connect</button>
+          </div>
+          <div id="menu-foot">
+            <span>↑↓&nbsp;Select</span>
+            <span>Enter&nbsp;Connect</span>
+            <span class="spacer"></span>
+            <button id="menu-admin-btn" type="button" class="ghost" title="Edit the system list">Admin</button>
+          </div>
+        </div>
+
+        <div id="admin-modal" class="hidden">
+          <div id="admin-card">
+            <div class="panel-title">SYSTEM ADMINISTRATION</div>
+
+            <div id="admin-pin" class="hidden">
+              <p class="admin-lead">Enter the administrator PIN to edit the system list.</p>
+              <p id="admin-pin-error" class="admin-error" role="alert"></p>
+              <div class="admin-fields">
+                <label for="admin-pin-input">PIN</label>
+                <input id="admin-pin-input" type="password" autocomplete="off" />
+              </div>
+              <div class="admin-actions">
+                <button id="admin-pin-ok" type="button" class="primary">Sign on</button>
+                <button id="admin-cancel" type="button" class="ghost">Cancel</button>
+              </div>
+              <p id="admin-pin-note" class="admin-note hidden">
+                Administration is disabled — set <code>ADMIN_PIN</code> in the container environment.
+              </p>
+            </div>
+
+            <div id="admin-editor" class="hidden">
+              <div class="admin-toolbar">
+                <span id="admin-count"></span>
+                <span class="spacer"></span>
+                <button id="admin-logout" type="button" class="ghost">Sign off</button>
+              </div>
+              <ul id="admin-list"></ul>
+              <form id="admin-form" class="hidden" autocomplete="off">
+                <div class="admin-fields">
+                  <label for="f-name">Name *</label>
+                  <input id="f-name" required maxlength="40" placeholder="PROD" />
+                  <label for="f-desc">Description</label>
+                  <input id="f-desc" maxlength="120" placeholder="IBM i production LPAR" />
+                  <label for="f-host">Host *</label>
+                  <input id="f-host" required maxlength="253" placeholder="as400.corp.lan" />
+                  <label for="f-port">Port</label>
+                  <input id="f-port" inputmode="numeric" maxlength="5" placeholder="23" />
+                  <label for="f-ssl">TLS</label>
+                  <span class="check"><input id="f-ssl" type="checkbox" /> <em>encrypt the host connection (port 992)</em></span>
+                  <label for="f-term">Terminal model</label>
+                  <select id="f-term"></select>
+                  <label for="f-cp">Code page</label>
+                  <select id="f-cp"></select>
+                  <label for="f-prefix">Device prefix</label>
+                  <input id="f-prefix" maxlength="10" placeholder="PANG_" />
+                </div>
+                <p id="admin-form-error" class="admin-error" role="alert"></p>
+                <div class="admin-actions">
+                  <button id="admin-save" type="submit" class="primary">Save</button>
+                  <button id="admin-cancel-edit" type="button" class="ghost">Cancel</button>
+                </div>
+              </form>
+              <div class="admin-actions" id="admin-list-actions">
+                <button id="admin-add" type="button">Add system</button>
+                <button id="admin-close" type="button" class="ghost">Close</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

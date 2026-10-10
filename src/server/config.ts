@@ -13,6 +13,10 @@ export interface Config {
   termType: string;
   devPrefix: string | null;
   allowCustomHost: boolean;
+  /** PIN guarding host-list administration; null disables the admin UI. */
+  adminPin: string | null;
+  /** SQLite file holding the connection-menu systems (mount as a volume). */
+  dbPath: string;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -40,6 +44,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const devPrefix = env.IBM_I_DEV_PREFIX;
+  const adminPin = env.ADMIN_PIN?.trim() || null;
+  if (adminPin !== null && adminPin.length < 4) {
+    throw new Error('ADMIN_PIN must be at least 4 characters (or empty to disable administration)');
+  }
   return {
     port: int(env.PORT, 8080),
     host: env.HOST ?? '0.0.0.0',
@@ -50,7 +58,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     codePage,
     termType,
     devPrefix: devPrefix === undefined || devPrefix === '' ? null : devPrefix.toUpperCase(),
-    allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false)
+    allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false),
+    adminPin,
+    dbPath: env.WEB5250_DB ?? 'data/web5250.db'
   };
 }
 

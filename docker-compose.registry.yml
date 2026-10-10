@@ -1,0 +1,65 @@
+# Registry deployment for web5250 — pulls a published image, no local build.
+# (For building from source use docker-compose.yml instead.)
+#
+#   cp .env.example .env && $EDITOR .env      # set IBM_I_HOST=..., ADMIN_PIN=...
+#   docker compose -f docker-compose.registry.yml up -d
+#
+# The image below is a placeholder for the public release. Either edit it or
+# point IMAGE in .env at your registry (any tag works):
+#   IMAGE=ghcr.io/your-user/web5250:latest
+#
+# Self-contained demo (no IBM i needed - ships a mock 5250 host):
+#   IBM_I_HOST=mock-host IBM_I_PORT=8023 \
+#     docker compose -f docker-compose.registry.yml --profile demo up -d
+#   open http://localhost:8080  (sign on with any non-empty user + password)
+
+services:
+  web5250:
+    image: ${IMAGE:-ghcr.io/OWNER/web5250:latest}
+    pull_policy: missing
+    container_name: web5250
+    restart: unless-stopped
+    environment:
+      PORT: ${PORT:-8080}
+      # Target IBM i. Use a DNS name/IP reachable from this container
+      # (the Pangolin connector network usually reaches the LAN/VLAN).
+      # Only used to seed the connection menu on first boot - edit systems
+      # in the app afterwards (Admin, PIN = ADMIN_PIN).
+      IBM_I_HOST: ${IBM_I_HOST:-127.0.0.1}
+      IBM_I_PORT: ${IBM_I_PORT:-23}
+      IBM_I_SSL: ${IBM_I_SSL:-false}
+      IBM_I_CODEPAGE: ${IBM_I_CODEPAGE:-cp037}
+      IBM_I_TERM_TYPE: ${IBM_I_TERM_TYPE:-IBM-3477-FC}
+      IBM_I_DEV_PREFIX: ${IBM_I_DEV_PREFIX:-PANG_}
+      ALLOW_CUSTOM_HOST: ${ALLOW_CUSTOM_HOST:-false}
+      # IBM i TLS certs are usually self-signed; set true to enforce CA validation.
+      IBM_I_TLS_REJECT_UNAUTHORIZED: ${IBM_I_TLS_REJECT_UNAUTHORIZED:-false}
+      WEB5250_TRACE: ${WEB5250_TRACE:-}
+      # PIN for the admin editor in the connection menu (empty = admin disabled).
+      ADMIN_PIN: ${ADMIN_PIN:-}
+      # SQLite system catalog; the named volume persists admin edits.
+      WEB5250_DB: /data/web5250.db
+    ports:
+      - "${PORT:-8080}:8080" # remove if the Pangolin connector reaches it over the compose network
+    expose:
+      - "8080"
+    volumes:
+      - web5250-data:/data
+
+  # Demo-only mock IBM i (sign on with any non-empty user + password).
+  mock-host:
+    profiles: ["demo"]
+    image: ${IMAGE:-ghcr.io/OWNER/web5250:latest}
+    pull_policy: missing
+    container_name: web5250-mock
+    restart: unless-stopped
+    command: ["node", "dist/mock-host.mjs", "8023"]
+    environment:
+      MOCK_BIND: "0.0.0.0"   # reachable from the gateway container
+    healthcheck:
+      disable: true           # it speaks TN5250, not HTTP
+    expose:
+      - "8023"
+
+volumes:
+  web5250-data:

@@ -14,10 +14,18 @@ RUN npm run build
 # ---------- runtime stage ----------
 FROM node:22-alpine
 ENV NODE_ENV=production \
-    PORT=8080
+    PORT=8080 \
+    WEB5250_DB=/data/web5250.db \
+    # node:sqlite is experimental-flagged on Node 22 (fine in practice);
+    # silence its startup banner so healthcheck-driven logs stay clean.
+    NODE_OPTIONS=--no-warnings
 
 WORKDIR /app
 COPY --from=build /app/dist ./dist
+
+# /data holds the SQLite system catalog; mount a volume on it to persist
+# admin edits (node:sqlite needs Node >= 22.13, the base image provides it).
+RUN mkdir -p /data && chown node:node /data
 
 # The bundled server has no npm dependencies at runtime, so node_modules
 # is deliberately absent. Runs as the non-root "node" user (uid 1000).

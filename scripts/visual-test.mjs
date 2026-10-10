@@ -28,21 +28,42 @@ page.on('console', (msg) => {
 
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
 
+// The app opens on the system-selection menu: capture it, exercise the admin
+// editor (PIN sign-on when ADMIN_PIN is set), then connect to the first system.
+await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
+await page.waitForTimeout(400); // font settle
+await page.screenshot({ path: `${OUT}/00-menu.png` });
+
+await page.click('#menu-admin-btn');
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${OUT}/01-admin-pin.png` });
+if (await page.isVisible('#admin-pin-input')) {
+  await page.fill('#admin-pin-input', String(process.env.ADMIN_PIN ?? '1234'));
+  await page.click('#admin-pin-ok');
+  await page.waitForSelector('#admin-editor:not(.hidden)', { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${OUT}/02-admin-editor.png` });
+  await page.click('#admin-close');
+}
+
+// Clicking the (pre-selected) first row starts the session.
+await page.click('#menu .menu-row');
+
 // Wait for the sign-on screen: canvas has drawn content (wait for any screen msg)
 await page.waitForFunction(
   () => document.getElementById('conn-state')?.dataset.state === 'connected',
   { timeout: 10000 }
 );
 await page.waitForTimeout(600); // font settle + first render
-await page.screenshot({ path: `${OUT}/01-signon.png` });
+await page.screenshot({ path: `${OUT}/03-signon.png` });
 
 // Focus terminal and type credentials like a user
 await page.click('#terminal');
 await page.keyboard.type('MOCKUSER');
-await page.screenshot({ path: `${OUT}/02-userid.png` });
+await page.screenshot({ path: `${OUT}/04-userid.png` });
 await page.keyboard.press('Tab');
 await page.keyboard.type('SECRETPW');
-await page.screenshot({ path: `${OUT}/03-password.png` });
+await page.screenshot({ path: `${OUT}/05-password.png` });
 await page.keyboard.press('Enter');
 await page.waitForFunction(
   () => {
@@ -52,15 +73,15 @@ await page.waitForFunction(
   { timeout: 8000 }
 );
 await page.waitForTimeout(500);
-await page.screenshot({ path: `${OUT}/04-main-menu.png` });
+await page.screenshot({ path: `${OUT}/06-main-menu.png` });
 
 // F1 help + F3 back, then verify OIA snapshot state via DOM
 await page.keyboard.press('F1');
 await page.waitForTimeout(600);
-await page.screenshot({ path: `${OUT}/05-help.png` });
+await page.screenshot({ path: `${OUT}/07-help.png` });
 await page.keyboard.press('F3');
 await page.waitForTimeout(600);
-await page.screenshot({ path: `${OUT}/06-main-again.png` });
+await page.screenshot({ path: `${OUT}/08-main-again.png` });
 
 const oia = await page.evaluate(() => ({
   state: document.getElementById('conn-state')?.dataset.state,

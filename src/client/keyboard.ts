@@ -87,12 +87,12 @@ export function mapEvent(e: KeyboardEvent): { k: string; ch?: string } | null {
   return null;
 }
 
-export function attachKeyboard(send: SendKey, onFlash: () => void): void {
-  void onFlash; // reserved: main.ts handles beep flashing directly
+export function attachKeyboard(send: SendKey, enabled?: () => boolean): void {
+  const active = (): boolean => (enabled ? enabled() : true);
   window.addEventListener(
     'keydown',
     (e) => {
-      if (isTypingTarget(e.target)) return;
+      if (!active() || isTypingTarget(e.target)) return;
       const mapped = mapEvent(e);
       if (!mapped) return;
       e.preventDefault();
@@ -103,7 +103,7 @@ export function attachKeyboard(send: SendKey, onFlash: () => void): void {
   );
   // Keep Tab/F-keys from doing anything on keyup after we ate the keydown.
   window.addEventListener('keyup', (e) => {
-    if (isTypingTarget(e.target)) return;
+    if (!active() || isTypingTarget(e.target)) return;
     if (mapEvent(e)) e.preventDefault();
   });
 }

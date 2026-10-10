@@ -1,8 +1,15 @@
-// Browser entry point: WebSocket transport + UI glue.
+// Browser entry point: system menu + WebSocket transport + UI glue.
+//
+// On first start the connection menu (menu.ts) lists the systems from the
+// gateway's SQLite store; picking one opens a WebSocket session targeting
+// that system (?system=<id>). Deep links keep working: ?system=<id> jumps
+// straight into a session, and legacy ?host=... links (ALLOW_CUSTOM_HOST)
+// connect with environment defaults.
 import './styles.css';
 import { Terminal, type OiaState } from './term.ts';
 import { attachKeyboard, type SendKey } from './keyboard.ts';
 import { buildKeypad } from './keypad.ts';
+import { fetchSystems, hideMenu, initMenu, menuVisible, showMenu, type MenuSystem } from './menu.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -11,16 +18,25 @@ const term = new Terminal($('screen-canvas'));
 const mobileInput = $<HTMLInputElement>('mobile-input');
 
 // ---------------------------------------------------------------- transport
+interface SessionTarget {
+  system?: MenuSystem;
+}
+let target: SessionTarget = {};
+let endingSession = false;
+
 function wsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   // Derive the WS endpoint from the page URL so sub-path deployments
   // (https://host/as400/ -> service) resolve to .../as400/ws automatically.
   const path = window.location.pathname.replace(/[^/]*$/, '');
-  return `${proto}//${window.location.host}${path}ws${window.location.search}`;
+  const params = new URLSearchParams(window.location.search);
+  if (target.system) params.set('system', String(target.system.id));
+  else params.delete('system');
+  const qs = params.toString();
+  return `${proto}//${window.location.host}${path}ws${qs ? `?${qs}` : ''}`;
 }
 
 let ws: WebSocket | null = null;
-let lastUrl = wsUrl();
 
 function sendKey(k: string, ch?: string): void {
   if (k === 'char' && ch !== undefined) {
@@ -35,8 +51,7 @@ function send(msg: Record<string, unknown>): void {
 }
 
 function connect(): void {
-  lastUrl = wsUrl();
-  const sock = new WebSocket(lastUrl);
+  const sock = new WebSocket(wsUrl());
   ws = sock;
 
   sock.addEventListener('open', () => {
@@ -46,8 +61,13 @@ function connect(): void {
   sock.addEventListener('message', (ev) => handleMessage(String(ev.data)));
   sock.addEventListener('close', () => {
     if (ws !== sock) return;
+    ws = null;
+    if (endingSession) {
+      endingSession = false;
+      return;
+    }
     setConnState('closed');
-    showOverlay('Disconnected', 'The session ended. Press Reconnect to open a new one.', true);
+    showOverlay('Session ended', 'The 5250 session closed.', ['menu', 'reconnect']);
   });
   sock.addEventListener('error', () => {
     if (ws !== sock) return;
@@ -65,7 +85,7 @@ function handleMessage(data: string): void {
   }
   switch (msg.t) {
     case 'hello': {
-      const parts = [String(msg.devName ?? ''), String(msg.host ?? ''), String(msg.termType ?? '')];
+      const parts = [msg.systemName, msg.devName, msg.host, msg.termType].map((v) => String(v ?? ''));
       $('dev-info').textContent = parts.filter(Boolean).join(' · ');
       setConnState('connecting');
       break;
@@ -79,10 +99,10 @@ function handleMessage(data: string): void {
         showOverlay(
           status === 'error' ? 'Connection failed' : 'Session ended',
           typeof msg.detail === 'string' ? msg.detail : '',
-          true
+          ['menu', 'reconnect']
         );
       } else {
-        showOverlay(status === 'negotiating' ? 'Negotiating with host…' : 'Connecting…', '', false);
+        showOverlay(status === 'negotiating' ? 'Negotiating with host…' : 'Connecting…', '', []);
       }
       break;
     }
@@ -165,24 +185,80 @@ function setConnState(state: string): void {
           ? 'connecting…'
           : state === 'closed'
             ? 'disconnected'
-            : 'error';
+            : state === 'idle'
+              ? ''
+              : 'error';
 }
 
-function showOverlay(title: string, detail: string, showAction: boolean): void {
+type OverlayAction = 'menu' | 'reconnect';
+
+function showOverlay(title: string, detail: string, actions: OverlayAction[]): void {
   $('overlay-title').textContent = title;
   $('overlay-detail').textContent = detail;
-  $('overlay-action').classList.toggle('hidden', !showAction);
+  $('overlay-actions').classList.toggle('hidden', actions.length === 0);
+  $('overlay-menu').classList.toggle('hidden', !actions.includes('menu'));
+  $('overlay-action').classList.toggle('hidden', !actions.includes('reconnect'));
   $('overlay').classList.remove('hidden');
 }
 function hideOverlay(): void {
   $('overlay').classList.add('hidden');
 }
 
+// ------------------------------------------------------------ session flow
+function startSession(system: MenuSystem): void {
+  target = { system };
+  endingSession = false;
+  hideMenu();
+  $('btn-systems').classList.remove('hidden');
+  showOverlay('Connecting…', '', []);
+  connect();
+}
+
+/** Close the current session (if any) and go back to the system menu. */
+function endSession(): void {
+  endingSession = true;
+  ws?.close();
+  hideOverlay();
+  setConnState('idle');
+  $('dev-info').textContent = '';
+  term.resizeGrid(24, 80); // blank the canvas for the next session
+  $('btn-systems').classList.add('hidden');
+  void showMenu(startSession);
+}
+
+/** Landing logic: deep links jump straight into a session, everyone else gets the menu. */
+function boot(): void {
+  const params = new URLSearchParams(window.location.search);
+  const sysId = Number.parseInt(params.get('system') ?? '', 10);
+  if (Number.isInteger(sysId) && sysId > 0) {
+    fetchSystems()
+      .then((rows) => {
+        const row = rows.find((r) => r.id === sysId);
+        if (row) startSession(row);
+        else void showMenu(startSession);
+      })
+      .catch(() => void showMenu(startSession));
+    return;
+  }
+  if (params.has('host')) {
+    // Legacy custom-host deep link (?host=...&port=... with ALLOW_CUSTOM_HOST).
+    target = {};
+    $('btn-systems').classList.remove('hidden');
+    showOverlay('Connecting…', '', []);
+    connect();
+    return;
+  }
+  void showMenu(startSession);
+}
+
 // ---------------------------------------------------------------------- UI
-attachKeyboard(sendKey, flash);
+attachKeyboard(sendKey, () => !menuVisible());
 buildKeypad(sendKey);
+initMenu();
 
 $('overlay-action').addEventListener('click', () => connect());
+$('overlay-menu').addEventListener('click', () => endSession());
+$('btn-systems').addEventListener('click', () => endSession());
 
 $('btn-keys').addEventListener('click', () => $('keys-modal').classList.toggle('hidden'));
 $('keys-close').addEventListener('click', () => $('keys-modal').classList.add('hidden'));
@@ -230,4 +306,4 @@ document.addEventListener('click', () => {
   audioCtx?.resume().catch(() => {});
 });
 
-connect();
+boot();

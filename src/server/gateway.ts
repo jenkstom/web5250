@@ -9,6 +9,7 @@ import * as C from './tn5250/constants.ts';
 import { Tn5250Client } from './tn5250/client.ts';
 import type { Config } from './config.ts';
 import { makeDeviceName } from './config.ts';
+import type { SystemRow } from './systems.ts';
 
 export interface SessionQuery {
   host?: string;
@@ -17,6 +18,8 @@ export interface SessionQuery {
   termType?: string;
   codePage?: string;
   devName?: string;
+  /** Menu selection (?system=<id>) resolved by the HTTP layer. */
+  systemId?: number;
 }
 
 const KEY_TO_AID: Record<string, number> = {
@@ -40,18 +43,24 @@ export class GatewaySession {
   readonly devName: string | null;
   private readonly ws: WebSocket;
   private readonly sessionInfo: { host: string; port: number; ssl: boolean; termType: string; codePage: string };
+  private readonly systemName: string | undefined;
 
-  constructor(ws: WebSocket, cfg: Config, query: SessionQuery) {
+  constructor(ws: WebSocket, cfg: Config, query: SessionQuery, system?: SystemRow) {
     this.ws = ws;
+    // Connection parameters resolve in order: explicit URL overrides
+    // (ALLOW_CUSTOM_HOST) > menu-selected system (?system=<id> from the DB)
+    // > the IBM_I_* environment defaults.
     const allowCustom = cfg.allowCustomHost;
-    const host = allowCustom && query.host ? query.host : cfg.ibmHost;
-    const port = allowCustom && query.port ? query.port : cfg.ibmPort;
-    const ssl = allowCustom && typeof query.ssl === 'boolean' ? query.ssl : cfg.ibmSsl;
-    const termType = allowCustom && query.termType ? query.termType.toUpperCase() : cfg.termType;
-    const codePage = allowCustom && query.codePage ? query.codePage.toLowerCase() : cfg.codePage;
+    const host = allowCustom && query.host ? query.host : (system?.host ?? cfg.ibmHost);
+    const port = allowCustom && query.port ? query.port : (system?.port ?? cfg.ibmPort);
+    const ssl =
+      allowCustom && typeof query.ssl === 'boolean' ? query.ssl : (system?.ssl ?? cfg.ibmSsl);
+    const termType = allowCustom && query.termType ? query.termType.toUpperCase() : (system?.termType ?? cfg.termType);
+    const codePage = allowCustom && query.codePage ? query.codePage.toLowerCase() : (system?.codePage ?? cfg.codePage);
 
-    this.devName = makeDeviceName(cfg.devPrefix, query.devName);
+    this.devName = makeDeviceName(system?.devPrefix ?? cfg.devPrefix, query.devName);
     this.sessionInfo = { host, port, ssl, termType, codePage };
+    this.systemName = system?.name;
 
     this.client = new Tn5250Client({
       host,
@@ -69,6 +78,7 @@ export class GatewaySession {
   start(): void {
     this.send('hello', {
       ...this.sessionInfo,
+      systemName: this.systemName,
       devName: this.devName,
       rows: this.client.screen.rows,
       cols: this.client.screen.cols

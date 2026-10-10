@@ -1,4 +1,6 @@
 # Web-to-5250 gateway, ready to sit next to a Pangolin site connector.
+# This variant BUILDS from source; to pull a published image instead use
+# docker-compose.registry.yml.
 #
 # Configuration lives in .env (copy from .env.example). Compose reads it
 # automatically from this directory; every variable has a default.
@@ -36,10 +38,16 @@ services:
       # IBM i TLS certs are usually self-signed; set true to enforce CA validation.
       IBM_I_TLS_REJECT_UNAUTHORIZED: ${IBM_I_TLS_REJECT_UNAUTHORIZED:-false}
       WEB5250_TRACE: ${WEB5250_TRACE:-}
+      # PIN for the admin editor in the connection menu (empty = admin disabled).
+      ADMIN_PIN: ${ADMIN_PIN:-}
+      # SQLite system catalog; the named volume persists admin edits.
+      WEB5250_DB: /data/web5250.db
     ports:
       - "${PORT:-8080}:8080" # remove if the Pangolin connector reaches it over the compose network
     expose:
       - "8080"
+    volumes:
+      - web5250-data:/data
 
   # Demo-only mock IBM i (sign on with any non-empty user + password).
   mock-host:
@@ -55,3 +63,6 @@ services:
       disable: true           # it speaks TN5250, not HTTP
     expose:
       - "8023"
+
+volumes:
+  web5250-data:

@@ -1,11 +1,16 @@
 // End-to-end smoke test: mock IBM i host + built gateway + a WebSocket
-// client that drives the terminal like a browser would.
+// client that drives the terminal like a browser would. Also covers the
+// connection-menu API: system list, PIN auth, CRUD, ?system= sessions.
 //
 // Usage: npm run build && npm run smoke
 import { spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const MOCK_PORT = 18023;
 const HTTP_PORT = 18080;
+const ADMIN_PIN = '4321';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -98,7 +103,9 @@ async function main() {
         IBM_I_PORT: String(MOCK_PORT),
         IBM_I_DEV_PREFIX: 'TEST_',
         IBM_I_TERM_TYPE: 'IBM-3477-FC',
-        IBM_I_CODEPAGE: 'cp037'
+        IBM_I_CODEPAGE: 'cp037',
+        ADMIN_PIN,
+        WEB5250_DB: join(mkdtempSync(join(tmpdir(), 'web5250-smoke-')), 'menu.db')
       }
     })
   );
@@ -189,6 +196,87 @@ async function main() {
 
   ws.close();
   await sleep(400);
+
+  // ------------------------------------------------------ 7. menu API + admin
+  console.log('\n7. Connection menu API');
+  const http = `http://127.0.0.1:${HTTP_PORT}`;
+  const meta = await (await fetch(`${http}/api/meta`)).json();
+  check('meta reports admin enabled', meta.adminEnabled === true);
+  check('meta lists terminal models + code pages', Array.isArray(meta.termTypes) && meta.termTypes.includes('IBM-3477-FC') && meta.codePages.includes('cp037'));
+
+  const seeded = await (await fetch(`${http}/api/systems`)).json();
+  check('system list seeded from env', seeded.systems.length === 1 && seeded.systems[0].host === '127.0.0.1', JSON.stringify(seeded));
+
+  check('wrong PIN rejected', (await fetch(`${http}/api/admin/auth`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin: '0000' }) })).status === 401);
+  const auth = await (await fetch(`${http}/api/admin/auth`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin: ADMIN_PIN }) })).json();
+  check('correct PIN returns token', typeof auth.token === 'string' && auth.token.length > 30);
+  const authHeaders = { 'content-type': 'application/json', authorization: `Bearer ${auth.token}` };
+
+  check('create without token is rejected', (await fetch(`${http}/api/admin/systems`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status === 401);
+
+  const bad = await fetch(`${http}/api/admin/systems`, { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'X', host: 'bad host!' }) });
+  check('invalid host rejected with 400', bad.status === 400, await bad.text());
+
+  const created = await (
+    await fetch(`${http}/api/admin/systems`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ name: 'MOCK2', description: 'second system', host: '127.0.0.1', port: MOCK_PORT, devPrefix: 'MENU_' })
+    })
+  ).json();
+  check('admin can create a system', created.system?.id > 0 && created.system?.devPrefix === 'MENU_', JSON.stringify(created));
+
+  const two = await (await fetch(`${http}/api/systems`)).json();
+  check('list now has two systems', two.systems.length === 2);
+
+  // ------------------------------------------- 8. session via ?system=<id>
+  console.log('\n8. Menu-driven session (?system=)');
+  const ws2 = new WebSocket(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${created.system.id}`);
+  const term2 = new Term();
+  let hello2 = null;
+  ws2.addEventListener('message', (ev) => {
+    const msg = JSON.parse(String(ev.data));
+    if (msg.t === 'hello') hello2 = msg;
+    term2.apply(msg);
+  });
+  await new Promise((resolve, reject) => {
+    ws2.addEventListener('open', resolve);
+    ws2.addEventListener('error', reject);
+  });
+  check('hello names the selected system', await waitFor(term2, () => hello2?.systemName === 'MOCK2', 3000), JSON.stringify(hello2));
+  check('session renders sign-on screen', await waitFor(term2, () => term2.text().includes('AS/400 Sign On'), 8000, term2.text().slice(0, 120)));
+  ws2.close();
+
+  const ghost = new WebSocket(`ws://127.0.0.1:${HTTP_PORT}/ws?system=99999`);
+  const ghostClosed = new Promise((resolve) => ghost.addEventListener('close', () => resolve(true)));
+  check('unknown system id rejected', (await ghostClosed) === true);
+  await sleep(200);
+
+  // ------------------------------------------------- 9. update/move/delete
+  console.log('\n9. Admin edit, reorder, delete');
+  const id = created.system.id;
+  const upd = await fetch(`${http}/api/admin/systems/${id}`, { method: 'PUT', headers: authHeaders, body: JSON.stringify({ name: 'RENAMED', host: '127.0.0.1', port: MOCK_PORT }) });
+  check('admin can rename a system', upd.status === 200 && (await upd.json()).system.name === 'RENAMED');
+
+  check(
+    'move up works',
+    (await fetch(`${http}/api/admin/systems/${id}/move`, { method: 'POST', headers: authHeaders, body: JSON.stringify({ dir: 'up' }) })).status === 200
+  );
+  const moved = await (await fetch(`${http}/api/systems`)).json();
+  check('renamed system is now first', moved.systems[0].id === id, JSON.stringify(moved.systems.map((s) => s.name)));
+
+  check('delete works', (await fetch(`${http}/api/admin/systems/${id}`, { method: 'DELETE', headers: authHeaders })).status === 200);
+  check('delete of missing id is 404', (await fetch(`${http}/api/admin/systems/${id}`, { method: 'DELETE', headers: authHeaders })).status === 404);
+  const after = await (await fetch(`${http}/api/systems`)).json();
+  check('list back to one system, renumbered', after.systems.length === 1 && after.systems[0].position === 1);
+
+  // Rate limiting (last: leaves admin locked for a minute on the test server)
+  let lastStatus = 0;
+  for (let i = 0; i < 6; i++) {
+    const r = await fetch(`${http}/api/admin/auth`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin: '0000' }) });
+    lastStatus = r.status;
+  }
+  check('6th bad PIN is locked out (429)', lastStatus === 429, `status=${lastStatus}`);
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   cleanup();

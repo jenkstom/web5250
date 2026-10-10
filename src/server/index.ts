@@ -1,8 +1,10 @@
 // Web-to-5250 gateway entry point.
 //
 // HTTP: serves the built SPA (relative asset paths so it works behind
-//       Pangolin under any sub-path) plus /healthz for uptime checks.
-// WS:    upgrades any path ending in /ws to a terminal session.
+//       Pangolin under any sub-path) plus /healthz for uptime checks and the
+//       /api/* JSON surface (connection menu + PIN-gated admin editor).
+// WS:    upgrades any path ending in /ws to a terminal session, optionally
+//       targeting a menu-selected system (?system=<id> in the SQLite store).
 //
 // Authentication is intentionally absent: Pangolin enforces identity at the
 // edge (this service should never be exposed directly to the internet).
@@ -13,14 +15,20 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { loadConfig } from './config.ts';
 import { GatewaySession, type SessionQuery } from './gateway.ts';
+import { Systems } from './systems.ts';
+import { createApiHandler } from './api.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
 const cfg = loadConfig();
+const systems = new Systems(cfg.dbPath, cfg);
+const api = createApiHandler(cfg, systems);
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://internal');
   const pathname = decodeURIComponent(url.pathname);
+
+  if (api(req, res, pathname)) return;
 
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405).end();
@@ -96,16 +104,26 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
+  const query = parseSessionQuery(url);
+  // Resolve the menu selection (?system=<id>) before upgrading so the
+  // session connects with the admin-configured parameters.
+  const system = query.systemId !== undefined ? systems.get(query.systemId) : undefined;
+  if (query.systemId !== undefined && !system) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const query = parseSessionQuery(url);
     // Behind Pangolin, X-Forwarded-For carries the end-user identity -
     // logged so operators can correlate browser users with 5250 devices.
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim();
+    const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
     console.log(
-      `[ws] session open${clientIp ? ` from ${clientIp}` : ''} -> ${query.host ?? cfg.ibmHost}:${query.port ?? cfg.ibmPort}`
+      `[ws] session open${clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
+        `${target.host}:${target.port}`
     );
-    const session = new GatewaySession(ws, cfg, query);
+    const session = new GatewaySession(ws, cfg, query, system);
     ws.on('message', (data) => session.handleMessage(data.toString()));
     ws.on('close', () => session.destroy());
     ws.on('error', () => session.destroy());
@@ -119,13 +137,18 @@ function parseSessionQuery(url: URL): SessionQuery {
     const n = Number.parseInt(v ?? '', 10);
     return Number.isFinite(n) && n > 0 && n < 65536 ? n : undefined;
   };
+  const int = (v: string | null): number | undefined => {
+    const n = Number.parseInt(v ?? '', 10);
+    return Number.isFinite(n) && n > 0 && n <= Number.MAX_SAFE_INTEGER ? n : undefined;
+  };
   return {
     host: sanitize(q.get('host'), 253),
     port: num(q.get('port')),
     ssl: q.get('ssl') === '1' || q.get('ssl') === 'true' ? true : undefined,
     termType: sanitize(q.get('term'), 20),
     codePage: sanitize(q.get('cp'), 10),
-    devName: sanitize(q.get('devname'), 10)
+    devName: sanitize(q.get('devname'), 10),
+    systemId: int(q.get('system'))
   };
 }
 
@@ -158,6 +181,10 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(
     `web5250 listening on http://${cfg.host}:${cfg.port} -> ${cfg.ibmHost}:${cfg.ibmPort}` +
       ` (${cfg.ibmSsl ? 'TLS' : 'telnet'}, ${cfg.termType}, ${cfg.codePage})`
+  );
+  console.log(
+    `menu: ${systems.list().length} system(s) configured (db: ${cfg.dbPath})` +
+      `, admin ${cfg.adminPin ? 'enabled' : 'disabled (set ADMIN_PIN to enable)'}`
   );
 });
 
