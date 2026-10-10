@@ -158,22 +158,30 @@ function sanitize(v: string | null, max: number): string | undefined {
   return s.slice(0, max) || undefined;
 }
 
-// Heartbeat: drop browsers that stop answering pings (idle tunnels).
+// Heartbeat: ping every 30s; drop a browser only after two consecutive
+// missed pongs (a single delayed control frame through a proxy must not
+// kill a live session).
 const pingInterval = setInterval(() => {
   for (const ws of wss.clients) {
-    if ((ws as unknown as { alive?: boolean }).alive === false) {
-      ws.terminate();
-      continue;
+    const w = ws as unknown as { alive?: boolean; misses?: number };
+    if (w.alive === false) {
+      w.misses = (w.misses ?? 0) + 1;
+      if (w.misses >= 2) {
+        ws.terminate();
+        continue;
+      }
+    } else {
+      w.misses = 0;
     }
-    (ws as unknown as { alive?: boolean }).alive = false;
+    w.alive = false;
     ws.ping();
   }
 }, 30000);
-for (const ws of wss.clients) (ws as unknown as { alive?: boolean }).alive = true;
 wss.on('connection', (ws) => {
-  (ws as unknown as { alive?: boolean }).alive = true;
+  const w = ws as unknown as { alive?: boolean };
+  w.alive = true;
   ws.on('pong', () => {
-    (ws as unknown as { alive?: boolean }).alive = true;
+    w.alive = true;
   });
 });
 

@@ -54,6 +54,14 @@ function connect(): void {
   const sock = new WebSocket(wsUrl());
   ws = sock;
 
+  // App-level keepalive: proxies that only track data frames (and mishandle
+  // WS control frames) keep the tunnel open; the gateway's pong doubles as
+  // liveness for the server-side ping loop.
+  const keepalive = window.setInterval(() => {
+    if (ws === sock && sock.readyState === WebSocket.OPEN) sock.send('{"t":"ping"}');
+    else window.clearInterval(keepalive);
+  }, 25000);
+
   sock.addEventListener('open', () => {
     setConnState('connecting');
     hideOverlay();

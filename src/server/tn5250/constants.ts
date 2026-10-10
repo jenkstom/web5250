@@ -72,9 +72,15 @@ export const CMD_CLEAR_UNIT = 0x40; // -> 24x80
 export const CMD_READ_INPUT_FIELDS = 0x42; // RIF: all input fields
 export const CMD_CLEAR_FORMAT_TABLE = 0x50;
 export const CMD_READ_MDT_FIELDS = 0x52; // RMD: modified fields only
+export const CMD_READ_MDT_FIELDS_ALT = 0x82; // like RMD; raw nulls on reply
 export const CMD_READ_SCREEN_IMMEDIATE = 0x62;
+export const CMD_READ_SCREEN_EXTENDED = 0x64;
 export const CMD_READ_SCREEN_TO_PRINT = 0x66;
-export const CMD_READ_MDT_IMMEDIATE = 0x83;
+export const CMD_READ_SCREEN_PRINT_EXTENDED = 0x68;
+export const CMD_READ_SCREEN_PRINT_GRID = 0x6a;
+export const CMD_READ_SCREEN_PRINT_EXT_GRID = 0x6c;
+export const CMD_READ_IMMEDIATE = 0x72; // reply now, all fields, no SBA
+export const CMD_READ_IMMEDIATE_ALT = 0x83; // reply now, SBA + MDT fields
 export const CMD_WRITE_STRUCTURED_FIELD = 0xf3;
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,11 @@ export class Parser5250 {
     return this.buf[this.pos] & 0xff;
   }
 
+  /** 1-based cursor row/col pair for read replies. */
+  private cursorBytes(): number[] {
+    return [this.screen.rowOf(this.screen.cursorPos) & 0xff, this.screen.colOf(this.screen.cursorPos) & 0xff];
+  }
+
   /** Parse one complete record (including the 2-byte length prefix). */
   parse(record: Buffer): void {
     this.beep = false;
@@ -154,7 +159,8 @@ export class Parser5250 {
         break;
 
       case C.CMD_READ_INPUT_FIELDS:
-      case C.CMD_READ_MDT_FIELDS: {
+      case C.CMD_READ_MDT_FIELDS:
+      case C.CMD_READ_MDT_FIELDS_ALT: {
         this.next(); // control bytes
         this.next();
         this.screen.readType = cmd;
@@ -165,16 +171,29 @@ export class Parser5250 {
         break;
       }
 
-      case C.CMD_READ_MDT_IMMEDIATE: {
-        this.screen.readType = cmd;
+      // Host wants the field data right away (no AID, no invite). The reply
+      // still starts with [cursor row, cursor col, AID=0] per the 5494 FR.
+      case C.CMD_READ_IMMEDIATE: {
+        this.screen.readType = C.CMD_READ_INPUT_FIELDS; // full-width runs, no SBA
         this.screen.lockSystem();
         const body = this.screen.buildReadResponse();
-        this.telnet.sendGds(0, 3, body);
+        this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), 0x00, ...body]));
+        break;
+      }
+      case C.CMD_READ_IMMEDIATE_ALT: {
+        this.screen.readType = C.CMD_READ_IMMEDIATE_ALT; // SBA + MDT fields
+        this.screen.lockSystem();
+        const body = this.screen.buildReadResponse();
+        this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), 0x00, ...body]));
         break;
       }
 
       case C.CMD_READ_SCREEN_IMMEDIATE:
+      case C.CMD_READ_SCREEN_EXTENDED:
       case C.CMD_READ_SCREEN_TO_PRINT:
+      case C.CMD_READ_SCREEN_PRINT_EXTENDED:
+      case C.CMD_READ_SCREEN_PRINT_GRID:
+      case C.CMD_READ_SCREEN_PRINT_EXT_GRID:
         this.telnet.sendGds(0, 0, this.screen.buildScreenDump());
         break;
 
@@ -299,6 +318,10 @@ export class Parser5250 {
           const col = this.next();
           if (row >= 1 && row <= this.screen.rows && col >= 1 && col <= this.screen.cols) {
             this.screen.cursorPos = this.screen.posOf(row, col);
+            // MC cancels pending-insert homing: the cursor stays where the
+            // host put it instead of jumping to the IC/home position at the
+            // next read invite (tn5250j setPendingInsert(false, x, y)).
+            this.screen.pendingInsert = false;
             this.cursorChanged = true;
           } else {
             this.negativeResponse(C.NR_REQUEST_ERROR, 0x05, 0x01, 0x22);

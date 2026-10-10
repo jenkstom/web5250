@@ -20,7 +20,8 @@
     "mock": "node scripts/mock-host.mjs",
     "visual": "node scripts/visual-test.mjs",
     "smoke": "node scripts/smoke-test.mjs",
-    "test:real": "node scripts/real-signon-test.mjs"
+    "test:real": "node scripts/real-signon-test.mjs",
+    "test:reads": "node scripts/read-commands-test.mjs"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

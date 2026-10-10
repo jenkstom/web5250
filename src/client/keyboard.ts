@@ -53,10 +53,13 @@ export function mapEvent(e: KeyboardEvent): { k: string; ch?: string } | null {
       return { k: 'home' };
     case 'End':
       return { k: 'end' };
+    // 5250 roll keys: PageDown pages FORWARD (Roll Up, AID F4), PageUp pages
+    // BACK (Roll Down, AID F5) - the names are about the screen rolling, not
+    // the paging direction.
     case 'PageUp':
-      return { k: 'rollup' };
-    case 'PageDown':
       return { k: 'rolldown' };
+    case 'PageDown':
+      return { k: 'rollup' };
   }
 
   if (code === 'NumpadAdd' && !e.shiftKey) return { k: 'fieldexit' };

@@ -442,9 +442,9 @@ export class Screen5250 {
     this.normalizeCursor();
   }
 
-  /** Read invite arrived: home the cursor per spec. */
+  /** Read invite arrived: home the cursor per spec (tn5250j goHome). */
   goHome(): void {
-    if (this.pendingInsert) {
+    if (this.pendingInsert && this.homePos > 0) {
       this.cursorPos = this.homePos;
     } else if (!this.gotoField(1)) {
       this.cursorPos = 0;
@@ -592,7 +592,9 @@ export class Screen5250 {
   buildReadResponse(): Buffer {
     const out: number[] = [];
     const isMdtRead =
-      this.readType === C.CMD_READ_MDT_FIELDS || this.readType === C.CMD_READ_MDT_IMMEDIATE;
+      this.readType === C.CMD_READ_MDT_FIELDS ||
+      this.readType === C.CMD_READ_MDT_FIELDS_ALT ||
+      this.readType === C.CMD_READ_IMMEDIATE_ALT;
 
     if (this.masterMDT) {
       for (const f of this.fields) {

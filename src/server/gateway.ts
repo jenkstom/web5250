@@ -106,6 +106,9 @@ export class GatewaySession {
       return;
     }
     if (t === 'ping') {
+      // Client keepalive: also refresh the transport-level liveness flag
+      // (see the ping loop in index.ts).
+      (this.ws as unknown as { alive?: boolean }).alive = true;
       this.send('pong', {});
     }
   }
