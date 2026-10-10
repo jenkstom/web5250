@@ -1,0 +1,57 @@
+# Web-to-5250 gateway, ready to sit next to a Pangolin site connector.
+#
+# Configuration lives in .env (copy from .env.example). Compose reads it
+# automatically from this directory; every variable has a default.
+#
+# Local build + run (builds the image from source):
+#   cp .env.example .env && edit IBM_I_HOST=...
+#   docker compose up -d --build
+#
+# Run the CI-built image from the GitLab registry instead:
+#   # .env: IMAGE=registry.example.com/web5250:latest
+#   docker login registry.example.com
+#   docker compose up -d --no-build        (--no-build pulls/uses IMAGE)
+#
+# Self-contained demo (no IBM i needed - ships a mock 5250 host):
+#   IBM_I_HOST=mock-host IBM_I_PORT=8023 docker compose --profile demo up -d --build
+#   open http://localhost:8080  (sign on with any non-empty user/password)
+
+services:
+  web5250:
+    build: .
+    image: ${IMAGE:-web5250:local}
+    container_name: web5250
+    restart: unless-stopped
+    environment:
+      PORT: ${PORT:-8080}
+      # Target IBM i. Use a DNS name/IP reachable from this container
+      # (the Pangolin connector network usually reaches the LAN/VLAN).
+      IBM_I_HOST: ${IBM_I_HOST:-127.0.0.1}
+      IBM_I_PORT: ${IBM_I_PORT:-23}
+      IBM_I_SSL: ${IBM_I_SSL:-false}
+      IBM_I_CODEPAGE: ${IBM_I_CODEPAGE:-cp037}
+      IBM_I_TERM_TYPE: ${IBM_I_TERM_TYPE:-IBM-3477-FC}
+      IBM_I_DEV_PREFIX: ${IBM_I_DEV_PREFIX:-PANG_}
+      ALLOW_CUSTOM_HOST: ${ALLOW_CUSTOM_HOST:-false}
+      # IBM i TLS certs are usually self-signed; set true to enforce CA validation.
+      IBM_I_TLS_REJECT_UNAUTHORIZED: ${IBM_I_TLS_REJECT_UNAUTHORIZED:-false}
+      WEB5250_TRACE: ${WEB5250_TRACE:-}
+    ports:
+      - "${PORT:-8080}:8080" # remove if the Pangolin connector reaches it over the compose network
+    expose:
+      - "8080"
+
+  # Demo-only mock IBM i (sign on with any non-empty user + password).
+  mock-host:
+    profiles: ["demo"]
+    image: ${IMAGE:-web5250:local}
+    build: .
+    container_name: web5250-mock
+    restart: unless-stopped
+    command: ["node", "dist/mock-host.mjs", "8023"]
+    environment:
+      MOCK_BIND: "0.0.0.0"   # reachable from the gateway container
+    healthcheck:
+      disable: true           # it speaks TN5250, not HTTP
+    expose:
+      - "8023"

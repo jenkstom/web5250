@@ -1,0 +1,175 @@
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/700.css';
+
+:root {
+  --bg: #0b0f0c;
+  --panel: #111713;
+  --line: #23322a;
+  --green: #4be463;
+  --dim: #7d9186;
+  --text: #cfe3d6;
+  --warn: #ffcf5a;
+  --err: #ff5a5a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace;
+}
+
+#app {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0.9rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8rem;
+  flex: 0 0 auto;
+}
+
+#brand { color: var(--green); font-weight: 700; letter-spacing: 0.06em; }
+
+.conn-state::before {
+  content: '';
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.35rem;
+  background: #666;
+  vertical-align: middle;
+}
+.conn-state[data-state='connected']::before { background: var(--green); }
+.conn-state[data-state='connecting']::before,
+.conn-state[data-state='negotiating']::before { background: var(--warn); }
+.conn-state[data-state='closed']::before,
+.conn-state[data-state='error']::before { background: var(--err); }
+
+.spacer { flex: 1; }
+#dev-info { color: var(--dim); font-size: 0.72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+button {
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+button:hover { border-color: var(--green); color: var(--green); }
+button.ghost { background: transparent; font-size: 0.75rem; }
+
+#stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem;
+  gap: 0.35rem;
+}
+
+#terminal {
+  position: relative;
+  outline: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #000;
+  line-height: 0;
+}
+#terminal:focus-within { border-color: #3a5a48; }
+
+#screen-canvas { display: block; max-width: 100%; }
+
+/* hidden input that pulls up soft keyboards on mobile */
+#mobile-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: transparent;
+}
+
+#oia {
+  width: 100%;
+  max-width: var(--termw, 960px);
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  font-size: 0.78rem;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.7rem;
+  white-space: pre;
+}
+#oia-left { display: flex; gap: 0.9rem; color: var(--green); }
+#oia-lock.busy { color: var(--warn); }
+#oia-msg { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+#oia-pos { color: var(--dim); }
+
+#keypad {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem 0.5rem;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+#keypad.hidden { display: none; }
+.kp-row { display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap; }
+.kp-row button {
+  font-size: 0.72rem;
+  padding: 0.35rem 0.55rem;
+  min-width: 2.6rem;
+}
+
+#overlay, #keys-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 6, 0.82);
+  z-index: 50;
+}
+#overlay.hidden, #keys-modal.hidden { display: none; }
+
+#overlay-card, #keys-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.4rem 1.8rem;
+  max-width: min(92vw, 34rem);
+  text-align: center;
+}
+#keys-card { text-align: left; overflow: auto; max-height: 86vh; }
+#keys-card h2 { margin-top: 0; font-size: 1rem; color: var(--green); }
+#keys-card table { border-collapse: collapse; font-size: 0.8rem; width: 100%; }
+#keys-card td { padding: 0.22rem 0.7rem 0.22rem 0; border-bottom: 1px solid var(--line); }
+#keys-card td:first-child { color: var(--green); white-space: nowrap; }
+#keys-card #keys-close { margin-top: 0.9rem; }
+
+#overlay-detail { color: var(--dim); min-height: 1.2em; margin: 0.4rem 0 1rem; }
+#overlay-action.hidden { display: none; }

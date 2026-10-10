@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="color-scheme" content="dark" />
+    <title>IBM i 5250 Terminal</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <span id="brand">IBM i · 5250</span>
+        <span id="conn-state" class="conn-state" title="Connection state"></span>
+        <span class="spacer"></span>
+        <span id="dev-info" title="Session info"></span>
+        <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
+        <button id="btn-keypad" class="ghost" type="button" title="Toggle on-screen keypad">Pad</button>
+      </header>
+
+      <main id="stage">
+        <div id="terminal" tabindex="0" aria-label="5250 terminal screen">
+          <canvas id="screen-canvas"></canvas>
+          <input id="mobile-input" autocomplete="off" autocapitalize="off" spellcheck="false" aria-hidden="true" />
+        </div>
+        <div id="oia" aria-live="polite">
+          <span id="oia-left">
+            <span id="oia-lock"></span>
+            <span id="oia-insert"></span>
+            <span id="oia-mw"></span>
+          </span>
+          <span id="oia-msg"></span>
+          <span id="oia-right">
+            <span id="oia-pos"></span>
+          </span>
+        </div>
+      </main>
+
+      <div id="keypad" class="hidden">
+        <div class="kp-row" id="kp-fn1"></div>
+        <div class="kp-row" id="kp-fn2"></div>
+        <div class="kp-row" id="kp-edit"></div>
+      </div>
+
+      <div id="overlay" class="hidden">
+        <div id="overlay-card">
+          <h2 id="overlay-title">Connecting…</h2>
+          <p id="overlay-detail"></p>
+          <button id="overlay-action" type="button">Reconnect</button>
+        </div>
+      </div>
+
+      <div id="keys-modal" class="hidden">
+        <div id="keys-card">
+          <h2>Keyboard mappings</h2>
+          <table>
+            <tbody>
+              <tr><td>Enter</td><td>Enter (transmit screen)</td></tr>
+              <tr><td>Tab / Shift+Tab</td><td>Next / previous field</td></tr>
+              <tr><td>F1 – F12</td><td>PF1 – PF12</td></tr>
+              <tr><td>Shift+F1 – Shift+F12</td><td>PF13 – PF24</td></tr>
+              <tr><td>Numpad + &nbsp;/&nbsp; Ctrl+Enter</td><td>Field Exit</td></tr>
+              <tr><td>Esc</td><td>SysReq (System Request)</td></tr>
+              <tr><td>Shift+Esc</td><td>Attn (Attention)</td></tr>
+              <tr><td>Insert</td><td>Toggle insert / overwrite</td></tr>
+              <tr><td>Delete</td><td>Delete character (shift left)</td></tr>
+              <tr><td>Backspace</td><td>Cursor left (5250 non-destructive)</td></tr>
+              <tr><td>PageUp / PageDown</td><td>Roll Up / Roll Down</td></tr>
+              <tr><td>Home / End</td><td>Home field / end of field</td></tr>
+              <tr><td>Ctrl+R or Alt+R</td><td>Reset (clear X&nbsp;II keyboard error)</td></tr>
+              <tr><td>Alt+H</td><td>Help</td></tr>
+              <tr><td>Alt+P</td><td>Print (host print of screen)</td></tr>
+            </tbody>
+          </table>
+          <button id="keys-close" type="button" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

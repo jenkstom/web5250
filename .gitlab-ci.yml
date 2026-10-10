@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# web5250 pipeline: validate → container image → GitLab registry
+#
+# validate:    typecheck + full build (node:22-alpine, no artifacts kept)
+# image:       multi-stage Dockerfile at repo root, built with rootless
+#              BuildKit (buildctl-daemonless.sh) — no Docker daemon and no
+#              privileged runner required.
+#
+# Push policy (merge-request pipelines build only, as validation):
+#   every commit   → :$CI_COMMIT_SHORT_SHA
+#   any branch     → :$CI_COMMIT_REF_SLUG
+#   default branch → :latest (on top of the above)
+#   tag            → :$CI_COMMIT_REF_NAME and :latest (on top of the SHA tag)
+#
+# Pull the result with (registry host = $CI_REGISTRY, currently
+# registry.example.com — see the project's Packages & registries page):
+#   docker login registry.example.com
+#   docker pull registry.example.com/web5250:latest
+# ─────────────────────────────────────────────────────────────────────────────
+
+stages: [validate, image]
+
+workflow:
+  rules:
+    # Deduplicate: once a branch has an open MR, only the MR pipeline runs.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+
+validate:
+  stage: validate
+  image: node:22-alpine
+  interruptible: true
+  script:
+    - npm ci
+    - npm run typecheck
+    - npm run build          # vite (SPA) + esbuild (server + mock) — build as test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+.buildkit-rootless:
+  stage: image
+  image:
+    name: moby/buildkit:v0.33.1-rootless
+    entrypoint: [""]
+  variables:
+    # Rootless operation inside the runner's unprivileged container (the
+    # GitLab-documented flag; do not remove it).
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  interruptible: true
+  before_script:
+    # buildkitd reads registry credentials from ~/.docker/config.json; the
+    # CI job token authenticates against the project's own registry.
+    - mkdir -p ~/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"}}}" > ~/.docker/config.json
+  script:
+    - IMAGE="${CI_REGISTRY_IMAGE}"
+    - echo "Building Dockerfile → ${IMAGE}"
+    # One build; each --output pushes the result under another tag.
+    - OUTPUTS="--output type=image,name=${IMAGE}:${CI_COMMIT_SHORT_SHA},push=true"
+    - |
+      if [ -n "$CI_COMMIT_BRANCH" ]; then
+        OUTPUTS="${OUTPUTS} --output type=image,name=${IMAGE}:${CI_COMMIT_REF_SLUG},push=true"
+      fi
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] || [ -n "$CI_COMMIT_TAG" ]; then
+        OUTPUTS="${OUTPUTS} --output type=image,name=${IMAGE}:latest,push=true"
+      fi
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        OUTPUTS="${OUTPUTS} --output type=image,name=${IMAGE}:${CI_COMMIT_REF_NAME},push=true"
+      fi
+    # Merge-request pipelines validate the build only — no output, no push.
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
+        echo "MR pipeline: build validation only, skipping push."
+        OUTPUTS=""
+      fi
+    # The folded scalar is one shell command line; ${OUTPUTS} word-splits
+    # into separate argv flags (tags never contain spaces).
+    - >-
+      buildctl-daemonless.sh build
+      --frontend dockerfile.v0
+      --local context="${CI_PROJECT_DIR}"
+      --local dockerfile="${CI_PROJECT_DIR}"
+      --opt "filename=Dockerfile"
+      ${OUTPUTS}
+
+web5250-image:
+  extends: .buildkit-rootless

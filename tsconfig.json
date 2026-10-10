@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noFallthroughCasesInSwitch": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["src/server/**/*.ts", "scripts/**/*.mjs"]
+}

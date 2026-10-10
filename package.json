@@ -1,0 +1,36 @@
+{
+  "name": "web5250",
+  "version": "1.0.0",
+  "description": "Web-to-5250 (TN5250) terminal gateway for IBM i / AS/400, designed to run behind the Pangolin reverse proxy",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "gen:ebcdic": "node scripts/gen-ebcdic.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "build:client": "vite build",
+    "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/server.js --sourcemap --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "build:mock": "esbuild scripts/mock-host.mjs --bundle --platform=node --format=esm --target=node20 --outfile=dist/mock-host.mjs",
+    "build": "npm run build:client && npm run build:server && npm run build:mock",
+    "start": "node dist/server.js",
+    "dev:server": "node --enable-source-maps --watch src/server/index.ts",
+    "dev:client": "vite",
+    "mock": "node scripts/mock-host.mjs",
+    "visual": "node scripts/visual-test.mjs",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
+    "playwright-core": "^1.64.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
