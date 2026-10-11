@@ -321,13 +321,17 @@ export class GatewaySession {
    * attrs X'27'/X'2F'/X'37'/X'3F' per 5494 Table 15-10) are blanked before
    * leaving the server so secrets never reach the browser. Underscore attrs
    * (bit 0x04, e.g. 0x25/0x26 prompt fields) are ordinary visible fields.
+   * Attribute positions are sent as plain blanks: a real display shows the
+   * attribute byte as an unadorned blank, never with the field's video —
+   * otherwise a reverse/underscore field appears to start one cell left of
+   * the cursor.
    */
   private encodeCells(from: number, to: number): (number | string)[][] {
     const s = this.client.screen;
     const out: (number | string)[][] = [];
     for (let p = from; p < to && p < s.size; p++) {
-      const attr = s.attrs[p];
-      const ch = C.isNonDisplayAttr(attr) ? ' ' : s.chars[p] === '\u0000' ? ' ' : s.chars[p];
+      const attr = s.attrPlace[p] ? 0x20 : s.attrs[p];
+      const ch = C.isNonDisplayAttr(s.attrs[p]) ? ' ' : s.chars[p] === '\u0000' ? ' ' : s.chars[p];
       out.push([p, attr, ch]);
     }
     return out;
