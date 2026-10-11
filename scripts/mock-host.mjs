@@ -143,9 +143,9 @@ class HostSession {
       this.text(5, 27, null, 'Subsystem  . . . . :  QINTER'),
       this.text(6, 27, null, 'Display  . . . . . :  ' + this.dev),
       this.text(9, 27, null, 'User  . . . . . .'),
-      this.field(9, 44, 0x20, 11),
+      this.field(9, 44, 0x26, 11), // white/underscore (visible) — as the live QDSIGNON
       this.text(10, 27, null, 'Password . . . . .'),
-      this.field(10, 44, 0x24, 11), // non-display
+      this.field(10, 44, 0x27, 11), // non-display (5494: X'27' is a true hidden attr)
       this.text(12, 27, null, 'Program/procedure'),
       this.field(12, 44, 0x20, 11),
       this.text(14, 27, null, 'Menu  . . . . . .'),

@@ -317,16 +317,17 @@ export class GatewaySession {
   }
 
   /**
-   * Cells as [pos, attr, ch] triples. Non-display cells (passwords) are
-   * blanked before leaving the server so secrets never reach the browser.
+   * Cells as [pos, attr, ch] triples. Non-display cells (password fields:
+   * attrs X'27'/X'2F'/X'37'/X'3F' per 5494 Table 15-10) are blanked before
+   * leaving the server so secrets never reach the browser. Underscore attrs
+   * (bit 0x04, e.g. 0x25/0x26 prompt fields) are ordinary visible fields.
    */
   private encodeCells(from: number, to: number): (number | string)[][] {
     const s = this.client.screen;
     const out: (number | string)[][] = [];
     for (let p = from; p < to && p < s.size; p++) {
       const attr = s.attrs[p];
-      const nondisplay = (attr & 0x04) === 0x04;
-      const ch = nondisplay ? ' ' : s.chars[p] === '\u0000' ? ' ' : s.chars[p];
+      const ch = C.isNonDisplayAttr(attr) ? ' ' : s.chars[p] === '\u0000' ? ' ' : s.chars[p];
       out.push([p, attr, ch]);
     }
     return out;

@@ -1,8 +1,8 @@
 // Regression test against scripts/real-signon-host.mjs, which replays the
 // byte shapes captured from a live IBM i QDSIGNON:
-//   SOH(7) header, no IC order, hidden User (0x26) / Password (0x27)
-//   fields, bypass option fields (FFW1=0x60), RMD (0x52) invite, and a
-//   post-signon message screen opening with SOH len 16.
+//   SOH(7) header, no IC order, underscored User (0x26) / non-display
+//   Password (0x27) fields, bypass option fields (FFW1=0x60), RMD (0x52)
+//   invite, and a post-signon message screen opening with SOH len 16.
 //
 // Guards the live bugs: cursor homing into Password instead of User,
 // SOH-length rejection desyncing message screens, and RMD field data
@@ -114,11 +114,13 @@ async function main() {
   check('cursor homes to USER field (6,53), not Password', term.cursor[0] === 6 && term.cursor[1] === 53, JSON.stringify(term.cursor));
   check('only enterable fields underlined (user+password, bypass skipped)', Array.isArray(term.fields) && term.fields.length === 2, JSON.stringify(term.fields));
 
-  console.log('\n2. Username types into the User field (hidden per host attr 0x26)');
+  console.log('\n2. Username types into the User field (visible: 0x26 = white/underscore)');
   type('TOMUSER');
   await sleep(400);
   check('username accepted (cursor advanced inside field)', term.cursor[0] === 6 && term.cursor[1] >= 54, JSON.stringify(term.cursor));
-  check('username hidden in browser (non-display attr)', !term.text().includes('TOMUSER'));
+  // 5494 Table 15-10: only X'27'/X'2F'/X'37'/X'3F' are non-display; 0x26
+  // is a visible white/underscore attribute (the live host's User field).
+  check('username visible in browser (0x26 is NOT non-display)', term.text().includes('TOMUSER'));
 
   console.log('\n3. Tab reaches Password; bypass fields skipped');
   key('tab');

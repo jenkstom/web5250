@@ -124,13 +124,19 @@ export const NR_PATH_ERROR = 0x80;
 
 // ---------------------------------------------------------------------------
 // Attribute bytes (0x20-0x3F). (attr & 0xE0) == 0x20 identifies an attribute.
-// Visual mapping mirrors tn5250j:
+// Color mapping per 5494 Functions Reference (SC30-3533-04, Table 15-10):
 //   0x20-0x27 green base (bit 0x02 -> white)   0x28-0x2F red base
 //   0x30-0x37 turquoise base (bit 0x02 -> yellow)
 //   0x38-0x3F pink base (bit 0x02 -> blue)
-//   bit 0x01 -> reverse video, bit 0x04 -> non-display (passwords)
+//   bit 0x01 -> reverse video, bit 0x04 -> underscore (NOT non-display!)
+// NON-DISPLAY is only X'27', X'2F', X'37', X'3F' — exactly the values whose
+// low three bits are all 1. (IBM i prompt screens use 0x25 green/underscore/
+// reverse and 0x26 white/underscore for visible value fields.)
 // ---------------------------------------------------------------------------
 export const isAttributeByte = (b: number): boolean => (b & 0xe0) === 0x20;
+
+/** True for the four hidden attribute bytes (passwords etc.). */
+export const isNonDisplayAttr = (attr: number): boolean => (attr & 0x07) === 0x07;
 
 // Field Format Word bits (first byte of extended SF order)
 export const FFW1_EXTEND = 0x40; // FFW second byte follows

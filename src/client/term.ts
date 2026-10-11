@@ -1,15 +1,20 @@
 // Terminal state + canvas renderer for the 24x80 / 27x132 5250 grid.
 //
-// Attribute bytes (0x20-0x3F) map to the classic 5250 palette:
+// Attribute bytes (0x20-0x3F) map to the classic 5250 palette
+// (5494 Functions Reference SC30-3533-04, Table 15-10):
 //   0x20-0x27 green (bit 0x02 -> white)   0x28-0x2F red
 //   0x30-0x37 turquoise (0x02 -> yellow)  0x38-0x3F pink (0x02 -> blue)
-//   bit 0x01 -> reverse video, bit 0x04 -> non-display
+//   bit 0x01 -> reverse video, bit 0x04 -> underscore
+// Non-display is only X'27'/X'2F'/X'37'/X'3F' (low three bits all 1).
 export interface OiaState {
   lock: string;
   insert: boolean;
   messageWait: boolean;
   errorCode: boolean;
 }
+
+/** The four hidden attribute bytes (password fields). */
+const isNonDisplay = (attr: number): boolean => (attr & 0x07) === 0x07;
 
 const PALETTE = {
   black: '#000000',
@@ -195,10 +200,17 @@ export class Terminal {
         ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
         continue;
       }
-      if ((attr & 0x04) === 0x04) continue; // non-display: leave blank
+      if (isNonDisplay(attr)) continue; // hidden field: leave blank
       if (bg !== PALETTE.black) {
         ctx.fillStyle = bg;
         ctx.fillRect(x, y, cellW, cellH);
+      }
+      // Underscore attribute (bit 0x04): rule under the cell, in the
+      // character colour. Visible attributes only — hidden ones are skipped
+      // above, so the bit means exactly "underscore" here.
+      if ((attr & 0x04) === 0x04) {
+        ctx.fillStyle = bg !== PALETTE.black ? PALETTE.black : fg;
+        ctx.fillRect(x, (r + 1) * cellH - underlineH, cellW, underlineH);
       }
       if (ch !== ' ') {
         ctx.fillStyle = fg;
