@@ -45,6 +45,7 @@ class Term {
   rows = 24;
   cols = 80;
   cells = [];
+  attrs = [];
   cursor = [1, 1];
   oia = { lock: 'none', insert: false, messageWait: false, errorCode: false };
   rawLog = [];
@@ -55,11 +56,18 @@ class Term {
       this.rows = msg.rows;
       this.cols = msg.cols;
       this.cells = new Array(this.rows * this.cols).fill(' ');
-      for (const [pos, , ch] of msg.cells) this.cells[pos] = String(ch ?? ' ');
+      this.attrs = new Array(this.rows * this.cols).fill(0x20);
+      for (const [pos, attr, ch] of msg.cells) {
+        this.cells[pos] = String(ch ?? ' ');
+        this.attrs[pos] = Number(attr);
+      }
       this.cursor = msg.cursor ?? this.cursor;
     } else if (msg.t === 'update') {
       if (Array.isArray(msg.cells)) {
-        for (const [pos, , ch] of msg.cells) this.cells[pos] = String(ch ?? ' ');
+        for (const [pos, attr, ch] of msg.cells) {
+          this.cells[pos] = String(ch ?? ' ');
+          if (attr !== undefined) this.attrs[pos] = Number(attr);
+        }
       }
       if (Array.isArray(msg.cursor)) this.cursor = msg.cursor;
     } else if (msg.t === 'oia') {
@@ -158,6 +166,14 @@ async function main() {
   );
 
   console.log('\n3. Sign on');
+  // Attribute-position masking: the User field's attribute cell (9,44) must
+  // reach the browser as a plain blank (0x20) — a real display shows the
+  // attribute byte without video, so a 0x26 (white/underscore) field must
+  // not appear to start one cell left of the cursor.
+  const attrCell = term.attrs[(9 - 1) * 80 + (44 - 1)];
+  const dataCell = term.attrs[(9 - 1) * 80 + (45 - 1)];
+  check('attribute cell masked to plain blank (0x20)', attrCell === 0x20, `attr(9,44)=0x${attrCell.toString(16)}`);
+  check('data cell carries the real field attr (0x26)', dataCell === 0x26, `attr(9,45)=0x${dataCell.toString(16)}`);
   type('MOCKUSER');
   check(
     'typed user id visible',
@@ -165,6 +181,14 @@ async function main() {
   );
   key('tab');
   check('Tab moves to password field', await waitFor(term, (t) => t.cursor[0] === 10, 3000, JSON.stringify(term.cursor)));
+  key('btab');
+  check('Backtab returns to the User field', await waitFor(term, (t) => t.cursor[0] === 9 && t.cursor[1] === 45, 3000, JSON.stringify(term.cursor)));
+  key('btab');
+  check('Backtab from the first field wraps to the last', await waitFor(term, (t) => t.cursor[0] === 16 && t.cursor[1] === 45, 3000, JSON.stringify(term.cursor)));
+  key('tab');
+  check('Tab wraps around to the first field', await waitFor(term, (t) => t.cursor[0] === 9 && t.cursor[1] === 45, 3000, JSON.stringify(term.cursor)));
+  key('tab');
+  check('Tab re-enters the password field', await waitFor(term, (t) => t.cursor[0] === 10, 3000, JSON.stringify(term.cursor)));
   type('SECRETPW');
   key('fieldexit');
   check(

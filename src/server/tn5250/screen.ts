@@ -363,8 +363,12 @@ export class Screen5250 {
     if (dir === 1) {
       next = sorted.find((f) => f.startPos > this.cursorPos) ?? sorted[0];
     } else {
+      // Backtab must skip the field the cursor is in: compare against the
+      // field END (the current field's own start is always before the
+      // cursor, which would re-home it onto itself). No earlier field means
+      // wrap-around to the last one.
       const rev = [...sorted].reverse();
-      next = rev.find((f) => f.startPos < this.cursorPos) ?? rev[0];
+      next = rev.find((f) => f.endPos < this.cursorPos) ?? rev[0];
     }
     if (!next) return false;
     this.cursorPos = next.dataStart;
