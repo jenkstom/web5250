@@ -80,16 +80,15 @@ docker compose up -d --build          # builds locally, uses .env
 
 Or run a published image instead of building —
 [`docker-compose.registry.yml`](docker-compose.registry.yml) has no `build:`
-and pulls whatever `IMAGE` points at (default is a placeholder for the
-public release, so set `IMAGE` in `.env`, e.g.
-`IMAGE=ghcr.io/OWNER/web5250:latest`):
+and pulls whatever `IMAGE` points at (default:
+`ghcr.io/jenkstom/web5250:latest`):
 
 ```bash
 docker compose -f docker-compose.registry.yml up -d
 ```
 
-The GitLab CI pipeline pushes to the project's own container registry
-(`$CI_REGISTRY_IMAGE`) — point `IMAGE` there the same way,
+GitHub CI builds the image for amd64 and arm64 and publishes it to GHCR on
+every push to `main`. Point `IMAGE` at any other registry the same way,
 or keep using the build variant with `docker compose up -d --no-build`.
 
 Then open the published Pangolin resource (or `http://localhost:8080` for

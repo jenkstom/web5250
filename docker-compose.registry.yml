@@ -4,9 +4,9 @@
 #   cp .env.example .env && $EDITOR .env      # set IBM_I_HOST=..., ADMIN_PIN=...
 #   docker compose -f docker-compose.registry.yml up -d
 #
-# The image below is a placeholder for the public release. Either edit it or
-# point IMAGE in .env at your registry (any tag works):
-#   IMAGE=ghcr.io/your-user/web5250:latest
+# The image below is the published build from GitHub CI. To run another
+# registry or tag, point IMAGE in .env at it (any tag works):
+#   IMAGE=ghcr.io/jenkstom/web5250:v1.0.0
 #
 # Self-contained demo (no IBM i needed - ships a mock 5250 host):
 #   IBM_I_HOST=mock-host IBM_I_PORT=8023 \
@@ -15,7 +15,7 @@
 
 services:
   web5250:
-    image: ${IMAGE:-ghcr.io/OWNER/web5250:latest}
+    image: ${IMAGE:-ghcr.io/jenkstom/web5250:latest}
     pull_policy: missing
     container_name: web5250
     restart: unless-stopped
@@ -56,7 +56,7 @@ services:
   # Demo-only mock IBM i (sign on with any non-empty user + password).
   mock-host:
     profiles: ["demo"]
-    image: ${IMAGE:-ghcr.io/OWNER/web5250:latest}
+    image: ${IMAGE:-ghcr.io/jenkstom/web5250:latest}
     pull_policy: missing
     container_name: web5250-mock
     restart: unless-stopped

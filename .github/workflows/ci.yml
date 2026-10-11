@@ -1,0 +1,93 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# web5250 pipeline: validate → container image → GitHub Container Registry
+#
+# validate: typecheck + full build on Node 22 (mirrors .gitlab-ci.yml).
+# image:    multi-arch Dockerfile build (linux/amd64 + linux/arm64 via QEMU),
+#           pushed to ghcr.io/jenkstom/web5250. Pull requests validate the
+#           build only — no registry login, no push.
+#
+# Push policy (same as the GitLab pipeline):
+#   every push to main → :sha-<short> and :main
+#   main (default)     → :latest (on top of the above)
+#   tag v*             → :<tag-name> and :latest (on top of the SHA tag)
+#
+# Pull the result with:
+#   docker pull ghcr.io/jenkstom/web5250:latest
+#
+# Note: the first GHCR publish creates the package as PRIVATE — flip it to
+# public once under the repo's Packages settings.
+# ─────────────────────────────────────────────────────────────────────────────
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build          # vite (SPA) + esbuild (server + mock) — build as test
+
+  image:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # arm64 (Raspberry Pi / ARM NAS) is built under QEMU emulation — the
+      # toolchain is pure JS/Node, so this works but is slower than amd64.
+      # Drop the qemu step and the arm64 platform to build amd64 only.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action lowercases ghcr.io/${{ github.repository }} — required
+      # by GHCR when the owner name contains capitals.
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      # provenance=false keeps the public manifest free of attestation
+      # entries, which some registries and older tooling don't expect.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
