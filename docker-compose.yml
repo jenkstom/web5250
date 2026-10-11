@@ -9,9 +9,9 @@
 #   cp .env.example .env && edit IBM_I_HOST=...
 #   docker compose up -d --build
 #
-# Run the CI-built image from the GitLab registry instead:
-#   # .env: IMAGE=registry.example.com/web5250:latest
-#   docker login registry.example.com
+# Run a CI-built image from your own GitLab registry instead:
+#   # .env: IMAGE=$CI_REGISTRY_IMAGE:latest
+#   docker login $CI_REGISTRY
 #   docker compose up -d --no-build        (--no-build pulls/uses IMAGE)
 #
 # Self-contained demo (no IBM i needed - ships a mock 5250 host):

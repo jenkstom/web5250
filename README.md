@@ -88,8 +88,8 @@ public release, so set `IMAGE` in `.env`, e.g.
 docker compose -f docker-compose.registry.yml up -d
 ```
 
-The internal CI pipeline pushes to the project GitLab registry
-(`registry.example.com/web5250`) — point `IMAGE` there the same way,
+The GitLab CI pipeline pushes to the project's own container registry
+(`$CI_REGISTRY_IMAGE`) — point `IMAGE` there the same way,
 or keep using the build variant with `docker compose up -d --no-build`.
 
 Then open the published Pangolin resource (or `http://localhost:8080` for

@@ -12,10 +12,10 @@
 #   default branch → :latest (on top of the above)
 #   tag            → :$CI_COMMIT_REF_NAME and :latest (on top of the SHA tag)
 #
-# Pull the result with (registry host = $CI_REGISTRY, currently
-# registry.example.com — see the project's Packages & registries page):
-#   docker login registry.example.com
-#   docker pull registry.example.com/web5250:latest
+# Pull the result with (registry host = $CI_REGISTRY, see the project's
+# Packages & registries page):
+#   docker login $CI_REGISTRY
+#   docker pull $CI_REGISTRY_IMAGE:latest
 # ─────────────────────────────────────────────────────────────────────────────
 
 stages: [validate, image]
