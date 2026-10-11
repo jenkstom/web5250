@@ -2,9 +2,12 @@
 # web5250 pipeline: validate → container image → GitHub Container Registry
 #
 # validate: typecheck + full build on Node 22 (mirrors .gitlab-ci.yml).
-# image:    multi-arch Dockerfile build (linux/amd64 + linux/arm64 via QEMU),
-#           pushed to ghcr.io/jenkstom/web5250. Pull requests validate the
-#           build only — no registry login, no push.
+# image:    one native builder per platform (amd64 on ubuntu-latest, arm64 on
+#           the free ubuntu-24.04-arm runner — no QEMU, each build is minutes),
+#           each pushing a single-platform image by digest.
+# merge:    stitches the digests into one multi-arch manifest under the
+#           release tags. Pull requests validate the build only — no login,
+#           no push.
 #
 # Push policy (same as the GitLab pipeline):
 #   every push to main → :sha-<short> and :main
@@ -30,6 +33,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  REGISTRY_IMAGE: ghcr.io/jenkstom/web5250
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -46,32 +52,108 @@ jobs:
 
   image:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v5
-
-      # arm64 (Raspberry Pi / ARM NAS) is built under QEMU emulation — the
-      # toolchain is pure JS/Node, so this works but is slower than amd64.
-      # Drop the qemu step and the arm64 platform to build amd64 only.
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Log in to GHCR
         if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # metadata-action lowercases ghcr.io/${{ github.repository }} — required
-      # by GHCR when the owner name contains capitals.
-      - uses: docker/metadata-action@v5
-        id: meta
+      # PR builds validate only: no registry login (works from forks), no push.
+      - name: Build (validation only)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Push an untagged single-platform image; tags are applied later, at
+      # manifest-merge time. provenance=false keeps the public manifest free
+      # of attestation entries, which some registries/tooling don't expect.
+      - name: Build and push by digest
+        if: github.event_name != 'pull_request'
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.title=web5250
+            org.opencontainers.image.description=Web-to-5250 (TN5250) terminal gateway for IBM i / AS/400
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -79,15 +161,14 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
-      # provenance=false keeps the public manifest free of attestation
-      # entries, which some registries and older tooling don't expect.
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create multi-arch manifest
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST_DIR: ${{ runner.temp }}/digests
+        run: |
+          args=""
+          for t in $TAGS; do args="$args -t $t"; done
+          for f in "$DIGEST_DIR"/*; do
+            args="$args ${REGISTRY_IMAGE}@sha256:$(basename "$f")"
+          done
+          docker buildx imagetools create $args
