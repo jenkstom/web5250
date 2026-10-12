@@ -54,6 +54,11 @@ let ws: WebSocket | null = null;
 // end overlay; the follow-up close event must not replace it with the
 // generic message.
 let sessionEndedByHost = false;
+// True until a host screen other than the sign-on display arrives (so also
+// while connecting, before any screen): leaving then costs the user nothing.
+// Re-checked on every full-screen redraw; partial updates never move to a
+// different host screen.
+let onSignonScreen = true;
 
 // One session-end notification per automated launch: the embedding page
 // (Angular) listens for it and removes the iframe.
@@ -88,6 +93,7 @@ function connect(): void {
   const sock = new WebSocket(wsUrl());
   ws = sock;
   signalledEnd = false;
+  onSignonScreen = true;
 
   // App-level keepalive: proxies that only track data frames (and mishandle
   // WS control frames) keep the tunnel open; the gateway's pong doubles as
@@ -189,6 +195,10 @@ function handleMessage(data: string): void {
       if (Array.isArray(msg.fields)) term.setFields(msg.fields as number[][]);
       const cur = msg.cursor as number[];
       term.setCursor(cur[0], cur[1]);
+      // Same marker the gateway's automation uses: QDSIGNON-family screens
+      // keep their "Sign On" header until sign-on succeeds (and it returns
+      // after a sign-off, where leaving is again free).
+      onSignonScreen = term.text().toLowerCase().includes('sign on');
       break;
     }
     case 'update': {
@@ -283,6 +293,29 @@ function showOverlay(title: string, detail: string, actions: OverlayAction[]): v
 }
 function hideOverlay(): void {
   $('overlay').classList.add('hidden');
+}
+
+// ------------------------------------------------------------ leave guard
+/** True while leaving/restarting would kill a session the user signed on to. */
+function sessionActive(): boolean {
+  return ws !== null && ws.readyState === WebSocket.OPEN && !onSignonScreen;
+}
+
+/** Gate for buttons that tear the session down; no-op once it already ended. */
+function confirmLeave(): boolean {
+  return !sessionActive() || window.confirm('End the current session?');
+}
+
+// Closing the tab or navigating away drops the host session with no sign-off;
+// the browser renders the prevented unload as its own leave/stay prompt.
+// Embedded launches (?auto=1) are torn down by the parent page, so they stay
+// out of this.
+if (!autoLaunch) {
+  window.addEventListener('beforeunload', (e) => {
+    if (!sessionActive()) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
 }
 
 // ------------------------------------------------------------ session flow
@@ -402,9 +435,15 @@ attachKeyboard(sendKey, () => !menuVisible());
 buildKeypad(sendKey);
 initMenu();
 
-$('overlay-action').addEventListener('click', () => connect());
-$('overlay-menu').addEventListener('click', () => endSession());
-$('btn-systems').addEventListener('click', () => endSession());
+$('overlay-action').addEventListener('click', () => {
+  if (confirmLeave()) connect();
+});
+$('overlay-menu').addEventListener('click', () => {
+  if (confirmLeave()) endSession();
+});
+$('btn-systems').addEventListener('click', () => {
+  if (confirmLeave()) endSession();
+});
 
 $('btn-keys').addEventListener('click', () => $('keys-modal').classList.toggle('hidden'));
 $('keys-close').addEventListener('click', () => $('keys-modal').classList.add('hidden'));
