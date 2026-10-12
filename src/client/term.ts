@@ -58,6 +58,8 @@ export class Terminal {
   private fontSize: number;
   private cellW = 9.6;
   private cellH = 18;
+  /** fit() scale factor applied to the backing store (>1 on big screens). */
+  private renderScale = 1;
   private renderQueued = false;
 
   /** Focus drives cursor styling - repaint when it changes. */
@@ -106,11 +108,20 @@ export class Terminal {
     const m = this.ctx.measureText('M');
     this.cellW = Math.ceil(m.width);
     this.cellH = Math.round(this.fontSize * 1.25);
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.round(this.cellW * this.cols * dpr);
-    this.canvas.height = Math.round(this.cellH * this.rows * dpr);
+    // The backing store renders at the fitted scale (times the device pixel
+    // ratio): upscaling only the CSS box would blur, so big screens get a
+    // proportionally larger canvas instead. Cell metrics stay measured at
+    // the base font - the drawing transform carries the scale.
+    const dpr = (window.devicePixelRatio || 1) * this.renderScale;
+    const w = Math.max(1, Math.round(this.cellW * this.cols * dpr));
+    const h = Math.max(1, Math.round(this.cellH * this.rows * dpr));
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    document.documentElement.style.setProperty('--termw', `${this.cellW * this.cols}px`);
+    document.documentElement.style.setProperty(
+      '--termw',
+      `${Math.round(this.cellW * this.cols * this.renderScale)}px`
+    );
   }
 
   /** The canvas' preferred size at 1:1 CSS pixels (no downscaling). */
@@ -124,11 +135,22 @@ export class Terminal {
   /**
    * Scale the CSS box to fit inside availW×availH, preserving the screen
    * aspect ratio (called by main.ts whenever the available space changes).
+   * Scaling up is allowed: the backing store re-rasterizes at the larger
+   * size, so a big browser window gets a big, crisp terminal instead of a
+   * 1:1 island with margins.
    */
   fit(availW: number, availH: number): void {
-    const scale = Math.min(1, availW / this.naturalWidth, availH / this.naturalHeight);
-    this.canvas.style.width = `${this.naturalWidth * scale}px`;
-    this.canvas.style.height = `${this.naturalHeight * scale}px`;
+    const scale = Math.max(
+      0.1,
+      Math.min(availW / this.naturalWidth, availH / this.naturalHeight)
+    );
+    if (scale !== this.renderScale) {
+      this.renderScale = scale;
+      this.measure();
+    }
+    this.canvas.style.width = `${Math.round(this.naturalWidth * scale)}px`;
+    this.canvas.style.height = `${Math.round(this.naturalHeight * scale)}px`;
+    this.queueRender();
   }
 
   applyCells(cells: (number | string)[][]): void {

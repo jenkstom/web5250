@@ -111,8 +111,9 @@ button.ghost { background: transparent; font-size: 0.75rem; }
 }
 #terminal:focus-within { border-color: #3a5a48; }
 
-/* The CSS box is set from JS (term.fit): the 1:1 size on big screens,
-   scaled down proportionally on small viewports / open keyboards. */
+/* The CSS box is set from JS (term.fit): scaled proportionally to fill the
+   available space - up on big screens, down on small viewports / open
+   keyboards - with the backing store re-rasterized to stay crisp. */
 #screen-canvas { display: block; }
 
 /* hidden input that pulls up soft keyboards on mobile */
