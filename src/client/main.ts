@@ -437,9 +437,10 @@ function focusTerminal(): void {
 }
 
 // While a UI surface covers the terminal (system menu, keyboard-mapping
-// help), its keys belong to that surface - not to the host.
+// help, right-click menu), its keys belong to that surface - not to the host.
+const ctxOpen = (): boolean => !$('ctx-menu').classList.contains('hidden');
 const uiSurfaceOpen = (): boolean =>
-  menuVisible() || !$('keys-modal').classList.contains('hidden');
+  menuVisible() || ctxOpen() || !$('keys-modal').classList.contains('hidden');
 attachKeyboard(sendKey, () => !uiSurfaceOpen());
 buildKeypad(sendKey);
 initMenu();
@@ -463,9 +464,14 @@ $('btn-keys').addEventListener('click', () => {
 });
 $('keys-close').addEventListener('click', () => $('keys-modal').classList.add('hidden'));
 // Escape dismisses the help - without this it would fall through to the
-// terminal mapping and send SysReq to the host.
+// terminal mapping and send SysReq to the host. Same for the right-click
+// menu (uiSurfaceOpen keeps its keys off the host while it is up).
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('keys-modal').classList.contains('hidden')) {
+  if (e.key !== 'Escape') return;
+  if (ctxOpen()) {
+    e.preventDefault();
+    $('ctx-menu').classList.add('hidden');
+  } else if (!$('keys-modal').classList.contains('hidden')) {
     e.preventDefault();
     $('keys-modal').classList.add('hidden');
   }
@@ -516,9 +522,15 @@ const terminal = $('terminal');
 terminal.addEventListener('mousedown', (e) => {
   // Suppressing the default focus (the tap would focus #terminal itself,
   // closing a just-opened keyboard); focusTerminal() picks the right target.
+  // preventDefault also stops middle-click autoscroll.
   e.preventDefault();
-  const rect = termHit(e);
-  if (rect) send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
+  // Left click places the cursor at the clicked cell (the gateway applies
+  // the same freedom as arrow movement). Right-click opens the terminal's
+  // own menu instead - see the contextmenu handler below.
+  if (e.button === 0) {
+    const rect = termHit(e);
+    if (rect) send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
+  }
   focusTerminal();
 });
 function termHit(e: MouseEvent): { r: number; c: number } | null {
@@ -526,6 +538,63 @@ function termHit(e: MouseEvent): { r: number; c: number } | null {
   const bounds = canvas.getBoundingClientRect();
   return term.clickToMessage(e.clientX - bounds.left, e.clientY - bounds.top);
 }
+
+// Right-click over the terminal: the browser's own menu (save image,
+// inspect...) is noise over a 5250 screen; tn5250j opens Copy/Paste
+// actions instead. Long-press on touch devices arrives here too.
+const ctxMenu = $('ctx-menu');
+terminal.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  ctxMenu.classList.remove('hidden');
+  // keep the menu fully inside the viewport
+  const card = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - card.width - 8))}px`;
+  ctxMenu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - card.height - 8))}px`;
+});
+function hideCtxMenu(): void {
+  ctxMenu.classList.add('hidden');
+}
+// any press outside the menu dismisses it
+window.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (ctxOpen() && !ctxMenu.contains(e.target as Node)) hideCtxMenu();
+  },
+  true
+);
+window.addEventListener('blur', hideCtxMenu);
+
+// Copy screen: the visible text of the whole screen grid. The brief label
+// swap is the only feedback (the menu closes right after anyway).
+$('ctx-copy').addEventListener('click', (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  navigator.clipboard
+    ?.writeText(term.text())
+    .then(() => {
+      btn.textContent = 'Copied';
+      window.setTimeout(() => (btn.textContent = 'Copy screen'), 900);
+    })
+    .catch(() => window.prompt('Copy the screen text:', term.text()));
+  hideCtxMenu();
+  focusTerminal();
+});
+// Paste at the cursor, typed character by character. Tabs advance to the
+// next field (a spreadsheet row fills successive prompt fields); line
+// breaks are dropped - auto-submitting a half-filled screen on a stray
+// newline is never what the user meant.
+$('ctx-paste').addEventListener('click', () => {
+  navigator.clipboard
+    ?.readText()
+    .then((text) => {
+      for (const ch of text) {
+        if (ch === '\t') sendKey('tab');
+        else if (ch !== '\r' && ch !== '\n') sendKey('char', ch);
+      }
+    })
+    .catch(() => window.alert('Paste is unavailable: the browser blocked clipboard access.'));
+  hideCtxMenu();
+  focusTerminal();
+});
 
 // Keep focus on the terminal so keyboard events flow; the hidden input is
 // what mobile soft keyboards type into. Focus moving between the terminal

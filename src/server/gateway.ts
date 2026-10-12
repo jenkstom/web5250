@@ -189,18 +189,14 @@ export class GatewaySession {
       return;
     }
 
-    // Mouse click: place the cursor (validated against the field layout).
+    // Mouse click: place the cursor at the clicked cell (the screen model
+    // applies the same freedom as arrow movement, incl. attribute-cell
+    // stepping).
     if (k === 'click') {
       const r = Number(msg.r);
       const c = Number(msg.c);
       if (screen.lock === 'none' && Number.isInteger(r) && Number.isInteger(c)) {
-        const pos = screen.posOf(r, c);
-        if (pos >= 0 && pos < screen.size && !screen.attrPlace[pos]) {
-          const f = screen.currentField();
-          if (!f || (pos >= f.dataStart && pos <= f.endPos)) {
-            screen.cursorPos = pos;
-          }
-        }
+        screen.clickTo(r, c);
       }
       this.scheduleFlush();
       return;

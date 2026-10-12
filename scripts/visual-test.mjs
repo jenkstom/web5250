@@ -18,13 +18,29 @@ const executablePath = exeCandidates.find((p) => p && existsSync(p));
 if (!executablePath) throw new Error('no chromium binary found');
 
 const browser = await chromium.launch({ executablePath, args: ['--no-sandbox'] });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+const context = await browser.newContext({
+  viewport: { width: 1280, height: 900 },
+  permissions: ['clipboard-read', 'clipboard-write']
+});
+const page = await context.newPage();
 
 const errors = [];
 page.on('pageerror', (err) => errors.push('pageerror: ' + err.message));
 page.on('console', (msg) => {
   if (msg.type() === 'error') errors.push('console: ' + msg.text());
 });
+
+// Viewport coordinates of the centre of a 1-based screen cell. Clicks
+// position the 5250 cursor (as on tn5250j), so "just focus the terminal"
+// clicks must land on a deliberate cell.
+const cellXY = (r, c) =>
+  page.evaluate(
+    ([r, c]) => {
+      const b = document.getElementById('screen-canvas').getBoundingClientRect();
+      return { x: b.left + (c - 0.5) * (b.width / 80), y: b.top + (r - 0.5) * (b.height / 24) };
+    },
+    [r, c]
+  );
 
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
 
@@ -57,8 +73,13 @@ await page.waitForFunction(
 await page.waitForTimeout(600); // font settle + first render
 await page.screenshot({ path: `${OUT}/03-signon.png` });
 
-// Focus terminal and type credentials like a user
-await page.click('#terminal');
+// Focus terminal and type credentials like a user. The click lands on the
+// User field itself - clicks position the cursor, so a stray click would
+// drag it off the field before typing.
+{
+  const { x, y } = await cellXY(9, 45);
+  await page.mouse.click(x, y);
+}
 await page.keyboard.type('MOCKUSER');
 await page.screenshot({ path: `${OUT}/04-userid.png` });
 await page.keyboard.press('Tab');
@@ -74,6 +95,114 @@ await page.waitForFunction(
 );
 await page.waitForTimeout(500);
 await page.screenshot({ path: `${OUT}/06-main-menu.png` });
+
+// Title-bar seams: the mock's reverse-video bar (row 1) must render as one
+// solid run. Filling each cell separately at a fractional fit() scale leaves
+// a dark antialiased hairline at cell boundaries (seen vs tn5250j), so the
+// renderer coalesces same-attribute fills and snaps them to device pixels.
+// Scan every boundary in the strip above cap height - the bar background is
+// there but no glyph ink, so only a seam can deviate from the bar colour.
+const bar = await page.evaluate(() => {
+  const canvas = document.getElementById('screen-canvas');
+  const ctx = canvas.getContext('2d');
+  const cw = canvas.width / 80;
+  const y = 3; // device pixels from the row top, above ascender ink
+  const row = ctx.getImageData(0, y, canvas.width, 1).data;
+  const px = (x) => [row[x * 4], row[x * 4 + 1], row[x * 4 + 2]];
+  const modal = px(Math.round(5.5 * cw)); // centre of the bar's first cell
+  let seams = 0;
+  for (let k = 6; k < 80; k++) {
+    const c = px(Math.round(k * cw));
+    if (Math.abs(c[1] - modal[1]) > 15) seams++;
+  }
+  return { modal, seams };
+});
+console.log('TITLE BAR:', JSON.stringify(bar));
+
+// Mouse behaviour, tn5250j-style: left click parks the cursor in ANY field
+// (not just the one it is in), attribute cells are stepped past, and clicks
+// on plain cells move freely. Right-click opens the terminal's own
+// Copy/Paste menu instead of the browser's context menu.
+const oiaPos = () => page.evaluate(() => document.getElementById('oia-pos')?.textContent);
+const awaitPos = (want) =>
+  page.waitForFunction(
+    (w) => document.getElementById('oia-pos')?.textContent === w,
+    want,
+    { timeout: 3000 }
+  ).then(
+    () => true,
+    () => false
+  );
+
+let mouseOk = true;
+let copyOk = true;
+let pasteOk = true;
+// a different field than the cursor's (Selection 6,25): the command line
+{
+  const { x, y } = await cellXY(19, 30);
+  await page.mouse.click(x, y);
+  mouseOk = await awaitPos('19,30');
+  console.log('CLICK other field:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
+}
+// the Selection field's attribute cell (6,25) steps onto its first data cell
+if (mouseOk) {
+  const { x, y } = await cellXY(6, 25);
+  await page.mouse.click(x, y);
+  mouseOk = await awaitPos('6,26');
+  console.log('CLICK attr cell steps past:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
+}
+// plain screen text moves freely
+if (mouseOk) {
+  const { x, y } = await cellXY(1, 10);
+  await page.mouse.click(x, y);
+  mouseOk = await awaitPos('1,10');
+  console.log('CLICK plain cell:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
+}
+// right-click: our menu opens and the browser menu is suppressed
+if (mouseOk) {
+  const { x, y } = await cellXY(10, 40);
+  await page.evaluate(() => {
+    document.addEventListener(
+      'contextmenu',
+      (e) => {
+        window.__ctxDefaultPrevented = e.defaultPrevented;
+      },
+      { once: true }
+    );
+  });
+  await page.mouse.click(x, y, { button: 'right' });
+  await page.waitForSelector('#ctx-menu:not(.hidden)', { timeout: 3000 });
+  const suppressed = await page.evaluate(() => window.__ctxDefaultPrevented === true);
+  console.log('RIGHT-CLICK menu:', suppressed ? 'ok' : 'FAIL browser menu not suppressed');
+  mouseOk = mouseOk && suppressed;
+  // Copy screen: clipboard holds the visible screen text
+  await page.click('#ctx-copy');
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  copyOk = copied.includes('CAUTION: mock host') && copied.includes('IBM i Main Menu');
+  console.log('COPY screen:', copyOk ? 'ok' : `FAIL copied=${JSON.stringify(copied.slice(0, 80))}`);
+  // Paste: '4' into the Selection field, then Enter -> the demo list screen.
+  // Paste goes to the CURSOR (right-click does not move it), so park the
+  // cursor on the Selection field with a left click first.
+  await page.evaluate(() => navigator.clipboard.writeText('4'));
+  const sel = await cellXY(6, 26);
+  await page.mouse.click(sel.x, sel.y);
+  await awaitPos('6,26');
+  await page.mouse.click(sel.x, sel.y, { button: 'right' });
+  await page.waitForSelector('#ctx-menu:not(.hidden)', { timeout: 3000 });
+  await page.click('#ctx-paste');
+  const pastedOk = await awaitPos('6,27'); // paste typed '4', cursor advanced
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => document.getElementById('oia-pos')?.textContent === '7,8',
+    undefined,
+    { timeout: 8000 }
+  );
+  pasteOk = pastedOk;
+  console.log('PASTE at cursor:', pasteOk ? 'ok' : 'FAIL cursor did not advance');
+  await page.screenshot({ path: `${OUT}/09-list-via-paste.png` });
+  await page.keyboard.press('F3'); // back to the main menu for the checks below
+  await page.waitForTimeout(600);
+}
 
 // F1 help + F3 back, then verify OIA snapshot state via DOM
 await page.keyboard.press('F1');
@@ -143,4 +272,5 @@ await browser.close();
 console.log('OIA:', JSON.stringify(oia));
 console.log('JS errors:', errors.length ? errors.join(' | ') : 'none');
 console.log('screenshots written to', OUT);
-if (errors.length || oia.state !== 'connected' || oia.lock || !cursorOk) process.exit(1);
+if (errors.length || oia.state !== 'connected' || oia.lock || !cursorOk || bar.seams > 0 || !mouseOk || !copyOk || !pasteOk)
+  process.exit(1);

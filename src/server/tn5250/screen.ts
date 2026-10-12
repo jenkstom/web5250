@@ -611,6 +611,22 @@ export class Screen5250 {
     this.cursorPos = target;
   }
 
+  /**
+   * Mouse click: park the cursor at the clicked cell, tn5250j-style - the
+   * same freedom the arrow keys have (any field of the screen, not just the
+   * current one; a 5250 keyboard cannot jump fields, the mouse can).
+   * Attribute cells are stepped past exactly like arrow movement.
+   */
+  clickTo(row1: number, col1: number): boolean {
+    if (row1 < 1 || row1 > this.rows || col1 < 1 || col1 > this.cols) return false;
+    const rowEnd = this.posOf(row1, this.cols);
+    let target = this.posOf(row1, col1);
+    while (target <= rowEnd && this.attrPlace[target]) target++;
+    if (target > rowEnd) return false;
+    this.cursorPos = target;
+    return true;
+  }
+
   home(): void {
     this.cursorPos = this.homePos;
   }
