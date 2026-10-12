@@ -81,6 +81,19 @@ function send(msg: Record<string, unknown>): void {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
+// App-level keepalive: proxies that only track data frames (and mishandle
+// WS control frames) keep the tunnel open; the gateway also counts it as
+// liveness for its ping loop. The timer must live in a Web Worker: Chrome
+// coalesces main-thread timers to ~1/min for hidden tabs and under battery
+// saver - even foreground - which outlives the gateway's grace window and
+// kills healthy sessions (e.g. reading the keys help with the tab away).
+const keepaliveWorker = new Worker(
+  URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 25000)'], { type: 'text/javascript' }))
+);
+keepaliveWorker.onmessage = (): void => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('{"t":"ping"}');
+};
+
 function connect(): void {
   // A reconnect must never orphan the previous socket server-side (e.g. the
   // dead session left open after a host error): detach and close it first.
@@ -94,14 +107,6 @@ function connect(): void {
   ws = sock;
   signalledEnd = false;
   onSignonScreen = true;
-
-  // App-level keepalive: proxies that only track data frames (and mishandle
-  // WS control frames) keep the tunnel open; the gateway's pong doubles as
-  // liveness for the server-side ping loop.
-  const keepalive = window.setInterval(() => {
-    if (ws === sock && sock.readyState === WebSocket.OPEN) sock.send('{"t":"ping"}');
-    else window.clearInterval(keepalive);
-  }, 25000);
 
   sock.addEventListener('open', () => {
     setConnState('connecting');
@@ -431,7 +436,11 @@ function focusTerminal(): void {
   else terminal.focus();
 }
 
-attachKeyboard(sendKey, () => !menuVisible());
+// While a UI surface covers the terminal (system menu, keyboard-mapping
+// help), its keys belong to that surface - not to the host.
+const uiSurfaceOpen = (): boolean =>
+  menuVisible() || !$('keys-modal').classList.contains('hidden');
+attachKeyboard(sendKey, () => !uiSurfaceOpen());
 buildKeypad(sendKey);
 initMenu();
 
@@ -445,8 +454,22 @@ $('btn-systems').addEventListener('click', () => {
   if (confirmLeave()) endSession();
 });
 
-$('btn-keys').addEventListener('click', () => $('keys-modal').classList.toggle('hidden'));
+$('btn-keys').addEventListener('click', () => {
+  const m = $('keys-modal');
+  m.classList.toggle('hidden');
+  // Focus the card so the scroll keys (arrows, PgUp/PgDn) page the help
+  // instead of rolling the 5250 screen behind it.
+  if (!m.classList.contains('hidden')) $('keys-card').focus();
+});
 $('keys-close').addEventListener('click', () => $('keys-modal').classList.add('hidden'));
+// Escape dismisses the help - without this it would fall through to the
+// terminal mapping and send SysReq to the host.
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('keys-modal').classList.contains('hidden')) {
+    e.preventDefault();
+    $('keys-modal').classList.add('hidden');
+  }
+});
 // One-click diagnostics: raw 5250 records + parsed field tables + AID
 // payloads for this session, straight from the gateway to the clipboard.
 // Hidden unless the gateway is built with SHOW_DIAG_BUTTON=1.

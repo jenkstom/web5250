@@ -599,13 +599,15 @@ export class Screen5250 {
     const r = this.rowOf(this.cursorPos) - 1 + dr;
     const c = this.colOf(this.cursorPos) - 1 + dc;
     if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) return;
-    const target = this.posOf(r + 1, c + 1);
-    if (this.attrPlace[target]) return; // never land on attribute cells
-    const f = this.currentField();
-    if (f && (target < f.dataStart || target > f.endPos)) {
-      // keep the cursor inside the current field
-      return;
-    }
+    const rowStart = this.posOf(r + 1, 1);
+    const rowEnd = rowStart + this.cols - 1;
+    // The cursor moves freely (real 5250s do not clamp it to the current
+    // field - option-column lists are walked line by line with Up/Down).
+    // Attribute cells are the only exception: step right onto the next
+    // addressable cell of that row instead of landing on them.
+    let target = this.posOf(r + 1, c + 1);
+    while (target <= rowEnd && this.attrPlace[target]) target++;
+    if (target > rowEnd) return;
     this.cursorPos = target;
   }
 

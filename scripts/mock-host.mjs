@@ -56,6 +56,7 @@ class HostSession {
     this.termType = '';
     this.state = 'signon';
     this.fields = [];
+    this.fieldPos = []; // [row, col] per parsed MDT run (parallel to fields)
     this.currentFields = [];
     this.lastReadCmd = CMD_RIF;
     this.gotTtype = false;
@@ -171,6 +172,7 @@ class HostSession {
         this.text(8, 6, null, '  1. User tasks'),
         this.text(9, 6, null, '  2. Office tasks'),
         this.text(10, 6, null, '  3. General system tasks'),
+        this.text(11, 6, null, '  4. Work with demo items'),
         this.text(12, 6, null, '90. Sign off'),
         this.text(14, 6, 0x28, 'CAUTION: mock host, no real IBM i behind this'),
         this.text(17, 6, null, 'Command line:'),
@@ -182,6 +184,27 @@ class HostSession {
       [6, 26],
       CMD_RMD
     );
+  }
+
+  /** WRK-style option list: one input field per line, walked with Up/Down. */
+  sendList(status = '') {
+    this.state = 'list';
+    this.currentFields = [];
+    const defs = [
+      this.text(1, 30, 0x22, 'WORK WITH DEMO ITEMS'),
+      this.text(3, 6, null, 'Type an option next to an item, press Enter.'),
+      this.text(4, 6, 0x3a, '  2=Edit   5=Display'),
+      this.text(6, 6, null, 'Opt  Item')
+    ];
+    for (let i = 0; i < 10; i++) {
+      defs.push(this.field(7 + i, 7, 0x21, 2), this.text(7 + i, 12, null, `Demo item ${i + 1}`));
+      this.currentFields.push({ row: 7 + i, col: 8, len: 2 });
+    }
+    defs.push(
+      this.text(22, 6, 0x28, status),
+      this.text(23, 6, 0x3a, 'F3=Exit')
+    );
+    this.screen(defs, [7, 8], CMD_RMD);
   }
 
   sendHelp() {
@@ -381,7 +404,10 @@ class HostSession {
         this.fields.push(s.trim());
       }
     } else {
+      this.fieldPos = [];
       while (p + 3 <= rec.length && rec[p] === ORDER_SBA) {
+        const fr = rec[p + 1];
+        const fc = rec[p + 2];
         p += 3;
         let s = '';
         while (p < rec.length && rec[p] !== ORDER_SBA) {
@@ -389,6 +415,7 @@ class HostSession {
           p++;
         }
         this.fields.push(s.replace(/[ ]+$/, ''));
+        this.fieldPos.push([fr, fc]);
       }
     }
 
@@ -420,6 +447,8 @@ class HostSession {
           this.sendSignoff(user || 'USER');
         } else if (aid === AID_PF1) {
           this.sendHelp();
+        } else if (sel.trim() === '4') {
+          this.sendList();
         } else if (cmd) {
           this.sendError(`Command ${cmd} not known to mock host`, CMD_RMD);
           this.sendMain(user);
@@ -432,6 +461,21 @@ class HostSession {
       case 'help':
         this.sendMain(this.lastUser);
         break;
+
+      case 'list': {
+        if (aid === AID_PF3) {
+          this.sendMain(this.lastUser);
+          break;
+        }
+        const idx = this.fields.findIndex((v) => v.trim() !== '');
+        if (aid === AID_ENTER && idx >= 0) {
+          const line = (this.fieldPos[idx]?.[0] ?? 7) - 6;
+          this.sendList(`Option ${this.fields[idx].trim()} entered on line ${line}.`);
+        } else {
+          this.sendList();
+        }
+        break;
+      }
 
       case 'sysreq':
         this.sendRestore();

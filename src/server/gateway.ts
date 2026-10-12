@@ -145,6 +145,9 @@ export class GatewaySession {
   /** Client -> gateway message. */
   handleMessage(raw: unknown): void {
     if (this.closed) return;
+    // Any traffic proves the browser (and whatever proxies sit between) is
+    // alive: count it for the server-side reap loop, not just app pings.
+    (this.ws as unknown as { alive?: boolean }).alive = true;
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(String(raw)) as Record<string, unknown>;
@@ -162,9 +165,7 @@ export class GatewaySession {
       return;
     }
     if (t === 'ping') {
-      // Client keepalive: also refresh the transport-level liveness flag
-      // (see the ping loop in index.ts).
-      (this.ws as unknown as { alive?: boolean }).alive = true;
+      // Client keepalive (liveness was already counted above).
       this.send('pong', {});
       return;
     }

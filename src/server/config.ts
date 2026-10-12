@@ -73,7 +73,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminPin,
     dbPath: env.WEB5250_DB ?? 'data/web5250.db',
     wsPingIntervalMs: int(env.WS_PING_INTERVAL_MS, 30000),
-    wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 2),
+    // Grace = interval x misses (default 2 min): wide enough that a browser
+    // whose keepalive timers slipped (throttled tab, slow proxy) survives;
+    // a vanished browser still frees its iSeries session promptly.
+    wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 4),
     autoSignOnUser: env.AUTO_SIGNON_USER?.trim() || null,
     autoSignOnPassword: env.AUTO_SIGNON_PASSWORD ?? null,
     frameAncestors: env.FRAME_ANCESTORS?.trim() || null,
