@@ -11,6 +11,8 @@ export interface Config {
   tlsRejectUnauthorized: boolean;
   codePage: string;
   termType: string;
+  /** Claim mouse capability in the 5250 query reply (GUI discovery). */
+  mouseGui: boolean;
   devPrefix: string | null;
   allowCustomHost: boolean;
   /** PIN guarding host-list administration; null disables the admin UI. */
@@ -68,6 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tlsRejectUnauthorized: bool(env.IBM_I_TLS_REJECT_UNAUTHORIZED, false),
     codePage,
     termType,
+    mouseGui: ['1', 'true'].includes((env.IBM_I_MOUSE_GUI ?? '').toLowerCase()),
     devPrefix: devPrefix === undefined || devPrefix === '' ? null : devPrefix.toUpperCase(),
     allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false),
     adminPin,

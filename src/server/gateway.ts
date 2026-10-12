@@ -86,6 +86,7 @@ export class GatewaySession {
       tlsRejectUnauthorized: cfg.tlsRejectUnauthorized,
       termType,
       deviceName: this.devName,
+      queryMouseGui: cfg.mouseGui,
       codePage
     });
     // Terminal host state (connection failed, host dropped us): tear the

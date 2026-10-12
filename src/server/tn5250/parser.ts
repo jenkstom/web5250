@@ -18,17 +18,24 @@ export class Parser5250 {
   private readonly telnet: Telnet5250;
   private readonly ebcdic: Ebcdic;
   private readonly warn: (msg: string) => void;
+  /** Informational diagnostics (defaults to warn until the client overrides). */
+  log: (msg: string) => void;
+  /** Claim pointer-device capability in the query reply (IBM_I_MOUSE_GUI=1). */
+  private readonly mouseGui: boolean;
 
   constructor(
     screen: Screen5250,
     telnet: Telnet5250,
     ebcdic: Ebcdic,
-    warn: (msg: string) => void
+    warn: (msg: string) => void,
+    mouseGui = false
   ) {
     this.screen = screen;
     this.telnet = telnet;
     this.ebcdic = ebcdic;
     this.warn = warn;
+    this.log = warn;
+    this.mouseGui = mouseGui;
   }
 
   private hasNext(): boolean {
@@ -476,11 +483,53 @@ export class Parser5250 {
       }
       const sfClass = this.next();
       const sfType = this.next();
-      const rest = len - 4;
-      for (let i = 0; i < rest && this.hasNext(); i++) this.next();
+      const rest: number[] = [];
+      for (let i = 0; i < len - 4 && this.hasNext(); i++) rest.push(this.next());
       if (sfClass === 0xd9 && sfType === 0x70) {
         this.sendQueryResponse(); // 5250 Query
+      } else if (sfClass === 0xd9 && sfType === 0x55) {
+        this.decodeMouseButtons(rest);
+      } else if (sfClass === 0xd9) {
+        this.log(`WSF: class D9 type ${sfType.toString(16)} (${rest.length} bytes) skipped`);
       }
+    }
+  }
+
+  /**
+   * PROGRAMMABLE MOUSE BUTTONS structured field (5494 FR Table 15-28/15-29):
+   * the host maps mouse events to application AIDs (X'70'-X'7F' or a defined
+   * AID). Payload after length/class/type is 3 reserved bytes plus 4-byte
+   * event definitions: [flags, first event, second event, AID]. Logged for
+   * now - the table is the missing piece for right-click / double-click
+   * menu support (with IBM_I_MOUSE_GUI=1 the host starts sending it).
+   */
+  private decodeMouseButtons(rest: number[]): void {
+    const EVENT: Record<number, string> = {
+      0x01: 'left-down', 0x02: 'left-up', 0x03: 'left-double',
+      0x04: 'right-down', 0x05: 'right-up', 0x06: 'right-double',
+      0x07: 'middle-down', 0x08: 'middle-up', 0x09: 'middle-double',
+      0x0a: 'shift-left-down', 0x0b: 'shift-left-up', 0x0c: 'shift-left-double',
+      0x0d: 'shift-right-down', 0x0e: 'shift-right-up', 0x0f: 'shift-right-double',
+      0x10: 'shift-middle-down', 0x11: 'shift-middle-up', 0x12: 'shift-middle-double'
+    };
+    const defs = rest.slice(3); // 3 reserved bytes, then 4-byte definitions
+    if (defs.length === 0) {
+      this.log('MOUSE BUTTONS: table reset (no definitions)');
+      return;
+    }
+    for (let i = 0; i + 3 < defs.length; i += 4) {
+      const flags = defs[i];
+      const first = EVENT[defs[i + 1]] ?? `event-${defs[i + 1].toString(16)}`;
+      const twoEvent = (flags & 0x01) !== 0;
+      const aid = defs[i + 3];
+      const second = twoEvent ? ` + ${(EVENT[defs[i + 2]] ?? `event-${defs[i + 2].toString(16)}`)}` : '';
+      const bits = [
+        twoEvent ? 'two-event' : 'single',
+        (flags & 0x02) !== 0 ? 'move-cursor' : '',
+        (flags & 0x04) !== 0 ? 'queued' : '',
+        (flags & 0x08) !== 0 ? 'marker' : ''
+      ].filter(Boolean).join(',');
+      this.log(`MOUSE BUTTONS: ${first}${second} -> AID 0x${aid.toString(16)} (${bits})`);
     }
   }
 
@@ -525,6 +574,16 @@ export class Parser5250 {
     b[52] = 0;
     b[53] = 0x07; // enhanced mode options
     b[54] = 8; // enhanced user interface level 3
+    // Device-capability bytes per 5494 FR Table 15-48 (IBM bit order: bit 0
+    // = X'80'). Byte 4 (b[53]) bit 4 = X'10' announces a pointer device;
+    // byte 5 (b[54]) bit 0 = X'80' claims UI level 2, which covers the
+    // Programmable Mouse Buttons structured field. With IBM_I_MOUSE_GUI=1
+    // the host programs the mouse buttons (right-click / double-click AIDs)
+    // instead of treating the display as mouseless.
+    if (this.mouseGui) {
+      b[53] |= 0x10;
+      b[54] |= 0x80;
+    }
     // 55-63 reserved (0)
     this.telnet.sendGds(0, 0, Buffer.from(b));
   }

@@ -19,6 +19,8 @@ export interface Tn5250ClientOptions {
   deviceName: string | null;
   codePage: string;
   connectTimeoutMs?: number;
+  /** Claim pointer-device capability in the query reply (IBM_I_MOUSE_GUI=1). */
+  queryMouseGui?: boolean;
 }
 
 export class Tn5250Client {
@@ -50,7 +52,15 @@ export class Tn5250Client {
       onNegotiated: () => this.setStatus('negotiating'),
       onWarn: (msg) => this.warn(`telnet: ${msg}`)
     });
-    this.parser = new Parser5250(this.screen, this.telnet, this.ebcdic, (m) => this.warn(`parser: ${m}`));
+    this.parser = new Parser5250(
+      this.screen,
+      this.telnet,
+      this.ebcdic,
+      (m) => this.warn(`parser: ${m}`),
+      opts.queryMouseGui ?? false
+    );
+    this.parser.log = (m) =>
+      this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] ${m}`);
   }
 
   private warn(msg: string): void {
