@@ -83,6 +83,54 @@ await page.keyboard.press('F3');
 await page.waitForTimeout(600);
 await page.screenshot({ path: `${OUT}/08-main-again.png` });
 
+// Reverse-video cursor: the mock's Selection field (attr 0x21) holds the
+// cursor on the main menu. It must render as a blinking underline over the
+// green reverse background (not a black-on-black blank block), and hold
+// steady once the terminal loses focus.
+const cursorPx = () =>
+  page.evaluate(() => {
+    const canvas = document.getElementById('screen-canvas');
+    const ctx = canvas.getContext('2d');
+    const [r, c] = (document.getElementById('oia-pos')?.textContent ?? '1,1')
+      .split(',')
+      .map(Number);
+    const cw = canvas.width / 80;
+    const chh = canvas.height / 24;
+    const px = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data.slice(0, 3));
+    return {
+      // bottom edge of the cursor cell (the underline strip) and its centre
+      edge: px(Math.floor((c - 0.5) * cw), Math.floor(r * chh) - 1),
+      centre: px(Math.floor((c - 0.5) * cw), Math.floor((r - 0.5) * chh))
+    };
+  });
+
+let first = await cursorPx();
+let blinked = false;
+for (let i = 0; i < 12 && !blinked; i++) {
+  await page.waitForTimeout(160);
+  const s = await cursorPx();
+  blinked = JSON.stringify(s.edge) !== JSON.stringify(first.edge);
+}
+if (!blinked) console.log('CURSOR: no blink observed', JSON.stringify(first));
+await page.evaluate(() => document.activeElement?.blur());
+await page.waitForTimeout(120);
+const steady1 = await cursorPx();
+await page.waitForTimeout(800);
+const steady2 = await cursorPx();
+console.log(
+  'CURSOR:',
+  JSON.stringify({
+    blinked,
+    steadyWhenBlurred: JSON.stringify(steady1) === JSON.stringify(steady2),
+    cellCentre: steady1.centre // green (reverse bg) proves no black block cursor
+  })
+);
+const cursorOk =
+  blinked &&
+  JSON.stringify(steady1) === JSON.stringify(steady2) &&
+  steady1.centre[1] > steady1.centre[0] && // green dominant: reverse bg intact
+  steady1.centre[1] > 60;
+
 const oia = await page.evaluate(() => ({
   state: document.getElementById('conn-state')?.dataset.state,
   lock: document.getElementById('oia-lock')?.textContent,
@@ -95,4 +143,4 @@ await browser.close();
 console.log('OIA:', JSON.stringify(oia));
 console.log('JS errors:', errors.length ? errors.join(' | ') : 'none');
 console.log('screenshots written to', OUT);
-if (errors.length || oia.state !== 'connected' || oia.lock) process.exit(1);
+if (errors.length || oia.state !== 'connected' || oia.lock || !cursorOk) process.exit(1);

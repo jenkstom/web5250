@@ -19,6 +19,7 @@ export interface MenuSystem {
 interface Meta {
   adminEnabled: boolean;
   allowCustomHost: boolean;
+  showDiagButton?: boolean;
   termTypes: string[];
   codePages: string[];
   defaults: { port: number; ssl: boolean; termType: string; codePage: string; devPrefix: string };
@@ -68,6 +69,14 @@ async function fetchMeta(): Promise<Meta> {
   return (await res.json()) as Meta;
 }
 
+let metaPromise: Promise<Meta | null> | null = null;
+
+/** /api/meta, fetched once per page load (null when the gateway is unreachable). */
+export function loadMeta(): Promise<Meta | null> {
+  metaPromise ??= fetchMeta().catch(() => null);
+  return metaPromise;
+}
+
 /** Show the menu and (re)load its data. Called on first start and whenever a session ends. */
 export async function showMenu(callback: (s: MenuSystem) => void): Promise<void> {
   onSelect = callback;
@@ -78,7 +87,7 @@ export async function showMenu(callback: (s: MenuSystem) => void): Promise<void>
     menu.classList.add('boot');
     window.setTimeout(() => menu.classList.remove('boot'), 600);
   }
-  meta ??= await fetchMeta().catch(() => null);
+  meta ??= await loadMeta();
   try {
     systems = await fetchSystems();
     $('menu-error').classList.add('hidden');

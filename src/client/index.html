@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="dark" />
     <title>IBM i 5250 Terminal</title>
   </head>
@@ -14,15 +14,17 @@
         <span class="spacer"></span>
         <span id="dev-info" title="Session info"></span>
         <button id="btn-systems" class="ghost hidden" type="button" title="End the session and pick another system">Systems</button>
-        <button id="btn-diag" class="ghost" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
+        <button id="btn-diag" class="ghost hidden" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
         <button id="btn-keypad" class="ghost" type="button" title="Toggle on-screen keypad">Pad</button>
+        <button id="btn-kbd" class="ghost hidden" type="button" title="Show / hide the device keyboard">Kbd</button>
       </header>
 
       <main id="stage">
         <div id="terminal" tabindex="0" aria-label="5250 terminal screen">
           <canvas id="screen-canvas"></canvas>
-          <input id="mobile-input" autocomplete="off" autocapitalize="off" spellcheck="false" aria-hidden="true" />
+          <input id="mobile-input" autocomplete="off" autocapitalize="off" spellcheck="false"
+                 enterkeyhint="send" aria-hidden="true" />
         </div>
         <div id="oia" aria-live="polite">
           <span id="oia-left">

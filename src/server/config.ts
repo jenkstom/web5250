@@ -26,6 +26,8 @@ export interface Config {
   autoSignOnPassword: string | null;
   /** When set, HTML responses carry `Content-Security-Policy: frame-ancestors …`. */
   frameAncestors: string | null;
+  /** Show the Diag top-bar button in the browser UI (session diagnostics). */
+  showDiagButton: boolean;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -74,7 +76,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 2),
     autoSignOnUser: env.AUTO_SIGNON_USER?.trim() || null,
     autoSignOnPassword: env.AUTO_SIGNON_PASSWORD ?? null,
-    frameAncestors: env.FRAME_ANCESTORS?.trim() || null
+    frameAncestors: env.FRAME_ANCESTORS?.trim() || null,
+    showDiagButton: bool(env.SHOW_DIAG_BUTTON, false)
   };
 }
 

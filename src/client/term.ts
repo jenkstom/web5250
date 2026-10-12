@@ -51,11 +51,25 @@ export class Terminal {
   rows = 24;
   cols = 80;
   cursor: [number, number] = [1, 1]; // 1-based
-  focused = true;
+  private focused_ = true;
+  /** Blink phase for the reverse-video cursor underline (530 ms cadence). */
+  private blinkOn = true;
+  private blinkTimer: number | undefined;
   private fontSize: number;
   private cellW = 9.6;
   private cellH = 18;
   private renderQueued = false;
+
+  /** Focus drives cursor styling - repaint when it changes. */
+  get focused(): boolean {
+    return this.focused_;
+  }
+  set focused(v: boolean) {
+    if (v !== this.focused_) {
+      this.focused_ = v;
+      this.queueRender();
+    }
+  }
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -75,6 +89,12 @@ export class Terminal {
     this.render();
   }
 
+  /** Re-measure cell metrics (e.g. after the webfont loads) and redraw. */
+  remeasure(): void {
+    this.measure();
+    this.queueRender();
+  }
+
   setFields(fields: number[][]): void {
     this.fields = fields;
     this.queueRender();
@@ -89,14 +109,26 @@ export class Terminal {
     const dpr = window.devicePixelRatio || 1;
     this.canvas.width = Math.round(this.cellW * this.cols * dpr);
     this.canvas.height = Math.round(this.cellH * this.rows * dpr);
-    this.canvas.style.width = `${this.cellW * this.cols}px`;
-    this.canvas.style.height = `${this.cellH * this.rows}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     document.documentElement.style.setProperty('--termw', `${this.cellW * this.cols}px`);
   }
 
-  get cssWidth(): number {
+  /** The canvas' preferred size at 1:1 CSS pixels (no downscaling). */
+  get naturalWidth(): number {
     return this.cellW * this.cols;
+  }
+  get naturalHeight(): number {
+    return this.cellH * this.rows;
+  }
+
+  /**
+   * Scale the CSS box to fit inside availW×availH, preserving the screen
+   * aspect ratio (called by main.ts whenever the available space changes).
+   */
+  fit(availW: number, availH: number): void {
+    const scale = Math.min(1, availW / this.naturalWidth, availH / this.naturalHeight);
+    this.canvas.style.width = `${this.naturalWidth * scale}px`;
+    this.canvas.style.height = `${this.naturalHeight * scale}px`;
   }
 
   applyCells(cells: (number | string)[][]): void {
@@ -162,11 +194,19 @@ export class Terminal {
 
     const [curR, curC] = this.cursor;
     const cursorPos = (curR - 1) * cols + (curC - 1);
+    // Reverse-video cells (and every non-display cell - those attribute
+    // bytes carry the reverse bit too) draw their glyph in black over a
+    // coloured background, so the usual block cursor (fg fill + black
+    // glyph) would collapse into a black-on-black blank. There the cursor
+    // is a blinking underline instead.
+    const cursorReverse =
+      cursorPos >= 0 && cursorPos < rows * cols && (this.attrs[cursorPos] & 0x01) !== 0;
 
     // Input-field underlines (classic 5250 look). Non-display (password)
     // fields are underlined too; the cursor cell is skipped - the cursor
-    // block takes its place.
+    // (block or blinking underline) takes its place.
     const underlineH = Math.max(2, Math.round(cellH / 9));
+    const cursorH = Math.max(3, underlineH + 1); // chunkier than the field rule
     for (const [start, len, attr] of this.fields) {
       const fg = attrStyle(attr).fg;
       for (let i = 0; i < len; i++) {
@@ -190,10 +230,31 @@ export class Terminal {
 
       // The cursor is drawn regardless of the non-display attribute: it
       // reveals only the position, never the hidden content.
+      if (pos === cursorPos && cursorReverse) {
+        // Draw the cell as it normally renders...
+        if (!isNonDisplay(attr)) {
+          if (bg !== PALETTE.black) {
+            ctx.fillStyle = bg;
+            ctx.fillRect(x, y, cellW, cellH);
+          }
+          if (ch !== ' ') {
+            ctx.fillStyle = fg;
+            ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
+          }
+        }
+        // ...and mark it with the underline cursor: black over the coloured
+        // reverse background, the field colour over a (black) hidden cell.
+        // Steady when unfocused, blinking while typing focus is on.
+        if (this.blinkOn || !this.focused_) {
+          ctx.fillStyle = isNonDisplay(attr) ? bg : PALETTE.black;
+          ctx.fillRect(x, (r + 1) * cellH - cursorH, cellW, cursorH);
+        }
+        continue;
+      }
       if (pos === cursorPos) {
         // cursor cell: filled block with contrasting glyph
-        ctx.fillStyle = this.focused ? fg : PALETTE.green;
-        ctx.globalAlpha = this.focused ? 1 : 0.55;
+        ctx.fillStyle = this.focused_ ? fg : PALETTE.green;
+        ctx.globalAlpha = this.focused_ ? 1 : 0.55;
         ctx.fillRect(x, y, cellW, cellH);
         ctx.globalAlpha = 1;
         ctx.fillStyle = PALETTE.black;
@@ -215,6 +276,23 @@ export class Terminal {
       if (ch !== ' ') {
         ctx.fillStyle = fg;
         ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
+      }
+    }
+
+    // Run the blink cycle only while a blinking cursor is actually shown;
+    // the queued repaint after the reset clears a stale "off" frame.
+    const blink = cursorReverse && this.focused_;
+    if (blink && this.blinkTimer === undefined) {
+      this.blinkTimer = window.setInterval(() => {
+        this.blinkOn = !this.blinkOn;
+        this.queueRender();
+      }, 530);
+    } else if (!blink && this.blinkTimer !== undefined) {
+      window.clearInterval(this.blinkTimer);
+      this.blinkTimer = undefined;
+      if (!this.blinkOn) {
+        this.blinkOn = true;
+        this.queueRender();
       }
     }
   }

@@ -7,9 +7,9 @@
 // connect with environment defaults.
 import './styles.css';
 import { Terminal, type OiaState } from './term.ts';
-import { attachKeyboard, type SendKey } from './keyboard.ts';
+import { attachKeyboard, mapEvent, type SendKey } from './keyboard.ts';
 import { buildKeypad } from './keypad.ts';
-import { fetchSystems, hideMenu, initMenu, menuVisible, showMenu, displayName, type MenuSystem } from './menu.ts';
+import { fetchSystems, hideMenu, initMenu, loadMeta, menuVisible, showMenu, displayName, type MenuSystem } from './menu.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -184,6 +184,7 @@ function handleMessage(data: string): void {
     }
     case 'screen': {
       term.resizeGrid(msg.rows as number, msg.cols as number);
+      fitCanvas(); // cell metrics / grid size may have changed -> new fit
       term.applyCells(msg.cells as (number | string)[][]);
       if (Array.isArray(msg.fields)) term.setFields(msg.fields as number[][]);
       const cur = msg.cursor as number[];
@@ -300,6 +301,7 @@ function startSession(system: MenuSystem): void {
 function endSession(): void {
   endingSession = true;
   ws?.close();
+  mobileInput.blur(); // put the soft keyboard away before the menu shows
   hideOverlay();
   setConnState('idle');
   $('dev-info').textContent = '';
@@ -335,7 +337,67 @@ function boot(): void {
   void showMenu(startSession);
 }
 
+// ------------------------------------------------------------------ viewport
+// The app's height tracks the *visual* viewport: when a mobile soft keyboard
+// opens, iOS (and others) shrink the visual viewport without resizing the
+// layout viewport, so 100dvh alone leaves the terminal hidden behind the
+// keyboard. Following it here lets the whole UI - and the canvas with it -
+// shrink while typing and expand again when the keyboard closes.
+function applyViewport(): void {
+  const h = window.visualViewport?.height ?? window.innerHeight;
+  document.documentElement.style.setProperty('--vvh', `${Math.round(h)}px`);
+}
+window.visualViewport?.addEventListener('resize', applyViewport);
+window.visualViewport?.addEventListener('scroll', () => {
+  // iOS can scroll the page behind an open keyboard; pin it back so the
+  // shrunk app stays flush with the top of the visual viewport.
+  applyViewport();
+  window.scrollTo(0, 0);
+});
+window.addEventListener('resize', applyViewport);
+window.addEventListener('orientationchange', applyViewport);
+applyViewport();
+
+// The canvas is sized in JS rather than with CSS max-* constraints (engines
+// don't apply those aspect-preservingly to an explicitly sized canvas):
+// whenever the space available to the terminal changes - window resize, soft
+// keyboard opening/closing through --vvh, keypad toggles - scale it to fit.
+function fitCanvas(): void {
+  const stage = $('stage');
+  const termEl = $('terminal');
+  const s = getComputedStyle(stage);
+  const t = getComputedStyle(termEl);
+  const availW =
+    stage.clientWidth -
+    parseFloat(s.paddingLeft) - parseFloat(s.paddingRight) -
+    parseFloat(t.borderLeftWidth) - parseFloat(t.borderRightWidth);
+  const availH =
+    stage.clientHeight -
+    parseFloat(s.paddingTop) - parseFloat(s.paddingBottom) -
+    parseFloat(s.rowGap) - $('oia').offsetHeight -
+    parseFloat(t.borderTopWidth) - parseFloat(t.borderBottomWidth);
+  if (availW > 0 && availH > 0) term.fit(availW, availH);
+}
+new ResizeObserver(fitCanvas).observe($('stage'));
+fitCanvas();
+// The canvas boots with the fallback font; when IBM Plex Mono arrives the
+// cell metrics change, so re-measure and refit once webfonts settle.
+document.fonts?.ready.then(() => {
+  term.remeasure();
+  fitCanvas();
+});
+
 // ---------------------------------------------------------------------- UI
+// Touch devices type through the hidden input: tapping the screen focuses it
+// (focus() inside the tap gesture is what makes iOS/Android raise the
+// keyboard), and the Kbd button toggles it explicitly.
+const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+
+function focusTerminal(): void {
+  if (coarsePointer) mobileInput.focus({ preventScroll: true });
+  else terminal.focus();
+}
+
 attachKeyboard(sendKey, () => !menuVisible());
 buildKeypad(sendKey);
 initMenu();
@@ -348,18 +410,54 @@ $('btn-keys').addEventListener('click', () => $('keys-modal').classList.toggle('
 $('keys-close').addEventListener('click', () => $('keys-modal').classList.add('hidden'));
 // One-click diagnostics: raw 5250 records + parsed field tables + AID
 // payloads for this session, straight from the gateway to the clipboard.
+// Hidden unless the gateway is built with SHOW_DIAG_BUTTON=1.
 $('btn-diag').addEventListener('click', () => send({ t: 'diag' }));
+void loadMeta().then((meta) => {
+  if (meta?.showDiagButton) $('btn-diag').classList.remove('hidden');
+});
 
 const keypad = $('keypad');
-if (window.matchMedia('(pointer: coarse)').matches) keypad.classList.remove('hidden');
-$('btn-keypad').addEventListener('click', () => keypad.classList.toggle('hidden'));
+if (coarsePointer) {
+  keypad.classList.remove('hidden');
+  $('btn-kbd').classList.remove('hidden');
+}
+// These toggles must not steal focus from the typing input - the focus
+// loss would close the soft keyboard on a touch device.
+for (const id of ['btn-keypad', 'btn-kbd']) {
+  $(id).addEventListener('mousedown', (e) => e.preventDefault());
+}
+$('btn-keypad').addEventListener('click', () => {
+  delete keypad.dataset.autoHidden; // a manual toggle always wins
+  keypad.classList.toggle('hidden');
+});
+$('btn-kbd').addEventListener('click', () => {
+  if (document.activeElement === mobileInput) mobileInput.blur();
+  else focusTerminal();
+});
+// While the device keyboard is up, the 5250 keypad is dead weight and
+// pinches the terminal to unreadable; collapse it and bring it back when
+// the keyboard closes (unless Pad was toggled manually in between).
+mobileInput.addEventListener('focusin', () => {
+  if (!keypad.classList.contains('hidden')) {
+    keypad.dataset.autoHidden = '1';
+    keypad.classList.add('hidden');
+  }
+});
+mobileInput.addEventListener('focusout', () => {
+  if (keypad.dataset.autoHidden === '1') {
+    delete keypad.dataset.autoHidden;
+    keypad.classList.remove('hidden');
+  }
+});
 
 const terminal = $('terminal');
 terminal.addEventListener('mousedown', (e) => {
+  // Suppressing the default focus (the tap would focus #terminal itself,
+  // closing a just-opened keyboard); focusTerminal() picks the right target.
+  e.preventDefault();
   const rect = termHit(e);
-  if (!rect) return;
-  send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
-  terminal.focus();
+  if (rect) send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
+  focusTerminal();
 });
 function termHit(e: MouseEvent): { r: number; c: number } | null {
   const canvas = $('screen-canvas');
@@ -368,9 +466,10 @@ function termHit(e: MouseEvent): { r: number; c: number } | null {
 }
 
 // Keep focus on the terminal so keyboard events flow; the hidden input is
-// what mobile soft keyboards type into.
-terminal.addEventListener('focusout', () => {
-  term.focused = false;
+// what mobile soft keyboards type into. Focus moving between the terminal
+// div and that input still counts as "the session has focus".
+terminal.addEventListener('focusout', (e) => {
+  if (!(e.relatedTarget instanceof Node) || !terminal.contains(e.relatedTarget)) term.focused = false;
 });
 terminal.addEventListener('focusin', () => {
   term.focused = true;
@@ -381,11 +480,15 @@ mobileInput.addEventListener('input', () => {
   mobileInput.value = '';
 });
 mobileInput.addEventListener('keydown', (e) => {
-  // Enter/Backspace from soft keyboards arrive as keydown on the input.
-  const mapped = e.key === 'Enter' || e.key === 'Backspace';
+  // While the hidden input holds focus (soft keyboard open, or a hardware
+  // keyboard on a touch device), every mappable key comes through here.
+  // Mapped keys are suppressed so they are never also delivered as text
+  // by the input event above.
+  if (e.isComposing) return;
+  const mapped = mapEvent(e);
   if (mapped) {
     e.preventDefault();
-    sendKey(e.key === 'Enter' ? 'enter' : 'backspace');
+    sendKey(mapped.k, mapped.ch);
   }
 });
 

@@ -149,6 +149,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `AUTO_SIGNON_USER` | User profile for `?auto=1` automated data-entry launches (server-held; required together with `AUTO_SIGNON_PASSWORD`, otherwise auto upgrades are refused) | – |
 | `AUTO_SIGNON_PASSWORD` | Its password — never leaves the server or crosses the WebSocket | – |
 | `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
+| `SHOW_DIAG_BUTTON` | Show the `Diag` button in the top bar (copies raw 5250 session diagnostics to the clipboard for bug reports) | `false` |
 | `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
 
 Each browser session gets its own 5250 device. Device names are generated as
@@ -344,9 +345,11 @@ npm run build           # vite (SPA) + esbuild (server, mock) -> dist/
 npm run smoke           # end-to-end: mock host + gateway + WS client
 npm run test:real       # regression: real-IBM-i SF-order dialect (no FFW bytes,
                         #   WCC0 lock bits, attr-only Start-of-Field orders)
-node scripts/mock-host.mjs &   # visual test drives real Chromium
+node scripts/mock-host.mjs &   # visual/mobile tests drive real Chromium
 PORT=8080 IBM_I_HOST=127.0.0.1 IBM_I_PORT=8023 ADMIN_PIN=1234 npm start &
 npm run visual          # screenshots land in artifacts/
+npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
+                        #   keypad, keyboard open/close shrink+expand
 ```
 
 The smoke test covers: sign-on rendering, cursor placement, X II error +

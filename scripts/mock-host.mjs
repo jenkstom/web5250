@@ -167,7 +167,7 @@ class HostSession {
         this.text(2, 33, 0x22, 'MAIN'),
         this.text(4, 29, 0x22, 'IBM i Main Menu'),
         this.text(6, 6, null, 'Selection . . . . .'),
-        this.field(6, 25, 0x20, 2),
+        this.field(6, 25, 0x21, 2), // reverse video - exercises the underline cursor
         this.text(8, 6, null, '  1. User tasks'),
         this.text(9, 6, null, '  2. Office tasks'),
         this.text(10, 6, null, '  3. General system tasks'),

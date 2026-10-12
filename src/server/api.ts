@@ -72,6 +72,7 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
         json(res, 200, {
           adminEnabled: cfg.adminPin !== null,
           allowCustomHost: cfg.allowCustomHost,
+          showDiagButton: cfg.showDiagButton,
           termTypes: TERM_TYPES,
           codePages: Ebcdic.availablePages(),
           defaults: {

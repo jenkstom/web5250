@@ -18,6 +18,10 @@ export function buildKeypad(send: SendKey): void {
     btn.type = 'button';
     btn.textContent = key.label;
     if (key.title) btn.title = key.title;
+    // Suppressing mousedown keeps the tap from moving focus to the button -
+    // losing focus on the hidden typing input would close the mobile soft
+    // keyboard after every key press.
+    btn.addEventListener('mousedown', (ev) => ev.preventDefault());
     btn.addEventListener('click', (ev) => {
       ev.preventDefault();
       send(key.k, key.ch);
@@ -29,6 +33,10 @@ export function buildKeypad(send: SendKey): void {
   for (let i = 7; i <= 12; i++) mk(fn2, { label: `F${i}`, k: `pf${i}`, title: `PF${i}` });
 
   const editKeys: PadKey[] = [
+    { label: '↑', k: 'up', title: 'Cursor up' },
+    { label: '↓', k: 'down', title: 'Cursor down' },
+    { label: '←', k: 'left', title: 'Cursor left' },
+    { label: '→', k: 'right', title: 'Cursor right' },
     { label: 'Enter', k: 'enter' },
     { label: 'Fld+', k: 'fieldexit', title: 'Field Exit' },
     { label: 'Tab', k: 'tab' },
