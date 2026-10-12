@@ -165,6 +165,9 @@ class HostSession {
     this.currentFields = [{ row: 6, col: 25, len: 2 }, { row: 19, col: 25, len: 21 }];
     this.screen(
       [
+        // Long reverse-video title bar, as on real IBM i menus: a wide
+        // same-attribute run (the rendering case for seamless fills).
+        this.text(1, 5, 0x21, 'Add On Systems Multi Vendor Messages'.padEnd(58, ' ')),
         this.text(2, 33, 0x22, 'MAIN'),
         this.text(4, 29, 0x22, 'IBM i Main Menu'),
         this.text(6, 6, null, 'Selection . . . . .'),

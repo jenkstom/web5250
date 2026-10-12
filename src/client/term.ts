@@ -60,6 +60,8 @@ export class Terminal {
   private cellH = 18;
   /** fit() scale factor applied to the backing store (>1 on big screens). */
   private renderScale = 1;
+  /** devicePixelRatio × renderScale, from the last measure(). */
+  private drawScale = 1;
   private renderQueued = false;
 
   /** Focus drives cursor styling - repaint when it changes. */
@@ -113,6 +115,7 @@ export class Terminal {
     // proportionally larger canvas instead. Cell metrics stay measured at
     // the base font - the drawing transform carries the scale.
     const dpr = (window.devicePixelRatio || 1) * this.renderScale;
+    this.drawScale = dpr;
     const w = Math.max(1, Math.round(this.cellW * this.cols * dpr));
     const h = Math.max(1, Math.round(this.cellH * this.rows * dpr));
     if (this.canvas.width !== w) this.canvas.width = w;
@@ -224,6 +227,27 @@ export class Terminal {
     const cursorReverse =
       cursorPos >= 0 && cursorPos < rows * cols && (this.attrs[cursorPos] & 0x01) !== 0;
 
+    // Backgrounds are filled one rect per run of same-attribute cells, with
+    // every edge snapped to a whole device pixel. A rect per cell at a
+    // fractional fit() scale leaves an antialiased hairline at each cell
+    // boundary, so a solid reverse-video title bar reads as sliced into
+    // blocks (a real 5250 / tn5250j renders it seamless). Snapped edges are
+    // shared exactly between neighbouring runs, so same-colour areas join.
+    const snap = (v: number) => Math.round(v * this.drawScale) / this.drawScale;
+    const fillRun = (
+      r: number,
+      c0: number,
+      c1: number,
+      top: number,
+      bottom: number,
+      color: string
+    ): void => {
+      const x0 = snap(c0 * cellW);
+      const y0 = snap(r * cellH + top);
+      ctx.fillStyle = color;
+      ctx.fillRect(x0, y0, snap((c1 + 1) * cellW) - x0, snap(r * cellH + bottom) - y0);
+    };
+
     // Input-field underlines (classic 5250 look). Non-display (password)
     // fields are underlined too; the cursor cell is skipped - the cursor
     // (block or blinking underline) takes its place.
@@ -231,73 +255,107 @@ export class Terminal {
     const cursorH = Math.max(3, underlineH + 1); // chunkier than the field rule
     for (const [start, len, attr] of this.fields) {
       const fg = attrStyle(attr).fg;
-      for (let i = 0; i < len; i++) {
-        const pos = start + i;
-        if (pos >= rows * cols || pos === cursorPos) continue;
-        const r = Math.floor(pos / cols);
-        const c = pos % cols;
-        ctx.fillStyle = fg;
-        ctx.fillRect(c * cellW, (r + 1) * cellH - underlineH, cellW, underlineH);
+      const end = Math.min(len, rows * cols - start); // fields stay on-screen
+      let i = 0;
+      while (i < end) {
+        if (start + i === cursorPos) {
+          i++;
+          continue;
+        }
+        const r = Math.floor((start + i) / cols); // runs never cross a row
+        let j = i;
+        while (j < end && start + j !== cursorPos && Math.floor((start + j) / cols) === r) j++;
+        fillRun(r, start + i - r * cols, start + j - 1 - r * cols, cellH - underlineH, cellH, fg);
+        i = j;
       }
     }
 
+    // Background runs. The underscore attribute (bit 0x04) draws its rule
+    // under the whole run, in the character colour (black over a coloured
+    // background). Hidden non-display cells and the cursor cell break runs:
+    // both are drawn as plain blanks here, the cursor on top further down.
+    let runR = -1;
+    let runC0 = 0;
+    let runC1 = -1;
+    let runAttr = 0;
+    const flushRun = (): void => {
+      if (runR < 0) return;
+      const { fg, bg } = attrStyle(runAttr);
+      if (bg !== PALETTE.black) fillRun(runR, runC0, runC1, 0, cellH, bg);
+      if ((runAttr & 0x04) === 0x04) {
+        fillRun(
+          runR,
+          runC0,
+          runC1,
+          cellH - underlineH,
+          cellH,
+          bg !== PALETTE.black ? PALETTE.black : fg
+        );
+      }
+      runR = -1;
+    };
     for (let pos = 0; pos < rows * cols; pos++) {
       const attr = this.attrs[pos];
+      if (pos === cursorPos || isNonDisplay(attr)) {
+        flushRun();
+        continue;
+      }
       const r = Math.floor(pos / cols);
       const c = pos % cols;
-      const x = c * cellW;
-      const y = r * cellH;
-      const { fg, bg } = attrStyle(attr);
-      const ch = this.chars[pos] ?? ' ';
+      if (r === runR && attr === runAttr) runC1 = c;
+      else {
+        flushRun();
+        runR = r;
+        runC0 = c;
+        runC1 = c;
+        runAttr = attr;
+      }
+    }
+    flushRun();
 
-      // The cursor is drawn regardless of the non-display attribute: it
-      // reveals only the position, never the hidden content.
-      if (pos === cursorPos && cursorReverse) {
+    // Glyphs on top of the runs.
+    for (let pos = 0; pos < rows * cols; pos++) {
+      if (pos === cursorPos) continue;
+      const attr = this.attrs[pos];
+      if (isNonDisplay(attr)) continue; // hidden field: leave blank
+      const ch = this.chars[pos] ?? ' ';
+      if (ch === ' ') continue;
+      ctx.fillStyle = attrStyle(attr).fg;
+      ctx.fillText(
+        ch,
+        (pos % cols) * cellW + cellW / 2,
+        Math.floor(pos / cols) * cellH + cellH / 2 + 1
+      );
+    }
+
+    if (cursorPos >= 0 && cursorPos < rows * cols) {
+      const attr = this.attrs[cursorPos];
+      const { fg, bg } = attrStyle(attr);
+      const r = Math.floor(cursorPos / cols);
+      const c = cursorPos % cols;
+      const ch = this.chars[cursorPos] ?? ' ';
+      if (cursorReverse) {
         // Draw the cell as it normally renders...
         if (!isNonDisplay(attr)) {
-          if (bg !== PALETTE.black) {
-            ctx.fillStyle = bg;
-            ctx.fillRect(x, y, cellW, cellH);
-          }
+          if (bg !== PALETTE.black) fillRun(r, c, c, 0, cellH, bg);
           if (ch !== ' ') {
             ctx.fillStyle = fg;
-            ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
+            ctx.fillText(ch, c * cellW + cellW / 2, r * cellH + cellH / 2 + 1);
           }
         }
         // ...and mark it with the underline cursor: black over the coloured
         // reverse background, the field colour over a (black) hidden cell.
         // Steady when unfocused, blinking while typing focus is on.
         if (this.blinkOn || !this.focused_) {
-          ctx.fillStyle = isNonDisplay(attr) ? bg : PALETTE.black;
-          ctx.fillRect(x, (r + 1) * cellH - cursorH, cellW, cursorH);
+          fillRun(r, c, c, cellH - cursorH, cellH, isNonDisplay(attr) ? bg : PALETTE.black);
         }
-        continue;
-      }
-      if (pos === cursorPos) {
+      } else {
         // cursor cell: filled block with contrasting glyph
-        ctx.fillStyle = this.focused_ ? fg : PALETTE.green;
         ctx.globalAlpha = this.focused_ ? 1 : 0.55;
-        ctx.fillRect(x, y, cellW, cellH);
+        fillRun(r, c, c, 0, cellH, this.focused_ ? fg : PALETTE.green);
         ctx.globalAlpha = 1;
         ctx.fillStyle = PALETTE.black;
-        ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
-        continue;
-      }
-      if (isNonDisplay(attr)) continue; // hidden field: leave blank
-      if (bg !== PALETTE.black) {
-        ctx.fillStyle = bg;
-        ctx.fillRect(x, y, cellW, cellH);
-      }
-      // Underscore attribute (bit 0x04): rule under the cell, in the
-      // character colour. Visible attributes only — hidden ones are skipped
-      // above, so the bit means exactly "underscore" here.
-      if ((attr & 0x04) === 0x04) {
-        ctx.fillStyle = bg !== PALETTE.black ? PALETTE.black : fg;
-        ctx.fillRect(x, (r + 1) * cellH - underlineH, cellW, underlineH);
-      }
-      if (ch !== ' ') {
-        ctx.fillStyle = fg;
-        ctx.fillText(ch, x + cellW / 2, y + cellH / 2 + 1);
+        ctx.fillText(ch, c * cellW + cellW / 2, r * cellH + cellH / 2 + 1);
       }
     }
 
