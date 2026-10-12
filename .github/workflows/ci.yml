@@ -1,21 +1,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# web5250 pipeline: validate → container image → GitHub Container Registry
+# web5250 pipeline: validate → container image → GHCR + Docker Hub
 #
 # validate: typecheck + full build on Node 22 (mirrors .gitlab-ci.yml).
 # image:    one native builder per platform (amd64 on ubuntu-latest, arm64 on
 #           the free ubuntu-24.04-arm runner — no QEMU, each build is minutes),
-#           each pushing a single-platform image by digest.
-# merge:    stitches the digests into one multi-arch manifest under the
-#           release tags. Pull requests validate the build only — no login,
-#           no push.
+#           each pushing a single-platform image by digest to each registry
+#           (a manifest can only reference blobs in its own registry).
+# merge:    stitches the digests into one multi-arch manifest per registry
+#           under the release tags. Pull requests validate the build only —
+#           no login, no push.
 #
 # Push policy (same as the GitLab pipeline):
 #   every push to main → :sha-<short> and :main
 #   main (default)     → :latest (on top of the above)
 #   tag v*             → :<tag-name> and :latest (on top of the SHA tag)
 #
+# GHCR always publishes (GITHUB_TOKEN). Docker Hub mirrors the same tags when
+# the repo has DOCKERHUB_USERNAME + DOCKERHUB_TOKEN secrets; without them the
+# pipeline quietly stays GHCR-only.
+#
 # Pull the result with:
 #   docker pull ghcr.io/jenkstom/web5250:latest
+#   docker pull jenkstom/web5250:latest        (Docker Hub, when configured)
 #
 # Note: the first GHCR publish creates the package as PRIVATE — flip it to
 # public once under the repo's Packages settings.
@@ -35,6 +41,7 @@ concurrency:
 
 env:
   REGISTRY_IMAGE: ghcr.io/jenkstom/web5250
+  DH_IMAGE: docker.io/jenkstom/web5250
 
 jobs:
   validate:
@@ -56,6 +63,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      # Empty on forks/PRs (no secrets) -> every Docker Hub step below skips.
+      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +87,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request' && env.DH_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # PR builds validate only: no registry login (works from forks), no push.
       - name: Build (validation only)
@@ -109,19 +127,55 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Same image, same digest, mirrored to Docker Hub (served from the GHA
+      # cache written above - no rebuild). Skipped without the token, leaving
+      # the pipeline GHCR-only.
+      - name: Build and push by digest (Docker Hub)
+        if: github.event_name != 'pull_request' && env.DH_TOKEN != ''
+        id: push-dh
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.title=web5250
+            org.opencontainers.image.description=Web-to-5250 (TN5250) terminal gateway for IBM i / AS/400
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+          outputs: type=image,name=${{ env.DH_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Export digest
         if: github.event_name != 'pull_request'
         run: |
-          mkdir -p "${{ runner.temp }}/digests"
+          mkdir -p "${{ runner.temp }}/digests-ghcr"
           digest="${{ steps.push.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+          touch "${{ runner.temp }}/digests-ghcr/${digest#sha256:}"
 
       - name: Upload digest
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.arch }}
-          path: ${{ runner.temp }}/digests/*
+          name: digests-ghcr-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests-ghcr/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Export digest (Docker Hub)
+        if: github.event_name != 'pull_request' && env.DH_TOKEN != ''
+        run: |
+          mkdir -p "${{ runner.temp }}/digests-dh"
+          digest="${{ steps.push-dh.outputs.digest }}"
+          touch "${{ runner.temp }}/digests-dh/${digest#sha256:}"
+
+      - name: Upload digest (Docker Hub)
+        if: github.event_name != 'pull_request' && env.DH_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-dh-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests-dh/*
           if-no-files-found: error
           retention-days: 1
 
@@ -132,12 +186,22 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
-      - name: Download digests
+      - name: Download digests (GHCR)
         uses: actions/download-artifact@v4
         with:
-          pattern: digests-*
-          path: ${{ runner.temp }}/digests
+          pattern: digests-ghcr-*
+          path: ${{ runner.temp }}/digests-ghcr
+          merge-multiple: true
+
+      - name: Download digests (Docker Hub)
+        if: env.DH_TOKEN != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-dh-*
+          path: ${{ runner.temp }}/digests-dh
           merge-multiple: true
 
       - name: Log in to GHCR
@@ -146,6 +210,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: env.DH_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -161,14 +233,28 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
-      - name: Create multi-arch manifest
+      # One manifest per registry: each references the single-platform images
+      # pushed to that registry (a manifest cannot point across registries).
+      - name: Create multi-arch manifests
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST_DIR: ${{ runner.temp }}/digests
+          GHCR_DIR: ${{ runner.temp }}/digests-ghcr
+          DH_DIR: ${{ runner.temp }}/digests-dh
         run: |
           args=""
           for t in $TAGS; do args="$args -t $t"; done
-          for f in "$DIGEST_DIR"/*; do
+          for f in "$GHCR_DIR"/*; do
             args="$args ${REGISTRY_IMAGE}@sha256:$(basename "$f")"
           done
           docker buildx imagetools create $args
+
+          if [ -n "$DH_TOKEN" ]; then
+            args=""
+            for t in $TAGS; do args="$args -t ${t//$REGISTRY_IMAGE/$DH_IMAGE}"; done
+            for f in "$DH_DIR"/*; do
+              args="$args ${DH_IMAGE}@sha256:$(basename "$f")"
+            done
+            docker buildx imagetools create $args
+          else
+            echo "::notice::DOCKERHUB_TOKEN not set - published to GHCR only"
+          fi
