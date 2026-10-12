@@ -199,6 +199,41 @@ button.ghost { background: transparent; font-size: 0.75rem; }
 #overlay-actions.hidden, #overlay-menu.hidden, #overlay-action.hidden { display: none; }
 button.primary { border-color: var(--green); color: var(--green); }
 
+/* Copy fallback for insecure origins (no clipboard API): selectable box. */
+#copy-fallback {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 6, 0.82);
+  z-index: 92;
+}
+#copy-fallback.hidden { display: none; }
+#copy-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  max-width: min(92vw, 48rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+#copy-label { color: var(--dim); font-size: 0.8rem; margin: 0; }
+#copy-text {
+  width: 100%;
+  height: 46vh;
+  resize: none;
+  background: var(--bg);
+  color: var(--green);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  padding: 0.5rem;
+}
+
 /* Right-click menu over the terminal (Copy screen / Paste). */
 #ctx-menu {
   position: fixed;

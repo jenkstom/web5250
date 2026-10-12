@@ -156,10 +156,10 @@ function handleMessage(data: string): void {
   switch (msg.t) {
     case 'diag': {
       const text = String(msg.text ?? '');
-      navigator.clipboard
-        ?.writeText(text)
-        .then(() => window.alert(`Diagnostics (${text.length} chars) copied to clipboard - paste them into the bug report.`))
-        .catch(() => window.prompt('Copy the diagnostics below:', text));
+      // Also in the console: devtools is a copy path of its own, and it
+      // survives even the fallback box below being dismissed too fast.
+      console.info('[diag]', text);
+      copyText(text, 'Diagnostics');
       break;
     }
     case 'hello': {
@@ -309,6 +309,32 @@ function hideOverlay(): void {
   $('overlay').classList.add('hidden');
 }
 
+// Clipboard with a fallback for non-secure origins: the async clipboard
+// API only exists on HTTPS (or localhost), and on plain HTTP the old
+// `navigator.clipboard?.writeText(x).then(...)` shape threw silently -
+// the optional chain guards the call, not the .then on its undefined
+// result. Where the API is missing (or refuses), the text is offered in
+// a selectable box instead.
+function copyText(text: string, label: string): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => window.alert(`${label} (${text.length} chars) copied to clipboard.`))
+      .catch(() => showCopyFallback(text, label));
+    return;
+  }
+  showCopyFallback(text, label);
+}
+function showCopyFallback(text: string, label: string): void {
+  $('copy-label').textContent = `${label} - select all and copy (the browser blocked clipboard access on this insecure origin):`;
+  const box = $<HTMLTextAreaElement>('copy-text');
+  box.value = text;
+  $('copy-fallback').classList.remove('hidden');
+  box.focus();
+  box.select();
+}
+$('copy-close').addEventListener('click', () => $('copy-fallback').classList.add('hidden'));
+
 // ------------------------------------------------------------ leave guard
 /** True while leaving/restarting would kill a session the user signed on to. */
 function sessionActive(): boolean {
@@ -448,8 +474,9 @@ function focusTerminal(): void {
 // While a UI surface covers the terminal (system menu, keyboard-mapping
 // help, right-click menu), its keys belong to that surface - not to the host.
 const ctxOpen = (): boolean => !$('ctx-menu').classList.contains('hidden');
+const copyFallbackOpen = (): boolean => !$('copy-fallback').classList.contains('hidden');
 const uiSurfaceOpen = (): boolean =>
-  menuVisible() || ctxOpen() || !$('keys-modal').classList.contains('hidden');
+  menuVisible() || ctxOpen() || copyFallbackOpen() || !$('keys-modal').classList.contains('hidden');
 attachKeyboard(sendKey, () => !uiSurfaceOpen());
 buildKeypad(sendKey);
 initMenu();
@@ -480,6 +507,9 @@ window.addEventListener('keydown', (e) => {
   if (ctxOpen()) {
     e.preventDefault();
     $('ctx-menu').classList.add('hidden');
+  } else if (copyFallbackOpen()) {
+    e.preventDefault();
+    $('copy-fallback').classList.add('hidden');
   } else if (!$('keys-modal').classList.contains('hidden')) {
     e.preventDefault();
     $('keys-modal').classList.add('hidden');
@@ -587,13 +617,9 @@ window.addEventListener('blur', hideCtxMenu);
 // swap is the only feedback (the menu closes right after anyway).
 $('ctx-copy').addEventListener('click', (e) => {
   const btn = e.currentTarget as HTMLButtonElement;
-  navigator.clipboard
-    ?.writeText(term.text())
-    .then(() => {
-      btn.textContent = 'Copied';
-      window.setTimeout(() => (btn.textContent = 'Copy screen'), 900);
-    })
-    .catch(() => window.prompt('Copy the screen text:', term.text()));
+  copyText(term.text(), 'Screen text');
+  btn.textContent = 'Copied';
+  window.setTimeout(() => (btn.textContent = 'Copy screen'), 900);
   hideCtxMenu();
   focusTerminal();
 });
@@ -602,15 +628,20 @@ $('ctx-copy').addEventListener('click', (e) => {
 // breaks are dropped - auto-submitting a half-filled screen on a stray
 // newline is never what the user meant.
 $('ctx-paste').addEventListener('click', () => {
-  navigator.clipboard
-    ?.readText()
-    .then((text) => {
-      for (const ch of text) {
-        if (ch === '\t') sendKey('tab');
-        else if (ch !== '\r' && ch !== '\n') sendKey('char', ch);
-      }
-    })
-    .catch(() => window.alert('Paste is unavailable: the browser blocked clipboard access.'));
+  const clip = navigator.clipboard;
+  if (!clip?.readText) {
+    window.alert('Paste needs a secure origin (HTTPS) for clipboard access.');
+  } else {
+    clip
+      .readText()
+      .then((text) => {
+        for (const ch of text) {
+          if (ch === '\t') sendKey('tab');
+          else if (ch !== '\r' && ch !== '\n') sendKey('char', ch);
+        }
+      })
+      .catch(() => window.alert('Paste is unavailable: the browser blocked clipboard access.'));
+  }
   hideCtxMenu();
   focusTerminal();
 });

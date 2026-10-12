@@ -137,6 +137,7 @@ const awaitPos = (want) =>
 let mouseOk = true;
 let copyOk = true;
 let pasteOk = true;
+let fallbackOk = true;
 // a different field than the cursor's (Selection 6,25): the command line
 {
   const { x, y } = await cellXY(19, 30);
@@ -202,6 +203,29 @@ if (mouseOk) {
   await page.screenshot({ path: `${OUT}/09-list-via-paste.png` });
   await page.keyboard.press('F3'); // back to the main menu for the checks below
   await page.waitForTimeout(600);
+}
+// Insecure-origin copy: with the clipboard API absent (plain HTTP has no
+// navigator.clipboard), Copy screen must offer a selectable fallback box,
+// not throw silently.
+{
+  await page.evaluate(() => {
+    window.__clip = Object.getOwnPropertyDescriptor(Navigator.prototype, 'clipboard');
+    Object.defineProperty(Navigator.prototype, 'clipboard', { get: () => undefined, configurable: true });
+  });
+  const any = await cellXY(14, 40);
+  await page.mouse.click(any.x, any.y, { button: 'right' });
+  await page.waitForSelector('#ctx-menu:not(.hidden)', { timeout: 3000 });
+  await page.click('#ctx-copy');
+  await page.waitForSelector('#copy-fallback:not(.hidden)', { timeout: 3000 });
+  const fbText = await page.evaluate(() => document.getElementById('copy-text')?.value ?? '');
+  fallbackOk = fbText.includes('CAUTION: mock host');
+  console.log('COPY fallback (no clipboard API):', fallbackOk ? 'ok' : 'FAIL box empty');
+  await page.click('#copy-close');
+  await page.evaluate(() =>
+    Object.defineProperty(Navigator.prototype, 'clipboard', window.__clip)
+  );
+  // the Close button kept focus; the blink checks below need the terminal
+  await page.evaluate(() => document.getElementById('terminal').focus());
 }
 
 // F1 help + F3 back, then verify OIA snapshot state via DOM
@@ -272,5 +296,15 @@ await browser.close();
 console.log('OIA:', JSON.stringify(oia));
 console.log('JS errors:', errors.length ? errors.join(' | ') : 'none');
 console.log('screenshots written to', OUT);
-if (errors.length || oia.state !== 'connected' || oia.lock || !cursorOk || bar.seams > 0 || !mouseOk || !copyOk || !pasteOk)
+if (
+  errors.length ||
+  oia.state !== 'connected' ||
+  oia.lock ||
+  !cursorOk ||
+  bar.seams > 0 ||
+  !mouseOk ||
+  !copyOk ||
+  !pasteOk ||
+  !fallbackOk
+)
   process.exit(1);
