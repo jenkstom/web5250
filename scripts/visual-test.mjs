@@ -201,8 +201,36 @@ if (mouseOk) {
   pasteOk = pastedOk;
   console.log('PASTE at cursor:', pasteOk ? 'ok' : 'FAIL cursor did not advance');
   await page.screenshot({ path: `${OUT}/09-list-via-paste.png` });
-  await page.keyboard.press('F3'); // back to the main menu for the checks below
-  await page.waitForTimeout(600);
+
+  // Host-programmed mouse (the mock maps right-down and double-click to
+  // F3 on this list screen): Shift+right-click still opens the LOCAL
+  // menu on a programmed screen, plain right-click performs the host
+  // action (exit to the main menu), and a double click does too.
+  const row = await cellXY(9, 12);
+  // NB: the modifiers click option does not reach this headless build -
+  // hold the key instead.
+  await page.keyboard.down('Shift');
+  await page.mouse.click(row.x, row.y, { button: 'right' });
+  await page.keyboard.up('Shift');
+  await page.waitForSelector('#ctx-menu:not(.hidden)', { timeout: 3000 });
+  await page.mouse.click(...Object.values(await cellXY(20, 40))); // click-away closes
+  await page.waitForFunction(() => document.getElementById('ctx-menu')?.classList.contains('hidden'));
+  console.log('SHIFT+RIGHT-CLICK local menu on programmed screen: ok');
+  await page.mouse.click(row.x, row.y, { button: 'right' });
+  mouseOk = await awaitPos('6,26'); // mock: right-down -> F3 -> main menu
+  console.log('RIGHT-CLICK host action:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
+  if (mouseOk) {
+    // back into the list for the double-click check
+    const sel = await cellXY(6, 26);
+    await page.mouse.click(sel.x, sel.y);
+    await page.keyboard.type('4');
+    await page.keyboard.press('Enter');
+    await awaitPos('7,8');
+    const dbl = await cellXY(10, 12);
+    await page.mouse.dblclick(dbl.x, dbl.y);
+    mouseOk = await awaitPos('6,26'); // mock: left-double -> F3 -> main menu
+    console.log('DOUBLE CLICK host action:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
+  }
 }
 // Insecure-origin copy: with the clipboard API absent (plain HTTP has no
 // navigator.clipboard), Copy screen must offer a selectable fallback box,

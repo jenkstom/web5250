@@ -50,6 +50,7 @@ export class GatewaySession {
   private closed = false;
   private lastSentCursor = -1;
   private lastSentOia = '';
+  private lastSentMouse = '';
   private beeped = false;
   readonly devName: string | null;
   private readonly ws: WebSocket;
@@ -170,6 +171,29 @@ export class GatewaySession {
       this.send('pong', {});
       return;
     }
+    if (t === 'mouseevent') {
+      // Host-programmed mouse action (5494 FR): look up the event in the
+      // table the host sent; honour the move-cursor flag, then send the
+      // programmed AID exactly like the corresponding key press.
+      const EV: Record<string, number> = {
+        leftdown: 0x01, leftdouble: 0x03, rightdown: 0x04, rightdouble: 0x06
+      };
+      const code = EV[String(msg.ev)];
+      if (code !== undefined) {
+        const screen = this.client.screen;
+        const def = screen.mouseButtonFor(code);
+        const r = Number(msg.r);
+        const c = Number(msg.c);
+        if (def && Number.isInteger(r) && Number.isInteger(c) && screen.lock === 'none' && screen.waitingForInput) {
+          if (def.moveCursor) screen.clickTo(r, c);
+          if (!this.client.sendAid(def.aid)) this.beeped = true;
+        } else {
+          this.beeped = true;
+        }
+        this.scheduleFlush();
+      }
+      return;
+    }
     if (t === 'mouseprobe') {
       // GUI-discovery experiment (?mouseprobe=<hex>): forward a candidate
       // mouse/menu AID for the right-clicked cell; see client.sendMouseProbe.
@@ -258,6 +282,17 @@ export class GatewaySession {
     this.send('status', { status, detail });
   }
 
+  /** Compact host mouse bindings for the browser: {rightdown: 132, ...}. */
+  private mouseMap(s: { mouseButtons: { event: number; aid: number }[] }): string {
+    const out: Record<string, number> = {};
+    const NAME: Record<number, string> = { 0x01: 'leftdown', 0x03: 'leftdouble', 0x04: 'rightdown', 0x06: 'rightdouble' };
+    for (const d of s.mouseButtons) {
+      const n = NAME[d.event];
+      if (n) out[n] = d.aid;
+    }
+    return JSON.stringify(out);
+  }
+
   private scheduleFlush(): void {
     if (this.flushTimer || this.closed) return;
     this.flushTimer = setTimeout(() => {
@@ -274,6 +309,8 @@ export class GatewaySession {
       s.structureDirty = false;
       s.dirty.clear();
       this.lastSentCursor = -1;
+      const mouse = this.mouseMap(s);
+      this.lastSentMouse = mouse;
       this.send('screen', {
         rows: s.rows,
         cols: s.cols,
@@ -283,11 +320,20 @@ export class GatewaySession {
         // [dataStart, dataCellCount, attr]; bypass fields are not enterable.
         fields: s.fields
           .filter((f) => !f.isBypass)
-          .map((f) => [f.dataStart, f.length, f.attr])
+          .map((f) => [f.dataStart, f.length, f.attr]),
+        // Host-programmed mouse events: right-click / double-click bindings
+        // the browser acts on (local menu otherwise).
+        mouse: JSON.parse(mouse)
       });
       this.sendOia(true);
       this.beeped = false;
       return;
+    }
+
+    const mouse = this.mouseMap(s);
+    if (mouse !== this.lastSentMouse) {
+      this.lastSentMouse = mouse;
+      this.send('update', { mouse: JSON.parse(mouse) });
     }
 
     if (s.dirty.size > 0) {

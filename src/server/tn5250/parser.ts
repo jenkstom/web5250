@@ -513,10 +513,12 @@ export class Parser5250 {
   /**
    * PROGRAMMABLE MOUSE BUTTONS structured field (5494 FR Table 15-28/15-29):
    * the host maps mouse events to application AIDs (X'70'-X'7F' or a defined
-   * AID). Payload after length/class/type is 3 reserved bytes plus 4-byte
-   * event definitions: [flags, first event, second event, AID]. Logged for
-   * now - the table is the missing piece for right-click / double-click
-   * menu support (with IBM_I_MOUSE_GUI=1 the host starts sending it).
+   * AID - the live app maps right-down to PF4 and left-double to PF7/PF2 per
+   * screen). Payload after length/class/type is 3 reserved bytes plus 4-byte
+   * event definitions: [flags, first event, second event, AID]. The table is
+   * stored on the screen model (replacing any previous one - the host
+   * resends it with each screen format); flag bits use the manual's
+   * convention of bit 0 = X'80'.
    */
   private decodeMouseButtons(rest: number[]): void {
     const EVENT: Record<number, string> = {
@@ -528,24 +530,28 @@ export class Parser5250 {
       0x10: 'shift-middle-down', 0x11: 'shift-middle-up', 0x12: 'shift-middle-double'
     };
     const defs = rest.slice(3); // 3 reserved bytes, then 4-byte definitions
-    if (defs.length === 0) {
-      this.log('MOUSE BUTTONS: table reset (no definitions)');
-      return;
-    }
+    const table: { event: number; aid: number; moveCursor: boolean; queued: boolean }[] = [];
     for (let i = 0; i + 3 < defs.length; i += 4) {
       const flags = defs[i];
       const first = EVENT[defs[i + 1]] ?? `event-${defs[i + 1].toString(16)}`;
-      const twoEvent = (flags & 0x01) !== 0;
       const aid = defs[i + 3];
+      const twoEvent = (flags & 0x80) !== 0;
+      const moveCursor = (flags & 0x40) !== 0;
+      const queued = (flags & 0x20) !== 0;
       const second = twoEvent ? ` + ${(EVENT[defs[i + 2]] ?? `event-${defs[i + 2].toString(16)}`)}` : '';
       const bits = [
         twoEvent ? 'two-event' : 'single',
-        (flags & 0x02) !== 0 ? 'move-cursor' : '',
-        (flags & 0x04) !== 0 ? 'queued' : '',
-        (flags & 0x08) !== 0 ? 'marker' : ''
+        moveCursor ? 'move-cursor' : '',
+        queued ? 'queued' : '',
+        (flags & 0x10) !== 0 ? 'marker' : ''
       ].filter(Boolean).join(',');
-      this.log(`MOUSE BUTTONS: ${first}${second} -> AID 0x${aid.toString(16)} (${bits})`);
+      this.log(`MOUSE BUTTONS: ${first}${second} -> AID 0x${aid.toString(16)} (${bits}, flags=0x${flags.toString(16)})`);
+      if (!twoEvent) {
+        table.push({ event: defs[i + 1], aid, moveCursor, queued });
+      }
     }
+    this.screen.setMouseButtons(table);
+    if (defs.length === 0) this.log('MOUSE BUTTONS: table reset (no definitions)');
   }
 
   /** 64-byte 5250 Query Reply, byte-for-byte as tn5250j sends it. */

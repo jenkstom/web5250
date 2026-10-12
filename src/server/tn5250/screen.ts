@@ -495,6 +495,24 @@ export class Screen5250 {
     this.normalizeCursor();
   }
 
+  // ------------------------------------------------------------- mouse table
+  /**
+   * Host-programmed mouse events (5494 FR Programmable Mouse Buttons):
+   * which AID to return for a mouse event on the current screen, and
+   * whether the text cursor moves to the click first. Replaced wholesale
+   * whenever the host resends the structured field (it does per format).
+   */
+  mouseButtons: { event: number; aid: number; moveCursor: boolean; queued: boolean }[] = [];
+
+  setMouseButtons(table: { event: number; aid: number; moveCursor: boolean; queued: boolean }[]): void {
+    this.mouseButtons = table;
+    this.structureDirty = true; // browsers decide right-click vs local menu on it
+  }
+
+  mouseButtonFor(event: number): { aid: number; moveCursor: boolean; queued: boolean } | null {
+    return this.mouseButtons.find((d) => d.event === event) ?? null;
+  }
+
   // ---------------------------------------------------------- local key ops
   /** Returns false (with optional beep reason) when input is rejected. */
   canAcceptKeys(): boolean {

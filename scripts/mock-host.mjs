@@ -169,6 +169,9 @@ class HostSession {
         // same-attribute run (the rendering case for seamless fills).
         this.text(1, 5, 0x21, 'Add On Systems Multi Vendor Messages'.padEnd(58, ' ')),
         this.text(2, 33, 0x22, 'MAIN'),
+        // Reset the mouse-button table: programming is per screen on real
+        // hosts (length 7 = table reset per the 5494 FR).
+        [0x15, 0x00, 0x07, 0xd9, 0x55, 0x00, 0x00, 0x00],
         this.text(4, 29, 0x22, 'IBM i Main Menu'),
         this.text(6, 6, null, 'Selection . . . . .'),
         this.field(6, 25, 0x21, 2), // reverse video - exercises the underline cursor
@@ -193,6 +196,15 @@ class HostSession {
   sendList(status = '') {
     this.state = 'list';
     this.currentFields = [];
+    // 5250 GUI mouse programming (5494 FR): on this screen the right
+    // button and a double click both act as F3 - exercises the emulator's
+    // host-programmed mouse support (order X'15', SF class D9 type 55;
+    // flag 0x40 = single event + move text cursor to the click).
+    const MOUSE_SF = [
+      0x15, 0x00, 0x0f, 0xd9, 0x55, 0x00, 0x00, 0x00,
+      0x40, 0x04, 0x00, AID_PF3,
+      0x40, 0x03, 0x00, AID_PF3
+    ];
     const defs = [
       this.text(1, 30, 0x22, 'WORK WITH DEMO ITEMS'),
       this.text(3, 6, null, 'Type an option next to an item, press Enter.'),
@@ -203,6 +215,7 @@ class HostSession {
       defs.push(this.field(7 + i, 7, 0x21, 2), this.text(7 + i, 12, null, `Demo item ${i + 1}`));
       this.currentFields.push({ row: 7 + i, col: 8, len: 2 });
     }
+    defs.push(MOUSE_SF);
     defs.push(
       this.text(22, 6, 0x28, status),
       this.text(23, 6, 0x3a, 'F3=Exit')

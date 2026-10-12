@@ -206,6 +206,7 @@ function handleMessage(data: string): void {
       term.resizeGrid(msg.rows as number, msg.cols as number);
       fitCanvas(); // cell metrics / grid size may have changed -> new fit
       term.applyCells(msg.cells as (number | string)[][]);
+      setHostMouse(msg.mouse);
       if (Array.isArray(msg.fields)) term.setFields(msg.fields as number[][]);
       const cur = msg.cursor as number[];
       term.setCursor(cur[0], cur[1]);
@@ -216,6 +217,7 @@ function handleMessage(data: string): void {
       break;
     }
     case 'update': {
+      if (msg.mouse && typeof msg.mouse === 'object') setHostMouse(msg.mouse);
       if (Array.isArray(msg.cells)) term.applyCells(msg.cells as (number | string)[][]);
       if (Array.isArray(msg.cursor)) term.setCursor((msg.cursor as number[])[0], (msg.cursor as number[])[1]);
       $('oia-pos').textContent = `${term.cursor[0]},${term.cursor[1]}`;
@@ -293,6 +295,18 @@ function setConnState(state: string): void {
 }
 
 type OverlayAction = 'menu' | 'reconnect';
+
+// Host-programmed mouse events for the current screen (gateway sends
+// {rightdown: 132, leftdouble: 135, ...} - AIDs per the 5494 mouse SF).
+let hostMouse: Record<string, number> = {};
+function setHostMouse(mouse: unknown): void {
+  hostMouse = {};
+  if (mouse && typeof mouse === 'object') {
+    for (const [k, v] of Object.entries(mouse as Record<string, unknown>)) {
+      if (typeof v === 'number') hostMouse[k] = v;
+    }
+  }
+}
 
 function showOverlay(title: string, detail: string, actions: OverlayAction[]): void {
   // Embedded launches have no menu to go back to: reconnect is the only
@@ -577,6 +591,14 @@ function termHit(e: MouseEvent): { r: number; c: number } | null {
   const bounds = canvas.getBoundingClientRect();
   return term.clickToMessage(e.clientX - bounds.left, e.clientY - bounds.top);
 }
+// Host-programmed double click (e.g. the app's zoom function): the two
+// single clicks have already parked the cursor on the cell; the second
+// click additionally fires the programmed AID.
+terminal.addEventListener('dblclick', (e) => {
+  if (hostMouse.leftdouble === undefined) return;
+  const hit = termHit(e);
+  if (hit) send({ t: 'mouseevent', ev: 'leftdouble', r: hit.r, c: hit.c });
+});
 
 // Right-click over the terminal: the browser's own menu (save image,
 // inspect...) is noise over a 5250 screen; tn5250j opens Copy/Paste
@@ -592,6 +614,14 @@ terminal.addEventListener('contextmenu', (e) => {
       send({ t: 'mouseprobe', aid: mouseProbeAid, r: hit.r, c: hit.c });
       console.info(`[mouseprobe] sent aid 0x${mouseProbeAid.toString(16)} at ${hit.r},${hit.c}`);
     }
+    return;
+  }
+  // The host programmed this screen's right button (5494 mouse support):
+  // the click is the application's, like on ACS. Shift+right-click keeps
+  // the local Copy/Paste menu reachable.
+  if (hostMouse.rightdown !== undefined && !e.shiftKey) {
+    const hit = termHit(e);
+    if (hit) send({ t: 'mouseevent', ev: 'rightdown', r: hit.r, c: hit.c });
     return;
   }
   ctxMenu.classList.remove('hidden');
