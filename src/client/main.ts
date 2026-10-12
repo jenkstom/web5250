@@ -25,6 +25,15 @@ const launchParams = new URLSearchParams(window.location.search);
 const autoLaunch = ['1', 'true'].includes(launchParams.get('auto') ?? '');
 const parentOrigin = launchParams.get('parentorigin') || '*';
 
+// GUI-discovery experiment: with ?mouseprobe=<hex> (e.g. ?mouseprobe=5c),
+// right-click sends that AID byte to the host with the clicked cell
+// attached, instead of opening the Copy/Paste menu. Used to identify which
+// mouse/menu AID the host's 5250 GUI orders expect; not for daily use.
+const mouseProbeAid = (() => {
+  const v = Number.parseInt(launchParams.get('mouseprobe') ?? '', 16);
+  return Number.isInteger(v) && v >= 0x01 && v <= 0xff ? v : null;
+})();
+
 // ---------------------------------------------------------------- transport
 interface SessionTarget {
   system?: MenuSystem;
@@ -545,6 +554,16 @@ function termHit(e: MouseEvent): { r: number; c: number } | null {
 const ctxMenu = $('ctx-menu');
 terminal.addEventListener('contextmenu', (e) => {
   e.preventDefault();
+  // Probe mode (?mouseprobe=): the right-click becomes the experiment -
+  // send the candidate AID at the clicked cell, no local menu.
+  if (mouseProbeAid !== null) {
+    const hit = termHit(e);
+    if (hit) {
+      send({ t: 'mouseprobe', aid: mouseProbeAid, r: hit.r, c: hit.c });
+      console.info(`[mouseprobe] sent aid 0x${mouseProbeAid.toString(16)} at ${hit.r},${hit.c}`);
+    }
+    return;
+  }
   ctxMenu.classList.remove('hidden');
   // keep the menu fully inside the viewport
   const card = ctxMenu.getBoundingClientRect();

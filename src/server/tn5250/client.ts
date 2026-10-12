@@ -227,6 +227,37 @@ export class Tn5250Client {
     this.onScreenChange();
   }
 
+  /**
+   * GUI-discovery probe (experiment): send a candidate mouse/menu AID for a
+   * right-click at (r1,c1). The reply is shaped exactly like a normal AID,
+   * but the cursor position bytes report the CLICKED cell instead of the
+   * screen cursor - that is where ACS-type emulators most plausibly carry
+   * the mouse position. Used with ?mouseprobe=<hex> to identify which AID
+   * the host's 5250 GUI orders expect; not part of normal operation.
+   */
+  sendMouseProbe(aid: number, r1: number, c1: number): boolean {
+    if (r1 < 1 || r1 > this.screen.rows || c1 < 1 || c1 > this.screen.cols) return false;
+    if (this.screen.lock !== 'none' || !this.screen.waitingForInput) return false;
+    if (this.screen.errorCodeActive) return false;
+
+    const body = this.dataIncludedFor(aid) ? this.screen.buildReadResponse() : Buffer.alloc(0);
+    this.diag(
+      `[tn5250 ${this.opts.deviceName ?? '-'}] MOUSE PROBE aid 0x${aid.toString(16)} ` +
+        `click=${r1},${c1} cursor=${this.screen.rowOf(this.screen.cursorPos)},${this.screen.colOf(this.screen.cursorPos)} ` +
+        `read=0x${this.screen.readType.toString(16)} body=${body.toString('hex')}`
+    );
+
+    this.screen.waitingForInput = false;
+    this.screen.lockSystem();
+    this.telnet.sendGds(
+      0,
+      3,
+      Buffer.concat([Buffer.from([r1 & 0xff, c1 & 0xff, aid & 0xff]), body])
+    );
+    this.onScreenChange();
+    return true;
+  }
+
   /** PRINT - AID 0xF6, no field data. */
   sendPrint(): void {
     this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_PRINT]));

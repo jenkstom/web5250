@@ -169,6 +169,18 @@ export class GatewaySession {
       this.send('pong', {});
       return;
     }
+    if (t === 'mouseprobe') {
+      // GUI-discovery experiment (?mouseprobe=<hex>): forward a candidate
+      // mouse/menu AID for the right-clicked cell; see client.sendMouseProbe.
+      const aid = Number(msg.aid);
+      const r = Number(msg.r);
+      const c = Number(msg.c);
+      if (Number.isInteger(aid) && Number.isInteger(r) && Number.isInteger(c)) {
+        if (!this.client.sendMouseProbe(aid, r, c)) this.beeped = true;
+        this.scheduleFlush();
+      }
+      return;
+    }
     if (t === 'diag') {
       // One-click bug reports: raw records + parsed state for this session.
       this.send('diag', { text: this.client.getDiagnostics() });
