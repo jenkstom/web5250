@@ -82,6 +82,7 @@ export const CMD_READ_SCREEN_PRINT_EXT_GRID = 0x6c;
 export const CMD_READ_IMMEDIATE = 0x72; // reply now, all fields, no SBA
 export const CMD_READ_IMMEDIATE_ALT = 0x83; // reply now, SBA + MDT fields
 export const CMD_WRITE_STRUCTURED_FIELD = 0xf3;
+export const CMD_WRITE_SINGLE_STRUCTURED_FIELD = 0xf4; // one SF, GUI hosts
 
 // ---------------------------------------------------------------------------
 // Write To Display orders (inside CMD_WRITE_TO_DISPLAY)

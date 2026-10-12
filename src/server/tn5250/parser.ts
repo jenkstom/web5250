@@ -214,6 +214,12 @@ export class Parser5250 {
         this.writeStructuredField();
         break;
 
+      // GUI hosts deliver exactly one structured field this way (e.g. the
+      // sign-on flow for a device that claimed mouse/GUI capability).
+      case C.CMD_WRITE_SINGLE_STRUCTURED_FIELD:
+        this.readOneSF();
+        break;
+
       default:
         this.warn(`unknown command 0x${cmd.toString(16)}`);
         this.negativeResponse(C.NR_REQUEST_ERROR, 0x03, 0x01, 0x01);
@@ -340,9 +346,9 @@ export class Parser5250 {
         }
 
         case C.ORDER_WTDSF: {
-          // GUI structured field segment: 2-byte length + data; skipped.
-          const len = (this.next() << 8) | this.next();
-          for (let i = 0; i < len && this.hasNext(); i++) this.next();
+          // Write to Display Structured Field order: one structured field
+          // (mouse-button programming arrives here per the 5494 FR).
+          this.readOneSF();
           break;
         }
 
@@ -473,26 +479,35 @@ export class Parser5250 {
   }
 
   // ------------------------------------------------------------------- WSF
-  private writeStructuredField(): void {
-    while (this.hasNext()) {
-      // Structured-field length counts itself (2 bytes) + payload.
-      const len = (this.next() << 8) | this.next();
-      if (len < 4) {
-        this.warn(`WSF: implausible length ${len}`);
-        return;
-      }
-      const sfClass = this.next();
-      const sfType = this.next();
-      const rest: number[] = [];
-      for (let i = 0; i < len - 4 && this.hasNext(); i++) rest.push(this.next());
-      if (sfClass === 0xd9 && sfType === 0x70) {
-        this.sendQueryResponse(); // 5250 Query
-      } else if (sfClass === 0xd9 && sfType === 0x55) {
-        this.decodeMouseButtons(rest);
-      } else if (sfClass === 0xd9) {
-        this.log(`WSF: class D9 type ${sfType.toString(16)} (${rest.length} bytes) skipped`);
-      }
+  /**
+   * Read one structured field (2-byte length, class, type, payload) and
+   * dispatch the known D9 types. Shared by the WSF command (X'F3', a chain
+   * of fields), WRITE SINGLE STRUCTURED FIELD (X'F4', exactly one field)
+   * and the Write-to-Display-Structured-Field order (X'15') - GUI-capable
+   * hosts use all three, e.g. the PROGRAMMABLE MOUSE BUTTONS field rides
+   * the X'15' order inside a Write to Display.
+   */
+  private readOneSF(): void {
+    const len = (this.next() << 8) | this.next();
+    if (len < 4) {
+      this.warn(`WSF: implausible length ${len}`);
+      return;
     }
+    const sfClass = this.next();
+    const sfType = this.next();
+    const rest: number[] = [];
+    for (let i = 0; i < len - 4 && this.hasNext(); i++) rest.push(this.next());
+    if (sfClass === 0xd9 && sfType === 0x70) {
+      this.sendQueryResponse(); // 5250 Query
+    } else if (sfClass === 0xd9 && sfType === 0x55) {
+      this.decodeMouseButtons(rest);
+    } else if (sfClass === 0xd9) {
+      this.log(`WSF: class D9 type ${sfType.toString(16)} (${rest.length} bytes) skipped`);
+    }
+  }
+
+  private writeStructuredField(): void {
+    while (this.hasNext()) this.readOneSF();
   }
 
   /**
@@ -583,6 +598,7 @@ export class Parser5250 {
     if (this.mouseGui) {
       b[53] |= 0x10;
       b[54] |= 0x80;
+      this.log(`query reply claims pointer device (b53=${b[53].toString(16)} b54=${b[54].toString(16)})`);
     }
     // 55-63 reserved (0)
     this.telnet.sendGds(0, 0, Buffer.from(b));
