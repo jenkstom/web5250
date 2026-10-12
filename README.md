@@ -89,9 +89,10 @@ docker compose -f docker-compose.registry.yml up -d
 
 GitHub CI builds the image for amd64 and arm64 and publishes it to GHCR on
 every push to `main`; with `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` secrets
-configured it mirrors the same tags to Docker Hub
-(`jenkstom/web5250:latest`). Point `IMAGE` at any other registry the same
-way, or keep using the build variant with `docker compose up -d --no-build`.
+configured it mirrors the same tags to Docker Hub under that username
+(`<dockerhub-user>/web5250:latest`). Point `IMAGE` at any other registry the
+same way, or keep using the build variant with `docker compose up -d
+--no-build`.
 
 Then open the published Pangolin resource (or `http://localhost:8080` for
 local testing). You'll land on the **System Selection** menu — pick a system

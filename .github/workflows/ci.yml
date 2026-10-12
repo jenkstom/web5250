@@ -21,7 +21,7 @@
 #
 # Pull the result with:
 #   docker pull ghcr.io/jenkstom/web5250:latest
-#   docker pull jenkstom/web5250:latest        (Docker Hub, when configured)
+#   docker pull <dockerhub-user>/web5250:latest   (Docker Hub, when configured)
 #
 # Note: the first GHCR publish creates the package as PRIVATE — flip it to
 # public once under the repo's Packages settings.
@@ -41,7 +41,10 @@ concurrency:
 
 env:
   REGISTRY_IMAGE: ghcr.io/jenkstom/web5250
-  DH_IMAGE: docker.io/jenkstom/web5250
+  # The Docker Hub namespace follows the account in DOCKERHUB_USERNAME - the
+  # GitHub name need not match it. Like every Docker Hub step this value is
+  # only used when the token secret is present.
+  DH_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/web5250
 
 jobs:
   validate:
