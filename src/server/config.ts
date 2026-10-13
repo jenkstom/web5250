@@ -79,7 +79,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     codePage,
     termType,
     mouseGui: ['1', 'true'].includes((env.IBM_I_MOUSE_GUI ?? '').toLowerCase()),
-    traceRecords: clampInt(env.IBM_I_TRACE_RECORDS, 8, 5000, 8),
+    // 8 records is not enough to diagnose a stuck screen after sign-on
+    // flows - default to a few hundred (bounded, ~1 KB per record).
+    traceRecords: clampInt(env.IBM_I_TRACE_RECORDS, 8, 5000, 200),
     devPrefix: devPrefix === undefined || devPrefix === '' ? null : devPrefix.toUpperCase(),
     allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false),
     adminPin,

@@ -1058,7 +1058,10 @@ export class Screen5250 {
       this.readType === C.CMD_READ_MDT_FIELDS_ALT ||
       this.readType === C.CMD_READ_IMMEDIATE_ALT;
 
-    if (this.masterMDT) {
+    // READ INPUT FIELDS returns every input field at full width even when
+    // nothing was typed (the host maps the runs positionally) - only MDT
+    // reads may come back with no runs at all when nothing is modified.
+    if (this.masterMDT || this.readType === C.CMD_READ_INPUT_FIELDS) {
       for (const f of this.fields) {
         if (!(f.mdt || this.readType === C.CMD_READ_INPUT_FIELDS)) continue;
 

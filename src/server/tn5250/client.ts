@@ -231,11 +231,37 @@ export class Tn5250Client {
     return true;
   }
 
-  /** HELP - AID 0xF3, no field data. */
+  /**
+   * HELP - AID 0xF3, and PRINT - AID 0xF6 (the AS/400 answers with the
+   * COPY-TO-PRINTER flow). Both complete the outstanding read like any AID
+   * reply: an AID transmitted while a read is invited must carry the field
+   * data that read calls for (READ INPUT FIELDS: every field at full width;
+   * READ MDT FIELDS: the modified runs). Sending the bare AID truncates the
+   * inbound record and the host rejects it with a Write Error Code - the
+   * "keyboard error" that used to come back for Alt+H / Alt+P.
+   */
   sendHelp(): void {
-    this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_HELP]));
-    this.screen.lockSystem();
-    this.screen.waitingForInput = false;
+    this.sendAidReply(C.AID_HELP);
+  }
+
+  sendPrint(): void {
+    this.sendAidReply(C.AID_PRINT);
+  }
+
+  /** AID-only reply that still satisfies the outstanding read's format. */
+  private sendAidReply(aid: number): void {
+    const wasWaiting = this.screen.waitingForInput;
+    const body = wasWaiting ? this.screen.buildReadResponse() : Buffer.alloc(0);
+    this.diag(
+      `[tn5250 ${this.opts.deviceName ?? '-'}] aid 0x${aid.toString(16)} ` +
+        `cursor=${this.screen.rowOf(this.screen.cursorPos)},${this.screen.colOf(this.screen.cursorPos)} ` +
+        `read=0x${this.screen.readType.toString(16)} body=${body.toString('hex')}`
+    );
+    if (wasWaiting) {
+      this.screen.waitingForInput = false;
+      this.screen.lockSystem();
+    }
+    this.telnet.sendGds(0, 3, Buffer.concat([Buffer.from([...this.cursorBytes(), aid]), body]));
     this.onScreenChange();
   }
 
@@ -319,12 +345,6 @@ export class Tn5250Client {
     this.telnet.sendGds(0, 3, Buffer.from([...cursor, C.AID_ENTER, ...body]));
     this.onScreenChange();
     return true;
-  }
-
-  /** PRINT - AID 0xF6, no field data. */
-  sendPrint(): void {    this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_PRINT]));
-    this.screen.lockSystem();
-    this.onScreenChange();
   }
 
   /** ATTN - GDS flags 0x40, no opcode/payload. Works while locked. */

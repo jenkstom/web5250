@@ -68,7 +68,7 @@ export class Parser5250 {
   parse(record: Buffer): void {
     this.beep = false;
     this.cursorChanged = false;
-    if (record.length < 12) return; // too small to be a 5250 record
+    if (record.length < 10) return; // smaller than the GDS header itself
     const declared = (record[0] << 8) | record[1];
     // RFC 1205: the length word counts itself and the record still carries
     // it, so declared must equal the total length.
@@ -81,6 +81,39 @@ export class Parser5250 {
     this.buf = record;
     this.end = Math.min(record.length, declared);
     this.pos = 6 + (record[6] ?? 4); // usually 10, per Stream5250
+
+    // RFC 1205 session-level opcodes ride the GDS header itself (the opcode
+    // is byte 9) and carry no 5250 command stream - the command loop below
+    // starts after the header and would never see them. tn5250j handles the
+    // same set in its outer opcode switch.
+    if (this.end > 9) {
+      switch (record[9]) {
+        case 0x06: // Read Immediate: reply cursor + AID 0, no field data
+          this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), 0x00]));
+          return;
+        case 0x08: // Read Screen Operation: reply with the screen image
+          this.telnet.sendGds(0, 0, this.screen.buildScreenDump());
+          return;
+        case 0x09: // reserved
+          return;
+        case 0x0a: {
+          // Cancel Invite Operation (RFC 1205 4.3): the host cancels the
+          // outstanding read - inhibit the keyboard (X SYSTEM) and answer
+          // with our own cancel-invite record, as tn5250j does.
+          this.screen.waitingForInput = false;
+          this.screen.lockSystem();
+          this.cursorChanged = true;
+          this.telnet.sendGds(0, 0x0a);
+          return;
+        }
+        case 0x0b: // message light on
+          this.screen.messageWait = true;
+          return;
+        case 0x0c: // message light off
+          this.screen.messageWait = false;
+          return;
+      }
+    }
 
     try {
       while (this.hasNext()) {
