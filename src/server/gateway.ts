@@ -51,6 +51,7 @@ export class GatewaySession {
   private lastSentCursor = -1;
   private lastSentOia = '';
   private lastSentMouse = '';
+  private lastSentPopup = '';
   private beeped = false;
   readonly devName: string | null;
   private readonly ws: WebSocket;
@@ -211,6 +212,16 @@ export class GatewaySession {
       }
       return;
     }
+    if (t === 'pick') {
+      // Selection-field pick (host pull-down menu): choice number, 0 when
+      // the user dismissed the menu without selecting.
+      const choice = Number(msg.choice);
+      if (Number.isInteger(choice)) {
+        if (!this.client.sendSelectionPick(choice)) this.beeped = true;
+        this.scheduleFlush();
+      }
+      return;
+    }
     if (t === 'diag') {
       // One-click bug reports: raw records + parsed state for this session.
       this.send('diag', { text: this.client.getDiagnostics() });
@@ -298,6 +309,22 @@ export class GatewaySession {
     return JSON.stringify(out);
   }
 
+  /**
+   * Compact GUI popup state for the browser: the DEFINE SELECTION FIELD
+   * choice list (with the CREATE WINDOW frame when the host drew one).
+   * Null when no menu is up; the host re-sends both when paging.
+   */
+  private popupJson(s: { guiWindow: { row: number; col: number; depth: number; width: number } | null; selection: { row: number; col: number; choices: { row: number; col: number; text: string; state: number }[] } | null }): string {
+    const sel = s.selection;
+    if (!sel) return '';
+    const win = s.guiWindow;
+    return JSON.stringify({
+      window: win ? [win.row, win.col, win.depth, win.width] : null,
+      field: [sel.row, sel.col],
+      choices: sel.choices.map((c) => [c.row, c.col, c.text, c.state])
+    });
+  }
+
   private scheduleFlush(): void {
     if (this.flushTimer || this.closed) return;
     this.flushTimer = setTimeout(() => {
@@ -316,6 +343,8 @@ export class GatewaySession {
       this.lastSentCursor = -1;
       const mouse = this.mouseMap(s);
       this.lastSentMouse = mouse;
+      const popup = this.popupJson(s);
+      this.lastSentPopup = popup;
       this.send('screen', {
         rows: s.rows,
         cols: s.cols,
@@ -328,7 +357,9 @@ export class GatewaySession {
           .map((f) => [f.dataStart, f.length, f.attr]),
         // Host-programmed mouse events: right-click / double-click bindings
         // the browser acts on (local menu otherwise).
-        mouse: JSON.parse(mouse)
+        mouse: JSON.parse(mouse),
+        // Host-drawn popup menu (DEFINE SELECTION FIELD), if one is up.
+        popup: popup ? JSON.parse(popup) : null
       });
       this.sendOia(true);
       this.beeped = false;
@@ -339,6 +370,12 @@ export class GatewaySession {
     if (mouse !== this.lastSentMouse) {
       this.lastSentMouse = mouse;
       this.send('update', { mouse: JSON.parse(mouse) });
+    }
+
+    const popup = this.popupJson(s);
+    if (popup !== this.lastSentPopup) {
+      this.lastSentPopup = popup;
+      this.send('update', { popup: popup ? JSON.parse(popup) : null });
     }
 
     if (s.dirty.size > 0) {

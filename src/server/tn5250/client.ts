@@ -295,9 +295,34 @@ export class Tn5250Client {
     return true;
   }
 
+  /**
+   * Selection-field pick (5494 FR): the host's pull-down menus are DEFINE
+   * SELECTION FIELD constructs. Picking a choice returns an Enter AID with
+   * the cursor on the chosen choice and, as the field's inbound data, SBA at
+   * the field anchor + 1 followed by the 2-byte selected choice number
+   * (0 = dismissed without a selection) - the exact shape ACS returns.
+   */
+  sendSelectionPick(choice: number): boolean {
+    const sel = this.screen.selection;
+    if (!sel || this.screen.errorCodeActive) return false;
+    const pick = choice >= 1 && choice <= sel.choices.length ? sel.choices[choice - 1] : sel.choices[0];
+    const cursor = pick ? [pick.row, pick.col] : [sel.row, Math.min(sel.col + 1, this.screen.cols)];
+    const fieldCol = Math.min(sel.col + 1, this.screen.cols);
+    const body = [C.ORDER_SBA, sel.row & 0xff, fieldCol & 0xff, (choice >> 8) & 0xff, choice & 0xff];
+    this.diag(
+      `[tn5250 ${this.opts.deviceName ?? '-'}] selection pick #${choice} ` +
+        `cursor=${cursor[0]},${cursor[1]} field=${sel.row},${fieldCol}`
+    );
+    this.screen.waitingForInput = false;
+    this.screen.lockSystem();
+    this.screen.clearGui(); // the pick closes the menu locally
+    this.telnet.sendGds(0, 3, Buffer.from([...cursor, C.AID_ENTER, ...body]));
+    this.onScreenChange();
+    return true;
+  }
+
   /** PRINT - AID 0xF6, no field data. */
-  sendPrint(): void {
-    this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_PRINT]));
+  sendPrint(): void {    this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_PRINT]));
     this.screen.lockSystem();
     this.onScreenChange();
   }

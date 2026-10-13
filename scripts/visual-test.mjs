@@ -242,25 +242,46 @@ if (mouseOk) {
   mouseOk = await awaitPos('9,12');
   console.log('RIGHT-CLICK ack cursor at click:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
   if (mouseOk) {
-    await page.waitForTimeout(400);
-    const menuText = await screenText();
-    mouseOk = menuText.includes('F4=Select') && menuText.includes('Demo item 1');
+    // The menu is a DEFINE SELECTION FIELD popup: a DOM overlay with one
+    // item per choice (the canvas keeps showing the pre-menu screen).
+    await page.waitForSelector('#host-menu:not(.hidden) .host-menu-item', { timeout: 8000 });
+    const items = await page.locator('#host-menu .host-menu-item').allTextContents();
+    mouseOk = items.some((t) => t.includes('1=Select item')) && items.length === 4;
     await page.screenshot({ path: `${OUT}/10-rightclick-menu.png` });
     console.log(
-      'RIGHT-CLICK host menu appears after image reply:',
-      mouseOk ? 'ok' : `FAIL copied="${menuText.replace(/\n/g, '|').slice(0, 120)}"`
+      'RIGHT-CLICK host popup rendered:',
+      mouseOk ? 'ok' : `FAIL items=${JSON.stringify(items)}`
     );
   }
   if (mouseOk) {
-    // Pick: Enter. The mock replays our save cookie (GDS opcode 05) - the
-    // list screen must come back from the cookie alone, no host rewrite.
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(400);
+    // Paging: F9 makes the host re-send the window + field with page two.
+    await page.keyboard.press('F9');
+    await page.waitForFunction(
+      () =>
+        document.querySelector('#host-menu .host-menu-item')?.textContent?.includes('5=Tag item'),
+      undefined,
+      { timeout: 8000 }
+    );
+    await page.screenshot({ path: `${OUT}/10b-rightclick-menu-page2.png` });
+    console.log('HOST MENU paging (F9) re-renders: ok');
+    // Pick: click an item; the mock replays our save cookie (GDS opcode 05)
+    // - the list screen must come back from the cookie alone - and notes
+    // the picked choice number (list position, 1-based) on the status line.
+    await page.locator('#host-menu .host-menu-item', { hasText: '6=Untag item' }).click();
+    await page.waitForFunction(
+      () => document.getElementById('host-menu')?.classList.contains('hidden'),
+      undefined,
+      { timeout: 8000 }
+    );
+    await page.waitForTimeout(300);
     const back = await screenText();
-    mouseOk = !back.includes('F4=Select') && back.includes('Demo item 1');
+    mouseOk = back.includes('Menu pick 2 processed.') && back.includes('Demo item 1');
     mouseOk = (await awaitPos('9,12')) && mouseOk; // cookie cursor = click cell
     await page.screenshot({ path: `${OUT}/11-menu-restored.png` });
-    console.log('MENU pick restores screen from device cookie:', mouseOk ? 'ok' : 'FAIL list screen not restored');
+    console.log(
+      'MENU pick restores screen from device cookie:',
+      mouseOk ? 'ok' : `FAIL copied="${back.replace(/\n/g, '|').slice(0, 140)}"`
+    );
   }
   if (mouseOk) {
     const dbl = await cellXY(10, 12);

@@ -207,6 +207,7 @@ function handleMessage(data: string): void {
       fitCanvas(); // cell metrics / grid size may have changed -> new fit
       term.applyCells(msg.cells as (number | string)[][]);
       setHostMouse(msg.mouse);
+      setHostPopup(msg.popup);
       if (Array.isArray(msg.fields)) term.setFields(msg.fields as number[][]);
       const cur = msg.cursor as number[];
       term.setCursor(cur[0], cur[1]);
@@ -218,6 +219,7 @@ function handleMessage(data: string): void {
     }
     case 'update': {
       if (msg.mouse && typeof msg.mouse === 'object') setHostMouse(msg.mouse);
+      if ('popup' in msg) setHostPopup(msg.popup);
       if (Array.isArray(msg.cells)) term.applyCells(msg.cells as (number | string)[][]);
       if (Array.isArray(msg.cursor)) term.setCursor((msg.cursor as number[])[0], (msg.cursor as number[])[1]);
       $('oia-pos').textContent = `${term.cursor[0]},${term.cursor[1]}`;
@@ -308,6 +310,74 @@ function setHostMouse(mouse: unknown): void {
   }
 }
 
+// Host-drawn pull-down menu (DEFINE SELECTION FIELD in a CREATE WINDOW,
+// both WDSF structured fields): {window: [row,col,depth,width]|null,
+// field: [row,col], choices: [[row,col,text,state],...]}.
+interface HostPopup {
+  window: [number, number, number, number] | null;
+  field: [number, number];
+  choices: [number, number, string, number][];
+}
+let hostPopup: HostPopup | null = null;
+const hostMenu = $('host-menu');
+const hostPopupOpen = (): boolean => !hostMenu.classList.contains('hidden');
+
+function setHostPopup(p: unknown): void {
+  hostPopup =
+    p && typeof p === 'object' && Array.isArray((p as HostPopup).choices) && (p as HostPopup).choices.length > 0
+      ? (p as HostPopup)
+      : null;
+  renderHostMenu();
+}
+
+/**
+ * The popup overlays the canvas at its 5250 anchor (the window frame when
+ * the host drew one, else the field), items sized to the cell grid so it
+ * reads as part of the screen. Items send pick N; it stays up while the
+ * host pages (F8/F9) - the gateway re-sends the field and this re-renders.
+ */
+function renderHostMenu(): void {
+  if (!hostPopup) {
+    hostMenu.classList.add('hidden');
+    hostMenu.replaceChildren();
+    return;
+  }
+  const canvas = $('screen-canvas');
+  const cw = canvas.clientWidth / term.cols;
+  const chh = canvas.clientHeight / term.rows;
+  const win = hostPopup.window;
+  const anchorRow = win ? win[0] : hostPopup.field[0];
+  const anchorCol = win ? win[1] : hostPopup.field[1];
+  hostMenu.style.left = `${canvas.offsetLeft + (anchorCol - 1) * cw}px`;
+  hostMenu.style.top = `${canvas.offsetTop + (anchorRow - 1) * chh}px`;
+  if (win) hostMenu.style.minWidth = `${(win[3] + 2) * cw}px`;
+  hostMenu.style.fontSize = `${Math.max(10, chh * 0.92)}px`;
+  hostMenu.style.lineHeight = `${chh}px`;
+
+  hostMenu.replaceChildren(
+    ...hostPopup.choices.map((c, i) => {
+      const item = document.createElement('div');
+      const state = c[3] & 0xc0;
+      item.className = 'host-menu-item';
+      if (state === 0x80) item.classList.add('unavailable'); // not selectable
+      if (state === 0x40) item.classList.add('selected'); // default selection
+      item.textContent = c[2];
+      item.title = c[2];
+      item.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+      });
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (state === 0x80) return;
+        send({ t: 'pick', choice: i + 1 });
+      });
+      return item;
+    })
+  );
+  hostMenu.classList.remove('hidden');
+}
+
 function showOverlay(title: string, detail: string, actions: OverlayAction[]): void {
   // Embedded launches have no menu to go back to: reconnect is the only
   // meaningful action (it replays the automated sign-on).
@@ -393,6 +463,8 @@ function endSession(): void {
   setConnState('idle');
   $('dev-info').textContent = '';
   term.resizeGrid(24, 80); // blank the canvas for the next session
+  hostPopup = null;
+  renderHostMenu();
   $('btn-systems').classList.add('hidden');
   void showMenu(startSession);
 }
@@ -579,10 +651,16 @@ terminal.addEventListener('mousedown', (e) => {
   e.preventDefault();
   // Left click places the cursor at the clicked cell (the gateway applies
   // the same freedom as arrow movement). Right-click opens the terminal's
-  // own menu instead - see the contextmenu handler below.
+  // own menu instead - see the contextmenu handler below. With the host's
+  // pull-down menu up, a click outside it dismisses the selection
+  // (returned to the host as choice 0, exactly like ACS).
   if (e.button === 0) {
-    const rect = termHit(e);
-    if (rect) send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
+    if (hostPopupOpen()) {
+      send({ t: 'pick', choice: 0 });
+    } else {
+      const rect = termHit(e);
+      if (rect) send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
+    }
   }
   focusTerminal();
 });

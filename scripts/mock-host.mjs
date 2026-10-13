@@ -46,7 +46,7 @@ const CMD_WTD = 0x11, CMD_CLEAR = 0x40, CMD_ERRCODE = 0x21;
 const CMD_RIF = 0x42, CMD_RMD = 0x52;
 const ORDER_SBA = 0x11, ORDER_IC = 0x13, ORDER_SF = 0x1d;
 
-const AID_ENTER = 0xf1, AID_PF1 = 0x31, AID_PF3 = 0x33, AID_PF4 = 0x34;
+const AID_ENTER = 0xf1, AID_PF1 = 0x31, AID_PF3 = 0x33, AID_PF4 = 0x34, AID_PF9 = 0x39, AID_PF12 = 0x3c;
 
 // ---------------------------------------------------------------- session
 class HostSession {
@@ -233,26 +233,62 @@ class HostSession {
    */
   beginMenuFlow(row, col) {
     this.state = 'await-image';
+    this.menuPage = 0;
+    this.pick = null;
     this.record(0x03, this.wtd(0x28, [ORDER_IC, row, col]));
     this.record(0x04, this.esc(0x02)); // save screen + image request
   }
 
-  /** Menu drawn over the saved screen (no clear), mouse reprogrammed. */
-  sendMenu() {
+  /**
+   * The menu itself, drawn exactly like the live host (5494 FR): CREATE
+   * WINDOW frame (WDSF D9/51) + "Select Option" title + DEFINE SELECTION
+   * FIELD choice list (WDSF D9/50) + mouse programming + read invite.
+   * F9 pages (the host re-sends the window and field); picks return as
+   * Enter + [SBA(field+1)][2-byte choice number].
+   */
+  sendMenu(page = 0) {
     this.state = 'menu';
+    this.menuPage = page;
+    this.pick = null;
     this.currentFields = [];
+    const items =
+      page === 0
+        ? ['1=Select item', '2=Update item', '3=Delete item', '4=Cancel item']
+        : ['5=Tag item', '6=Untag item', '7=Export item', '8=Import item'];
+    const textSize = 18;
+    const winRow = 6;
+    const winCol = 19;
+    const fieldRow = winRow + 3; // live host: window (6,19), field (9,23)
+    const fieldCol = winCol + 4;
     const MOUSE_SF = [
-      0x15, 0x00, 0x0b, 0xd9, 0x55, 0x00, 0x00, 0x00,
-      0x50, 0x04, 0x01, AID_PF4
+      0x15, 0x00, 0x0f, 0xd9, 0x55, 0x00, 0x00, 0x00,
+      0x50, 0x03, 0x00, AID_ENTER, // left-double -> Enter (pick)
+      0x50, 0x04, 0x00, AID_PF4
     ];
+    const WIN_SF = [
+      0x15, 0x00, 0x0e, 0xd9, 0x51,
+      0x80, 0x00, 0x00, items.length + 2, textSize + 2,
+      0x05, 0x01, 0x80, 0x22, 0x22 // border presentation minor: white
+    ];
+    const minors = [];
+    for (const it of items) {
+      minors.push(textSize + 5, 0x10, 0x00, 0x00, 0xe0, ...e(it.padEnd(textSize, ' ')));
+    }
+    const dsfBody = [
+      0x02, 0x44, 0x00, 0x21, 0x01, 0x01, 0x02, 0x00, 0x00,
+      textSize, items.length, 1, 0, 0x00, 0x00, 0x00,
+      ...minors
+    ];
+    const dsfLen = dsfBody.length + 4;
+    const DSF_SF = [0x15, (dsfLen >> 8) & 0xff, dsfLen & 0xff, 0xd9, 0x50, ...dsfBody];
     this.record(
       0x03,
       this.wtd(0x20, [
         ...MOUSE_SF,
-        ORDER_SBA, 22, 6, 0x3a, ...e('F4=Select  F12=Cancel')
-        // no IC order: WCC1 X'20' = do-not-move, so the cursor stays at the
-        // click point the ack WTD placed it on (the live host's menu write
-        // carries its own IC/MC orders instead).
+        ORDER_SBA, winRow, winCol, ...WIN_SF,
+        ORDER_SBA, winRow + 1, winCol + 2, 0x22, ...e('Select Option'),
+        ORDER_SBA, fieldRow, fieldCol, ...DSF_SF,
+        ORDER_SBA, 24, 6, 0x3a, ...e(page === 0 ? 'F9=Next page  F12=Cancel' : 'F9=Prev page  F12=Cancel')
       ]),
       this.esc(CMD_RMD, 0x00, 0x00)
     );
@@ -260,7 +296,7 @@ class HostSession {
   }
 
   /** Menu done: replay the device's cookie (GDS opcode 05) and re-invite. */
-  endMenuFlow() {
+  endMenuFlow(note) {
     this.state = 'list';
     this.currentFields = [];
     for (let i = 0; i < 10; i++) this.currentFields.push({ row: 7 + i, col: 8, len: 2 });
@@ -269,7 +305,11 @@ class HostSession {
     } else {
       this.record(0x03, this.esc(0x12)); // classic restore, no cookie seen
     }
-    this.record(0x03, this.esc(CMD_RMD, 0x00, 0x00));
+    this.record(
+      0x03,
+      this.wtd(0x20, [ORDER_SBA, 22, 6, 0x28, ...e(note ?? '')]),
+      this.esc(CMD_RMD, 0x00, 0x00)
+    );
     this.lastReadCmd = CMD_RMD;
   }
 
@@ -473,6 +513,22 @@ class HostSession {
     }
 
     this.fields = [];
+    this.pick = null;
+    // Selection-field pick (5494 FR): [SBA][field row][field col + 1]
+    // followed by the 2-byte choice number (0 = dismissed, no choice) -
+    // and nothing else; a regular Enter carries ordinary field data.
+    if (
+      this.state === 'menu' &&
+      aid === AID_ENTER &&
+      rec[p] === ORDER_SBA &&
+      p + 5 === rec.length
+    ) {
+      const pr = rec[p + 1];
+      const pc = rec[p + 2];
+      this.pick = (rec[p + 3] << 8) | rec[p + 4];
+      this.log(`selection pick: choice=${this.pick} field=${pr},${pc} cursor=${row},${col}`);
+      p += 5;
+    }
     if (this.lastReadCmd === CMD_RIF) {
       // RIF: every input field, full width (attr cell excluded), in order.
       for (const f of this.currentFields) {
@@ -559,10 +615,21 @@ class HostSession {
         break;
       }
 
-      case 'menu':
-        // Any AID picks from the menu: replay the cookie, back to the list.
-        this.endMenuFlow();
+      case 'menu': {
+        // F9 pages the choice list (host re-sends window + field, exactly
+        // like the live host's paginated menus).
+        if (aid === AID_PF9) {
+          this.sendMenu(1 - (this.menuPage ?? 0));
+          break;
+        }
+        // Any committing key ends the menu; Enter carries the pick number.
+        this.endMenuFlow(
+          aid === AID_ENTER
+            ? `Menu pick ${this.pick ?? 0} processed.`
+            : 'Menu cancelled.'
+        );
         break;
+      }
 
       case 'sysreq':
         this.sendRestore();

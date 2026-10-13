@@ -258,6 +258,36 @@ button.primary { border-color: var(--green); color: var(--green); }
 }
 #ctx-menu button:hover { background: rgba(75, 228, 99, 0.14); }
 
+/* ------------------------------------------------- host pull-down menu --- */
+/* The host's own right-click menu (DEFINE SELECTION FIELD window), placed
+   over the canvas at its 5250 row/col anchor. Keyboard input keeps going
+   to the terminal so host-programmed paging keys (F8/F9) still work. */
+#host-menu {
+  position: absolute;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 6ch;
+  background: #000;
+  border: 1px solid var(--green);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+  padding: 1px;
+  font-family: inherit;
+  line-height: 1.25;
+}
+#host-menu.hidden { display: none; }
+.host-menu-item {
+  padding: 0 0.45em;
+  white-space: pre;
+  color: var(--green);
+  cursor: pointer;
+  user-select: none;
+}
+.host-menu-item:hover,
+.host-menu-item.selected { background: var(--green); color: #000; }
+.host-menu-item.unavailable { color: #5a6a5f; cursor: default; }
+.host-menu-item.unavailable:hover { background: transparent; color: #5a6a5f; }
+
 /* ---------------------------------------------------------- system menu --- */
 #menu {
   position: fixed;

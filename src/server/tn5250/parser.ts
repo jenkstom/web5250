@@ -3,7 +3,7 @@
 // writeToDisplay, which interoperate with real IBM i hosts.
 import * as zlib from 'node:zlib';
 import * as C from './constants.ts';
-import type { Screen5250 } from './screen.ts';
+import type { Screen5250, SelectionChoice } from './screen.ts';
 import type { Telnet5250 } from './telnet.ts';
 import type { Ebcdic } from './ebcdic.ts';
 
@@ -522,6 +522,16 @@ export class Parser5250 {
       this.sendQueryResponse(); // 5250 Query
     } else if (sfClass === 0xd9 && sfType === 0x55) {
       this.decodeMouseButtons(rest);
+    } else if (sfClass === 0xd9 && sfType === 0x51) {
+      this.decodeCreateWindow(rest); // CREATE WINDOW (5494 FR Table 15-12)
+    } else if (sfClass === 0xd9 && sfType === 0x50) {
+      this.decodeSelectionField(rest); // DEFINE SELECTION FIELD (15-18/19)
+    } else if (sfClass === 0xd9 && sfType === 0x58) {
+      this.screen.setSelection(null); // REMOVE GUI SELECTION FIELD
+    } else if (sfClass === 0xd9 && sfType === 0x59) {
+      this.screen.clearGui(); // REMOVE GUI WINDOW (drops fields inside it)
+    } else if (sfClass === 0xd9 && sfType === 0x5f) {
+      this.screen.clearGui(); // REMOVE ALL GUI CONSTRUCTS
     } else if (sfClass === 0xd9) {
       this.log(`WSF: class D9 type ${sfType.toString(16)} (${rest.length} bytes) skipped`);
     }
@@ -574,6 +584,125 @@ export class Parser5250 {
     }
     this.screen.setMouseButtons(table);
     if (defs.length === 0) this.log('MOUSE BUTTONS: table reset (no definitions)');
+  }
+
+  /**
+   * CREATE WINDOW (5494 FR Table 15-12): the host's menu popup frame,
+   * anchored at the display address the preceding SBA order set. Depth and
+   * width count the rows/columns INSIDE the window; minor structures carry
+   * border presentation (type X'01') and title/footer (type X'10').
+   */
+  private decodeCreateWindow(rest: number[]): void {
+    if (rest.length < 5) {
+      this.warn(`CREATE WINDOW: implausible payload ${rest.length}`);
+      return;
+    }
+    let borderAttr = 0x3a; // default colour border per the FR
+    let i = 5;
+    while (i + 1 < rest.length) {
+      const mlen = rest[i];
+      const mtype = rest[i + 1];
+      if (mlen < 2 || i + mlen > rest.length) break;
+      if (mtype === 0x01 && mlen >= 5) {
+        const attr = rest[i + 4] || rest[i + 3]; // colour || monochrome
+        if (attr >= 0x20 && attr <= 0x3f) borderAttr = attr;
+      }
+      i += mlen;
+    }
+    this.screen.setGuiWindow({
+      row: this.screen.rowOf(this.screen.writePos),
+      col: this.screen.colOf(this.screen.writePos),
+      depth: rest[3],
+      width: rest[4],
+      pullDown: (rest[0] & 0x40) !== 0,
+      restrictCursor: (rest[0] & 0x80) !== 0,
+      borderAttr
+    });
+    this.log(
+      `CREATE WINDOW: ${rest[3]}x${rest[4]} at ${this.screen.rowOf(this.screen.writePos)},${this.screen.colOf(this.screen.writePos)} border=${borderAttr.toString(16)}`
+    );
+  }
+
+  /**
+   * DEFINE SELECTION FIELD (5494 FR Tables 15-18/15-19): the host's
+   * pull-down choice list. Major structure bytes 10-16 carry textSize,
+   * rows, columns, padding, separators and the pull-down cancel AID; the
+   * choices are Choice Text minor structures ([len][X'10'][3 flag bytes]
+   * [text]). Picks return an Enter AID with the cursor on the choice and
+   * [SBA(field+1)][2-byte choice number] as the field's inbound data.
+   *
+   * Some hosts park a few private bytes between the major structure and
+   * the choice chain (the live menu host sends 19), so the chain start is
+   * found by scanning for the offset whose length chain tiles the rest of
+   * the field with at least one choice.
+   */
+  private decodeSelectionField(rest: number[]): void {
+    if (rest.length < 16) {
+      this.warn(`DEFINE SELECTION FIELD: implausible payload ${rest.length}`);
+      return;
+    }
+    const flag1 = rest[0];
+    const rows = rest[10] || 1;
+    const cols = rest[11] || 1;
+    const textSize = rest[9] || 32;
+    const padding = rest[12];
+    const row = this.screen.rowOf(this.screen.writePos);
+    const col = this.screen.colOf(this.screen.writePos);
+
+    let start = 16;
+    for (; start + 1 < rest.length; start++) {
+      let i = start;
+      let choices = 0;
+      let ok = true;
+      while (i + 1 < rest.length) {
+        const mlen = rest[i];
+        const mtype = rest[i + 1];
+        if (mlen < 2 || i + mlen > rest.length || (mtype === 0x10 && mlen < 5)) {
+          ok = false;
+          break;
+        }
+        if (mtype === 0x10) choices++;
+        i += mlen;
+      }
+      if (ok && choices > 0) break;
+    }
+
+    const table: SelectionChoice[] = [];
+    let i = start;
+    while (i + 1 < rest.length) {
+      const mlen = rest[i];
+      const mtype = rest[i + 1];
+      if (mlen < 2 || i + mlen > rest.length) break;
+      if (mtype === 0x10) {
+        let text = '';
+        for (let b = i + 5; b < i + mlen; b++) {
+          const byte = rest[b];
+          text += byte >= 0x40 && byte < 0xff ? this.ebcdic.ebcdic2uni(byte) : ' ';
+        }
+        const idx = table.length;
+        table.push({
+          row: row + (idx % rows),
+          col: col + 1 + Math.floor(idx / rows) * (textSize + padding),
+          text: text.replace(/[ \u0000]+$/, ''),
+          state: rest[i + 2] & 0xc0
+        });
+      }
+      i += mlen;
+    }
+    this.screen.setSelection({
+      row,
+      col,
+      rows,
+      cols,
+      textSize,
+      autoSelect: (flag1 & 0x02) !== 0,
+      autoEnter: (flag1 & 0x18) !== 0,
+      cancelAid: rest[15],
+      choices: table
+    });
+    this.log(
+      `SELECTION FIELD: ${table.length} choices at ${row},${col} (type=${rest[3].toString(16)}, ${rows}x${cols}, textSize=${textSize})`
+    );
   }
 
   /** 64-byte 5250 Query Reply, byte-for-byte as tn5250j sends it. */

@@ -34,6 +34,41 @@ export interface OiaState {
   errorCode: boolean;
 }
 
+/** GUI window from CREATE WINDOW (5494 FR Table 15-12), anchored at SBA. */
+export interface GuiWindow {
+  row: number; // 1-based anchor (top row, left col)
+  col: number;
+  depth: number; // rows inside the window
+  width: number; // columns inside the window
+  pullDown: boolean; // pull-down menu window
+  restrictCursor: boolean;
+  borderAttr: number;
+}
+
+/**
+ * Selection field from DEFINE SELECTION FIELD (5494 FR Table 15-18/15-19):
+ * a host-defined choice list (pull-down menu) whose picks are returned as
+ * [cursor row, cursor col, AID] + SBA(field+1) + 2-byte choice number.
+ */
+export interface SelectionChoice {
+  row: number; // 1-based position of the choice's first text cell
+  col: number;
+  text: string;
+  state: number; // choice-text flag byte 1: 0x40 = default selection, 0x80 = unavailable
+}
+
+export interface SelectionField {
+  row: number; // anchor (leading choice text attribute cell)
+  col: number;
+  rows: number;
+  cols: number;
+  textSize: number;
+  autoSelect: boolean;
+  autoEnter: boolean;
+  cancelAid: number;
+  choices: SelectionChoice[];
+}
+
 interface ScreenSnapshot {
   rows: number;
   cols: number;
@@ -130,6 +165,7 @@ export class Screen5250 {
     this.waitingForInput = false;
     this.errorCodeActive = false;
     this.savedErrorRow = null;
+    this.clearGui();
     this.structureDirty = true;
   }
 
@@ -339,6 +375,9 @@ export class Screen5250 {
     this.cursorPos = snap.cursorPos;
     this.homePos = snap.homePos;
     this.lastAttr = snap.lastAttr;
+    // RESTORE recreates the previous screen - GUI constructs drawn after
+    // the save (the menu window) are gone (5494 FR ch. 15).
+    this.clearGui();
     this.structureDirty = true;
   }
 
@@ -424,6 +463,8 @@ export class Screen5250 {
         moveCursor: a[2] === 1,
         queued: a[3] === 1
       }));
+      // The cookie predates any menu drawn after the save.
+      this.clearGui();
       this.fields = d.fields.map((a) => ({
         attr: a[0],
         startPos: a[1],
@@ -620,6 +661,34 @@ export class Screen5250 {
 
   mouseButtonFor(event: number): { aid: number; moveCursor: boolean; queued: boolean } | null {
     return this.mouseButtons.find((d) => d.event === event) ?? null;
+  }
+
+  // ----------------------------------------------------- GUI constructs (WDSF)
+  // CREATE WINDOW / DEFINE SELECTION FIELD state (5494 FR ch. 15). The host
+  // draws its right-click menus as a window plus a choice list; picks come
+  // back as an Enter AID with the choice number. Both are cleared by CLEAR
+  // UNIT/ALTERNATE and by RESTORE (the menu flow restores the pre-menu
+  // screen), and replaced wholesale when redefined (paging re-sends them).
+  guiWindow: GuiWindow | null = null;
+  selection: SelectionField | null = null;
+
+  setGuiWindow(win: GuiWindow | null): void {
+    this.guiWindow = win;
+    this.structureDirty = true;
+  }
+
+  setSelection(sel: SelectionField | null): void {
+    this.selection = sel;
+    this.structureDirty = true;
+  }
+
+  /** REMOVE ALL GUI CONSTRUCTS / window removal / restore semantics. */
+  clearGui(): void {
+    if (this.guiWindow !== null || this.selection !== null) {
+      this.guiWindow = null;
+      this.selection = null;
+      this.structureDirty = true;
+    }
   }
 
   // ---------------------------------------------------------- local key ops
