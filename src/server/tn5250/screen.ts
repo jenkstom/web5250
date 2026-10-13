@@ -1,6 +1,7 @@
 // 5250 screen buffer: cell planes, field table, OIA status and local
 // (client-side) keyboard behaviour, mirroring the semantics tn5250j uses
 // against real IBM i hosts.
+import * as zlib from 'node:zlib';
 import * as C from './constants.ts';
 import type { Ebcdic } from './ebcdic.ts';
 
@@ -339,6 +340,114 @@ export class Screen5250 {
     this.homePos = snap.homePos;
     this.lastAttr = snap.lastAttr;
     this.structureDirty = true;
+  }
+
+  /**
+   * Save cookie for hosts that keep the screen image host-side: the full
+   * presentation state, deflate-compressed. The cookie is handed to the host
+   * on its image-save request and replayed verbatim inside a later RESTORE
+   * SCREEN command, so its format only has to be readable here (ACS uses a
+   * Java-serialized blob for the same exchange; the host treats both as
+   * opaque bytes). Field tuples keep the wire form compact:
+   * [attr, startPos, length, endPos, ffw0, ffw1, fcw1, fcw2, mdt, fieldId,
+   *  isBypass, shift, autoEnter, toUpper, numeric, signedNumeric].
+   */
+  serializeSave(): Buffer {
+    return Buffer.from(
+      JSON.stringify({
+        v: 1,
+        rows: this.rows,
+        cols: this.cols,
+        chars: this.chars,
+        attrs: this.attrs,
+        attrPlace: this.attrPlace,
+        cursorPos: this.cursorPos,
+        homePos: this.homePos,
+        writePos: this.writePos,
+        lastAttr: this.lastAttr,
+        mouse: this.mouseButtons.map((m) => [m.event, m.aid, m.moveCursor ? 1 : 0, m.queued ? 1 : 0]),
+        fields: this.fields.map((f) => [
+          f.attr,
+          f.startPos,
+          f.length,
+          f.endPos,
+          f.ffw0,
+          f.ffw1,
+          f.fcw1,
+          f.fcw2,
+          f.mdt ? 1 : 0,
+          f.fieldId,
+          f.isBypass ? 1 : 0,
+          f.shift,
+          f.autoEnter ? 1 : 0,
+          f.toUpper ? 1 : 0,
+          f.numeric ? 1 : 0,
+          f.signedNumeric ? 1 : 0
+        ])
+      })
+    );
+  }
+
+  /** Restore from a serializeSave() cookie; false when it is unusable. */
+  restoreSavedImage(cookie: Buffer): boolean {
+    try {
+      const d = JSON.parse(zlib.inflateSync(cookie).toString()) as {
+        v: number;
+        rows: number;
+        cols: number;
+        chars: string[];
+        attrs: number[];
+        attrPlace: boolean[];
+        cursorPos: number;
+        homePos: number;
+        writePos: number;
+        lastAttr: number;
+        mouse: number[][];
+        fields: number[][];
+      };
+      const size = d.rows * d.cols;
+      if (d.v !== 1 || !Array.isArray(d.chars) || d.chars.length !== size) return false;
+      this.rows = d.rows;
+      this.cols = d.cols;
+      this.chars = d.chars;
+      this.attrs = d.attrs;
+      this.attrPlace = d.attrPlace;
+      this.cursorPos = d.cursorPos;
+      this.homePos = d.homePos;
+      this.writePos = d.writePos;
+      this.lastAttr = d.lastAttr;
+      // Mouse programming belongs to the screen format: restoring an image
+      // must bring back the bindings the saved screen carried.
+      this.mouseButtons = (d.mouse ?? []).map((a) => ({
+        event: a[0],
+        aid: a[1],
+        moveCursor: a[2] === 1,
+        queued: a[3] === 1
+      }));
+      this.fields = d.fields.map((a) => ({
+        attr: a[0],
+        startPos: a[1],
+        dataStart: a[1] + 1,
+        length: a[2],
+        endPos: a[3],
+        ffw0: a[4],
+        ffw1: a[5],
+        fcw1: a[6],
+        fcw2: a[7],
+        mdt: a[8] === 1,
+        fieldId: a[9],
+        isBypass: a[10] === 1,
+        shift: a[11],
+        autoEnter: a[12] === 1,
+        toUpper: a[13] === 1,
+        numeric: a[14] === 1,
+        signedNumeric: a[15] === 1
+      }));
+      this.structureDirty = true;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ------------------------------------------------------------------ fields

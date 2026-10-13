@@ -1,6 +1,7 @@
 // Parser for inbound 5250 records (the command stream after the RFC 1205
 // GDS header). Dispatch semantics mirror tn5250j's tnvt.parseIncoming /
 // writeToDisplay, which interoperate with real IBM i hosts.
+import * as zlib from 'node:zlib';
 import * as C from './constants.ts';
 import type { Screen5250 } from './screen.ts';
 import type { Telnet5250 } from './telnet.ts';
@@ -108,9 +109,35 @@ export class Parser5250 {
         break;
 
       case C.CMD_SAVE_SCREEN:
-      case C.CMD_SAVE_PARTIAL_SCREEN:
+      case C.CMD_SAVE_PARTIAL_SCREEN: {
         this.screen.saveScreen();
+        // GDS opcode 0x04 marks this host's image-save dialect: after a
+        // host-programmed mouse AID it writes nothing more (no menu) until
+        // the device hands its screen image back. Captured from ACS: the
+        // reply is X'04' X'12' <compressed cookie> with GDS opcode 04 and
+        // header byte 8 = X'80'.
+        if (this.buf[6] === 4 && this.buf[9] === 0x04) this.sendSaveImage();
         break;
+      }
+
+      case C.CMD_RESTORE_SCREEN:
+      case C.CMD_RESTORE_PARTIAL_SCREEN: {
+        // GDS opcode 0x05 replays the device's own save cookie after the
+        // X'12' (the cookie runs to the end of the record); classic restores
+        // carry nothing and pop the local snapshot stack.
+        const replay =
+          this.buf[6] === 4 && this.buf[9] === 0x05 && this.hasNext()
+            ? this.buf.subarray(this.pos, this.end)
+            : null;
+        if (replay) {
+          this.pos = this.end;
+          if (!this.screen.restoreSavedImage(replay)) this.screen.restoreScreen();
+        } else {
+          this.screen.restoreScreen();
+        }
+        this.cursorChanged = true;
+        break;
+      }
 
       case C.CMD_SIGNAL: // audible bell, 2 unused bytes follow
         this.beep = true;
@@ -120,12 +147,6 @@ export class Parser5250 {
 
       case C.CMD_WRITE_TO_DISPLAY:
         this.writeToDisplay(true);
-        break;
-
-      case C.CMD_RESTORE_SCREEN:
-      case C.CMD_RESTORE_PARTIAL_SCREEN:
-        this.screen.restoreScreen();
-        this.cursorChanged = true;
         break;
 
       case C.CMD_CLEAR_UNIT_ALTERNATE: {
@@ -546,9 +567,10 @@ export class Parser5250 {
         (flags & 0x10) !== 0 ? 'marker' : ''
       ].filter(Boolean).join(',');
       this.log(`MOUSE BUTTONS: ${first}${second} -> AID 0x${aid.toString(16)} (${bits}, flags=0x${flags.toString(16)})`);
-      if (!twoEvent) {
-        table.push({ event: defs[i + 1], aid, moveCursor, queued });
-      }
+      // Two-event defs (flags X'80', e.g. right down+up as one completed
+      // click) are registered under their FIRST event: a browser reports a
+      // contextmenu/dblclick only once the pair is done.
+      table.push({ event: defs[i + 1], aid, moveCursor, queued });
     }
     this.screen.setMouseButtons(table);
     if (defs.length === 0) this.log('MOUSE BUTTONS: table reset (no definitions)');
@@ -612,5 +634,25 @@ export class Parser5250 {
 
   private negativeResponse(cat: number, modifier: number, u1: number, u2: number): void {
     this.telnet.sendGds(C.GDS_FLAG_ERR, 0, Buffer.from([cat, modifier, u1, u2]));
+  }
+
+  /**
+   * Answer the host's image-save request (GDS opcode 04 SAVE SCREEN) with
+   * the current screen as an opaque compressed cookie in RESTORE SCREEN
+   * framing. Without this reply the host stalls after a host-programmed
+   * mouse AID: it writes the acknowledgement (cursor at the click, no read
+   * invite), asks for the image, then waits - ACS menus never appear. The
+   * host stores the cookie verbatim and replays it in the opcode-05
+   * RESTORE SCREEN that closes the menu exchange.
+   */
+  private sendSaveImage(): void {
+    const cookie = zlib.deflateSync(this.screen.serializeSave());
+    this.log(`save-image reply: ${cookie.length} byte cookie (GDS opcode 04)`);
+    this.telnet.sendGds(
+      0,
+      0x04,
+      Buffer.concat([Buffer.from([C.CMD_ESCAPE, C.CMD_RESTORE_SCREEN]), cookie]),
+      0x80
+    );
   }
 }

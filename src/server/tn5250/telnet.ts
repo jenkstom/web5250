@@ -239,9 +239,14 @@ export class Telnet5250 {
 
   /**
    * Send one RFC 1205 GDS record:
-   *   <len:2> 12 A0 00 00 04 <flags> 00 <opcode> <payload> <IAC EOR>
+   *   <len:2> 12 A0 00 00 04 <flags> <b8> <opcode> <payload> <IAC EOR>
+   * The length word counts itself and every byte after it, computed before
+   * IAC doubling of 0xFF bytes and excluding the trailing IAC EOR - the form
+   * live hosts and ACS both use. `b8` is the header byte between flags and
+   * opcode: hosts send 0x00, ACS sets 0x80 on device records, so the
+   * screen-image reply matches that.
    */
-  sendGds(flags: number, opcode: number, payload?: Buffer): void {
+  sendGds(flags: number, opcode: number, payload?: Buffer, b8 = 0): void {
     const header = Buffer.from([
       (C.GDS_ID >> 8) & 0xff,
       C.GDS_ID & 0xff,
@@ -249,13 +254,12 @@ export class Telnet5250 {
       0x00,
       0x04,
       flags & 0xff,
-      0x00,
+      b8 & 0xff,
       opcode & 0xff
     ]);
     const raw = Buffer.concat([header, payload ?? Buffer.alloc(0)]);
-    // Length counts every byte after the 2-byte length field, computed
-    // BEFORE IAC doubling and excluding the trailing IAC EOR (RFC 1205).
-    const out: number[] = [(raw.length >> 8) & 0xff, raw.length & 0xff];
+    const len = raw.length + 2;
+    const out: number[] = [(len >> 8) & 0xff, len & 0xff];
     for (const b of raw) {
       if (b === C.IAC) out.push(C.IAC); // double 0xFF inside the record
       out.push(b);

@@ -46,7 +46,7 @@ const CMD_WTD = 0x11, CMD_CLEAR = 0x40, CMD_ERRCODE = 0x21;
 const CMD_RIF = 0x42, CMD_RMD = 0x52;
 const ORDER_SBA = 0x11, ORDER_IC = 0x13, ORDER_SF = 0x1d;
 
-const AID_ENTER = 0xf1, AID_PF1 = 0x31, AID_PF3 = 0x33;
+const AID_ENTER = 0xf1, AID_PF1 = 0x31, AID_PF3 = 0x33, AID_PF4 = 0x34;
 
 // ---------------------------------------------------------------- session
 class HostSession {
@@ -59,6 +59,7 @@ class HostSession {
     this.fieldPos = []; // [row, col] per parsed MDT run (parallel to fields)
     this.currentFields = [];
     this.lastReadCmd = CMD_RIF;
+    this.savedCookie = null; // device screen-image cookie (save/restore dialect)
     this.gotTtype = false;
     this.gotDevname = false;
     this.started = false;
@@ -196,14 +197,14 @@ class HostSession {
   sendList(status = '') {
     this.state = 'list';
     this.currentFields = [];
-    // 5250 GUI mouse programming (5494 FR): on this screen the right
-    // button and a double click both act as F3 - exercises the emulator's
-    // host-programmed mouse support (order X'15', SF class D9 type 55;
-    // flag 0x40 = single event + move text cursor to the click).
+    // 5250 GUI mouse programming (5494 FR): flags 0x50 = move text cursor
+    // to the click + marker bit, exactly as the live host programs its
+    // screens. Right-down sends PF4 - the app's menu-open key; double-click
+    // acts as F3.
     const MOUSE_SF = [
       0x15, 0x00, 0x0f, 0xd9, 0x55, 0x00, 0x00, 0x00,
-      0x40, 0x04, 0x00, AID_PF3,
-      0x40, 0x03, 0x00, AID_PF3
+      0x50, 0x04, 0x00, AID_PF4,
+      0x50, 0x03, 0x00, AID_PF3
     ];
     const defs = [
       this.text(1, 30, 0x22, 'WORK WITH DEMO ITEMS'),
@@ -221,6 +222,55 @@ class HostSession {
       this.text(23, 6, 0x3a, 'F3=Exit')
     );
     this.screen(defs, [7, 8], CMD_RMD);
+  }
+
+  /**
+   * The live host's right-click menu dialect, captured from an ACS session:
+   * acknowledge the mouse AID with a no-read WTD that inserts the cursor at
+   * the click, then SAVE SCREEN with GDS opcode 04 - and wait. Nothing more
+   * is written (no menu) until the device replies with its screen image
+   * (opcode 04 record, X'04' X'12' <compressed cookie>).
+   */
+  beginMenuFlow(row, col) {
+    this.state = 'await-image';
+    this.record(0x03, this.wtd(0x28, [ORDER_IC, row, col]));
+    this.record(0x04, this.esc(0x02)); // save screen + image request
+  }
+
+  /** Menu drawn over the saved screen (no clear), mouse reprogrammed. */
+  sendMenu() {
+    this.state = 'menu';
+    this.currentFields = [];
+    const MOUSE_SF = [
+      0x15, 0x00, 0x0b, 0xd9, 0x55, 0x00, 0x00, 0x00,
+      0x50, 0x04, 0x01, AID_PF4
+    ];
+    this.record(
+      0x03,
+      this.wtd(0x20, [
+        ...MOUSE_SF,
+        ORDER_SBA, 22, 6, 0x3a, ...e('F4=Select  F12=Cancel')
+        // no IC order: WCC1 X'20' = do-not-move, so the cursor stays at the
+        // click point the ack WTD placed it on (the live host's menu write
+        // carries its own IC/MC orders instead).
+      ]),
+      this.esc(CMD_RMD, 0x00, 0x00)
+    );
+    this.lastReadCmd = CMD_RMD;
+  }
+
+  /** Menu done: replay the device's cookie (GDS opcode 05) and re-invite. */
+  endMenuFlow() {
+    this.state = 'list';
+    this.currentFields = [];
+    for (let i = 0; i < 10; i++) this.currentFields.push({ row: 7 + i, col: 8, len: 2 });
+    if (this.savedCookie) {
+      this.record(0x05, [0x04, 0x12, ...this.savedCookie]);
+    } else {
+      this.record(0x03, this.esc(0x12)); // classic restore, no cookie seen
+    }
+    this.record(0x03, this.esc(CMD_RMD, 0x00, 0x00));
+    this.lastReadCmd = CMD_RMD;
   }
 
   sendHelp() {
@@ -392,6 +442,17 @@ class HostSession {
   onRecord(rec) {
     if (rec.length < 10) return;
     const opcode = rec[9];
+    if (opcode === 4) {
+      // Device screen-image reply (save/restore dialect): X'04' X'12' <cookie>.
+      if (rec[10] === 0x04 && rec[11] === 0x12) {
+        this.savedCookie = rec.subarray(12);
+        this.log(`save-image cookie: ${this.savedCookie.length} bytes, head ${this.savedCookie.subarray(0, 2).toString('hex')}`);
+        if (this.state === 'await-image') this.sendMenu();
+      } else {
+        this.log(`unexpected opcode-04 record: ${rec.subarray(10, 16).toString('hex')}`);
+      }
+      return;
+    }
     if (opcode !== 3) return;
     const flags = rec[7];
     let p = 10;
@@ -436,10 +497,10 @@ class HostSession {
     }
 
     this.log(`AID=0x${aid.toString(16)} cursor=${row},${col} fields=${JSON.stringify(this.fields)}`);
-    this.onAid(aid);
+    this.onAid(aid, row, col);
   }
 
-  onAid(aid) {
+  onAid(aid, row, col) {
     const [user = '', password = ''] = this.state === 'signon' ? this.fields : [];
 
     switch (this.state) {
@@ -479,6 +540,11 @@ class HostSession {
         break;
 
       case 'list': {
+        if (aid === AID_PF4) {
+          // Host-programmed right-click: open the menu dialect flow.
+          this.beginMenuFlow(row, col);
+          break;
+        }
         if (aid === AID_PF3) {
           this.sendMain(this.lastUser);
           break;
@@ -492,6 +558,11 @@ class HostSession {
         }
         break;
       }
+
+      case 'menu':
+        // Any AID picks from the menu: replay the cookie, back to the list.
+        this.endMenuFlow();
+        break;
 
       case 'sysreq':
         this.sendRestore();

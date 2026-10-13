@@ -40,9 +40,12 @@ export const NEWENV_USERVAR = 0x03;
 // GDS record framing (RFC 1205)
 //
 // Every 5250 record (both directions, after binary+EOR negotiation) is:
-//   <len:2 BE> 12 A0 00 00 04 <flags> 00 <opcode> <payload...> <IAC EOR>
-// where <len> counts every byte after the length field itself, computed
-// BEFORE IAC-doubling of 0xFF bytes, and excluding the trailing IAC EOR.
+//   <len:2 BE> 12 A0 00 00 04 <flags> <b8> <opcode> <payload...> <IAC EOR>
+// where <len> counts itself and every byte after it, computed BEFORE
+// IAC-doubling of 0xFF bytes and excluding the trailing IAC EOR - the form
+// live hosts and ACS both send. <opcode> is 0x03 for a normal data stream;
+// GUI-capable hosts also use 0x04 (save screen + device image request) and
+// 0x05 (restore screen replaying the device's image cookie).
 // ---------------------------------------------------------------------------
 export const GDS_ID = 0x12a0;
 

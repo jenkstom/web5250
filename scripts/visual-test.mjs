@@ -202,10 +202,12 @@ if (mouseOk) {
   console.log('PASTE at cursor:', pasteOk ? 'ok' : 'FAIL cursor did not advance');
   await page.screenshot({ path: `${OUT}/09-list-via-paste.png` });
 
-  // Host-programmed mouse (the mock maps right-down and double-click to
-  // F3 on this list screen): Shift+right-click still opens the LOCAL
-  // menu on a programmed screen, plain right-click performs the host
-  // action (exit to the main menu), and a double click does too.
+  // Host-programmed mouse (the mock maps right-down to the menu key PF4 on
+  // this list screen, double-click to F3): Shift+right-click still opens the
+  // LOCAL menu on a programmed screen; plain right-click runs the live
+  // host's menu dialect - acknowledge WTD, SAVE SCREEN (image request),
+  // device image reply, menu write, pick, cookie RESTORE - and a double
+  // click exits to the main menu.
   const row = await cellXY(9, 12);
   // NB: the modifiers click option does not reach this headless build -
   // hold the key instead.
@@ -216,16 +218,51 @@ if (mouseOk) {
   await page.mouse.click(...Object.values(await cellXY(20, 40))); // click-away closes
   await page.waitForFunction(() => document.getElementById('ctx-menu')?.classList.contains('hidden'));
   console.log('SHIFT+RIGHT-CLICK local menu on programmed screen: ok');
+  // The terminal renders to a canvas, so screen text is verified through
+  // the local menu's Copy action (Shift+right keeps the local menu even on
+  // host-programmed screens).
+  const screenText = async () => {
+    await page.keyboard.down('Shift');
+    const any = await cellXY(2, 40);
+    await page.mouse.click(any.x, any.y, { button: 'right' });
+    await page.keyboard.up('Shift');
+    await page.waitForSelector('#ctx-menu:not(.hidden)', { timeout: 3000 });
+    await page.click('#ctx-copy');
+    const t = await page.evaluate(() => navigator.clipboard.readText());
+    const away = await cellXY(20, 40);
+    await page.mouse.click(away.x, away.y);
+    await page.waitForFunction(() => document.getElementById('ctx-menu')?.classList.contains('hidden'));
+    return t;
+  };
+
   await page.mouse.click(row.x, row.y, { button: 'right' });
-  mouseOk = await awaitPos('6,26'); // mock: right-down -> F3 -> main menu
-  console.log('RIGHT-CLICK host action:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
+  // The host inserts the cursor at the click (ack WTD, no read invite) and
+  // waits for the device's screen image before drawing the menu - the flow
+  // that hung forever without the image reply.
+  mouseOk = await awaitPos('9,12');
+  console.log('RIGHT-CLICK ack cursor at click:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
   if (mouseOk) {
-    // back into the list for the double-click check
-    const sel = await cellXY(6, 26);
-    await page.mouse.click(sel.x, sel.y);
-    await page.keyboard.type('4');
+    await page.waitForTimeout(400);
+    const menuText = await screenText();
+    mouseOk = menuText.includes('F4=Select') && menuText.includes('Demo item 1');
+    await page.screenshot({ path: `${OUT}/10-rightclick-menu.png` });
+    console.log(
+      'RIGHT-CLICK host menu appears after image reply:',
+      mouseOk ? 'ok' : `FAIL copied="${menuText.replace(/\n/g, '|').slice(0, 120)}"`
+    );
+  }
+  if (mouseOk) {
+    // Pick: Enter. The mock replays our save cookie (GDS opcode 05) - the
+    // list screen must come back from the cookie alone, no host rewrite.
     await page.keyboard.press('Enter');
-    await awaitPos('7,8');
+    await page.waitForTimeout(400);
+    const back = await screenText();
+    mouseOk = !back.includes('F4=Select') && back.includes('Demo item 1');
+    mouseOk = (await awaitPos('9,12')) && mouseOk; // cookie cursor = click cell
+    await page.screenshot({ path: `${OUT}/11-menu-restored.png` });
+    console.log('MENU pick restores screen from device cookie:', mouseOk ? 'ok' : 'FAIL list screen not restored');
+  }
+  if (mouseOk) {
     const dbl = await cellXY(10, 12);
     await page.mouse.dblclick(dbl.x, dbl.y);
     mouseOk = await awaitPos('6,26'); // mock: left-double -> F3 -> main menu
