@@ -211,6 +211,7 @@ function handleMessage(data: string): void {
       if (Array.isArray(msg.fields)) term.setFields(msg.fields as number[][]);
       const cur = msg.cursor as number[];
       term.setCursor(cur[0], cur[1]);
+      $('oia-pos').textContent = `${cur[0]},${cur[1]}`;
       // Same marker the gateway's automation uses: QDSIGNON-family screens
       // keep their "Sign On" header until sign-on succeeds (and it returns
       // after a sign-off, where leaving is again free).
@@ -331,10 +332,14 @@ function setHostPopup(p: unknown): void {
 }
 
 /**
- * The popup overlays the canvas at its 5250 anchor (the window frame when
- * the host drew one, else the field), items sized to the cell grid so it
- * reads as part of the screen. Items send pick N; it stays up while the
- * host pages (F8/F9) - the gateway re-sends the field and this re-renders.
+ * The popup overlays the canvas at its 5250 position, items sized to the
+ * cell grid so it reads as part of the screen. With a CREATE WINDOW frame
+ * the server has already drawn the border into the cell buffer (5494 FR
+ * 15-39), so the overlay is a transparent layer over the window's work
+ * area and each choice sits exactly on its own cell; without a window the
+ * overlay keeps its own card look, anchored at the field. Items send pick
+ * N; it stays up while the host pages (F8/F9) - the gateway re-sends the
+ * field and this re-renders.
  */
 function renderHostMenu(): void {
   if (!hostPopup) {
@@ -346,11 +351,17 @@ function renderHostMenu(): void {
   const cw = canvas.clientWidth / term.cols;
   const chh = canvas.clientHeight / term.rows;
   const win = hostPopup.window;
-  const anchorRow = win ? win[0] : hostPopup.field[0];
-  const anchorCol = win ? win[1] : hostPopup.field[1];
-  hostMenu.style.left = `${canvas.offsetLeft + (anchorCol - 1) * cw}px`;
-  hostMenu.style.top = `${canvas.offsetTop + (anchorRow - 1) * chh}px`;
-  if (win) hostMenu.style.minWidth = `${(win[3] + 2) * cw}px`;
+  const framed = win !== null;
+  hostMenu.classList.toggle('framed', framed);
+  // Framed: the container covers the window work area
+  // [row+1, col+3 .. col+width+2] (1-based, per the FR window layout);
+  // each choice is placed on its own cell. Unframed: anchor at the field.
+  const baseRow = win ? win[0] + 1 : hostPopup.field[0];
+  const baseCol = win ? win[1] + 3 : hostPopup.field[1];
+  hostMenu.style.left = `${canvas.offsetLeft + (baseCol - 1) * cw}px`;
+  hostMenu.style.top = `${canvas.offsetTop + (baseRow - 1) * chh}px`;
+  if (!framed) hostMenu.style.minWidth = '6ch';
+  else hostMenu.style.minWidth = '0';
   hostMenu.style.fontSize = `${Math.max(10, chh * 0.92)}px`;
   hostMenu.style.lineHeight = `${chh}px`;
 
@@ -363,6 +374,13 @@ function renderHostMenu(): void {
       if (state === 0x40) item.classList.add('selected'); // default selection
       item.textContent = c[2];
       item.title = c[2];
+      if (framed && win) {
+        item.style.position = 'absolute';
+        item.style.left = `${(c[1] - baseCol) * cw}px`;
+        item.style.top = `${(c[0] - baseRow) * chh}px`;
+        // Highlight up to the interior's right border character.
+        item.style.minWidth = `${(win[1] + win[3] + 2 - c[1] + 1) * cw}px`;
+      }
       item.addEventListener('mousedown', (e) => {
         e.stopPropagation();
         e.preventDefault();

@@ -34,15 +34,39 @@ export interface OiaState {
   errorCode: boolean;
 }
 
-/** GUI window from CREATE WINDOW (5494 FR Table 15-12), anchored at SBA. */
+/**
+ * GUI window from CREATE WINDOW (5494 FR Table 15-12), anchored at the SBA
+ * address (which addresses the top border row's left corner attribute).
+ * The frame surrounds the depth×width work area per the FR figures:
+ *   top row:    [attr][UL][width+2 border chars][UR][attr]
+ *   work rows:  [attr][left][attr X'20'][work area][attr][right][attr]
+ *   bottom row: [attr][LL][width+2 border chars][LR][attr]
+ * i.e. a (depth+2)×(width+6) footprint. The leading attribute can be
+ * overwritten by host data (the FR's "second left border attribute"
+ * exception) and the 5494 clears the work area when the window is created.
+ */
+export interface WindowTitle {
+  text: string;
+  footer: boolean; // false = top border title, true = bottom border footer
+  justify: 'left' | 'right' | 'center';
+  /** Title attribute, or 0 to inherit the border attribute (FR 15-38). */
+  attr: number;
+}
+
 export interface GuiWindow {
-  row: number; // 1-based anchor (top row, left col)
+  row: number; // 1-based anchor (top border row, left corner attr col)
   col: number;
   depth: number; // rows inside the window
   width: number; // columns inside the window
-  pullDown: boolean; // pull-down menu window
+  pullDown: boolean; // pull-down menu window: top row gets corners only
   restrictCursor: boolean;
   borderAttr: number;
+  /** Border characters. GUI box glyphs unless the host specified its own. */
+  chars: { ul: string; top: string; ur: string; left: string; right: string; ll: string; bottom: string; lr: string };
+  title: WindowTitle | null;
+  footer: WindowTitle | null;
+  /** The covered cells (chars/attrs/attrPlace), for removal/restore. */
+  saved: { pos: number[]; chars: string[]; attrs: number[]; attrPlace: boolean[] };
 }
 
 /**
@@ -82,6 +106,15 @@ interface ScreenSnapshot {
 }
 
 let fieldIdSeq = 1;
+
+/**
+ * Border characters for GUI-capable displays (ACS conventions: the FR's
+ * "GUI-like characters ... drawing a box around the window"). Displays
+ * without them default to the plain characters (periods and colons).
+ */
+export const GUI_BORDER_CHARS = { ul: '┌', top: '─', ur: '┐', left: '│', right: '│', ll: '└', bottom: '─', lr: '┘' };
+/** FR 15-40: default border characters for plain 5250 displays. */
+export const PLAIN_BORDER_CHARS = { ul: '.', top: '.', ur: '.', left: ':', right: ':', ll: ':', bottom: '.', lr: ':' };
 
 export class Screen5250 {
   rows = 24;
@@ -165,7 +198,11 @@ export class Screen5250 {
     this.waitingForInput = false;
     this.errorCodeActive = false;
     this.savedErrorRow = null;
-    this.clearGui();
+    // Drop GUI constructs without restoring their covered cells: the buffer
+    // was just wiped, and putting the pre-window region back would
+    // resurrect stale content.
+    this.dropWindow(false);
+    this.selection = null;
     this.structureDirty = true;
   }
 
@@ -672,8 +709,18 @@ export class Screen5250 {
   guiWindow: GuiWindow | null = null;
   selection: SelectionField | null = null;
 
-  setGuiWindow(win: GuiWindow | null): void {
-    this.guiWindow = win;
+  /**
+   * CREATE WINDOW (5494 FR 15-39): "creates the window borders" and "clears
+   * the window area". The covered cells are saved first so REMOVE GUI
+   * WINDOW / RESTORE can put the underlying screen back (a PWS keeps the
+   * base screen alive behind the window; single-buffer emulators restore it
+   * from this snapshot). A second CREATE WINDOW replaces the first one -
+   * same place and size per the FR, or stacked on top of it.
+   */
+  setGuiWindow(win: Omit<GuiWindow, 'saved'>): void {
+    this.dropWindow(true);
+    this.guiWindow = { ...win, saved: this.saveRegion(win) };
+    this.drawWindowFrame(this.guiWindow);
     this.structureDirty = true;
   }
 
@@ -684,10 +731,171 @@ export class Screen5250 {
 
   /** REMOVE ALL GUI CONSTRUCTS / window removal / restore semantics. */
   clearGui(): void {
-    if (this.guiWindow !== null || this.selection !== null) {
-      this.guiWindow = null;
-      this.selection = null;
-      this.structureDirty = true;
+    const had = this.guiWindow !== null || this.selection !== null;
+    this.dropWindow(true);
+    this.selection = null;
+    if (had) this.structureDirty = true;
+  }
+
+  /** Remove the window, optionally putting the covered cells back. */
+  private dropWindow(restore: boolean): void {
+    const win = this.guiWindow;
+    this.guiWindow = null;
+    if (win && restore) this.restoreRegion(win.saved);
+  }
+
+  /** Snapshot a window's full frame footprint (clamped to the screen). */
+  private saveRegion(win: { row: number; col: number; depth: number; width: number }): GuiWindow['saved'] {
+    const pos: number[] = [];
+    const chars: string[] = [];
+    const attrs: number[] = [];
+    const attrPlace: boolean[] = [];
+    const r0 = Math.max(1, win.row);
+    const r1 = Math.min(this.rows, win.row + win.depth + 1);
+    const c0 = Math.max(1, win.col);
+    const c1 = Math.min(this.cols, win.col + win.width + 5);
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const p = this.posOf(r, c);
+        pos.push(p);
+        chars.push(this.chars[p]);
+        attrs.push(this.attrs[p]);
+        attrPlace.push(this.attrPlace[p]);
+      }
+    }
+    return { pos, chars, attrs, attrPlace };
+  }
+
+  private restoreRegion(saved: GuiWindow['saved']): void {
+    for (let i = 0; i < saved.pos.length; i++) {
+      this.chars[saved.pos[i]] = saved.chars[i];
+      this.attrs[saved.pos[i]] = saved.attrs[i];
+      this.attrPlace[saved.pos[i]] = saved.attrPlace[i];
+      this.markDirty(saved.pos[i]);
+    }
+  }
+
+  /**
+   * Draw the window frame into the cell planes (5494 FR 15-39/15-40 and
+   * Figure 15-4: three-cell left/right borders [attr][char][attr], work
+   * area cleared, pull-downs get top corners only). The border chars are
+   * ordinary cells in the border attribute, so host data written into the
+   * work area lands exactly where a real controller puts it - including
+   * the FR's "leading attribute overwrites the second left border
+   * attribute" case, which the live menu dialect relies on.
+   */
+  private drawWindowFrame(win: GuiWindow): void {
+    const ch = win.chars;
+    const b = win.borderAttr;
+    // Attribute cell: occupies the position as a blank (never carries text).
+    const attrCell = (r: number, c: number, attr: number): void => {
+      if (r < 1 || r > this.rows || c < 1 || c > this.cols) return;
+      const p = this.posOf(r, c);
+      this.attrPlace[p] = true;
+      this.chars[p] = ' ';
+      this.attrs[p] = attr;
+      this.markDirty(p);
+    };
+    const charCell = (r: number, c: number, char: string, attr: number): void => {
+      if (r < 1 || r > this.rows || c < 1 || c > this.cols) return;
+      const p = this.posOf(r, c);
+      this.attrPlace[p] = false;
+      this.chars[p] = char;
+      this.attrs[p] = attr;
+      this.markDirty(p);
+    };
+
+    const top = win.row;
+    const bottom = win.row + win.depth + 1;
+    const leftC = win.col;
+    const rightC = win.col + win.width + 4; // right border character column
+
+    if (win.pullDown) {
+      // Top border row: corner characters only (the host's menu bar
+      // separator line supplies the horizontal strokes; GUI displays use a
+      // T-shaped junction, plain ones the vertical character - FR 15-36).
+      const corner = ch === GUI_BORDER_CHARS ? '┬' : ch.left;
+      charCell(top, leftC + 1, corner, b);
+      charCell(top, rightC, corner, b);
+    } else {
+      attrCell(top, leftC, b);
+      charCell(top, leftC + 1, ch.ul, b);
+      for (let x = 0; x < win.width + 2; x++) charCell(top, leftC + 2 + x, ch.top, b);
+      charCell(top, rightC, ch.ur, b);
+      attrCell(top, rightC + 1, b);
+    }
+
+    // Work rows: [attr][left char][attr X'20'] work area [attr][right char][attr].
+    // The X'20' cells terminate the border colour/highlight so the contents
+    // stay normal (green) - FR "Left Border Attributes".
+    for (let r = top + 1; r <= top + win.depth; r++) {
+      attrCell(r, leftC, b);
+      charCell(r, leftC + 1, ch.left, b);
+      attrCell(r, leftC + 2, 0x20);
+      attrCell(r, rightC - 1, b);
+      charCell(r, rightC, ch.right, b);
+      attrCell(r, rightC + 1, 0x20);
+      // Clear the work area (the 5494 clears the window area on CREATE
+      // WINDOW - "sometimes we do get the erase command, and sometimes we
+      // don't", lib5250). Plain blanks: host writes must be able to land.
+      for (let c = leftC + 3; c <= leftC + win.width + 2; c++) {
+        if (c < 1 || c > this.cols) continue;
+        const p = this.posOf(r, c);
+        this.attrPlace[p] = false;
+        this.chars[p] = ' ';
+        this.attrs[p] = 0x20;
+        this.markDirty(p);
+      }
+    }
+
+    attrCell(bottom, leftC, b);
+    charCell(bottom, leftC + 1, ch.ll, b);
+    for (let x = 0; x < win.width + 2; x++) charCell(bottom, leftC + 2 + x, ch.bottom, b);
+    charCell(bottom, rightC, ch.lr, b);
+    attrCell(bottom, rightC + 1, b);
+
+    if (win.title) this.writeWindowTitle(win, win.title);
+    if (win.footer) this.writeWindowTitle(win, win.footer);
+  }
+
+  /**
+   * Window title (top border) / footer (bottom border), FR Table 15-14 and
+   * Figures 15-5..15-7: the text replaces border characters one position
+   * inside the corner character; with its own attribute it is framed by an
+   * attribute cell ahead of it and the border attribute after it. Titles
+   * are ignored for pull-down windows.
+   */
+  private writeWindowTitle(win: GuiWindow, t: WindowTitle): void {
+    if (win.pullDown && !t.footer) return;
+    const row = t.footer ? win.row + win.depth + 1 : win.row;
+    if (row < 1 || row > this.rows) return;
+    // Text capacity: the width+2 border character run, minus the two
+    // attribute cells when the title carries its own attribute.
+    const cap = win.width + 2 - (t.attr !== 0 ? 2 : 0);
+    const text = t.text.slice(0, Math.max(0, cap));
+    if (text.length === 0) return;
+    const len = text.length;
+    // Border character run spans cols col+2 .. col+width+3; text ends one
+    // position before the right corner for right-justified text (figs).
+    let start: number;
+    if (t.justify === 'left') start = win.col + 3;
+    else if (t.justify === 'right') start = win.col + 3 + win.width - len;
+    else start = win.col + 2 + Math.floor((win.width + 2 - len) / 2);
+
+    const put = (c: number, char: string, attr: number, attrCell: boolean): void => {
+      if (c < 1 || c > this.cols) return;
+      const p = this.posOf(row, c);
+      this.attrPlace[p] = attrCell;
+      this.chars[p] = attrCell ? ' ' : char;
+      this.attrs[p] = attr;
+      this.markDirty(p);
+    };
+    if (t.attr !== 0) {
+      put(start - 1, ' ', t.attr, true);
+      for (let i = 0; i < len; i++) put(start + i, text[i], t.attr, false);
+      put(start + len, ' ', win.borderAttr, true);
+    } else {
+      for (let i = 0; i < len; i++) put(start + i, text[i], win.borderAttr, false);
     }
   }
 

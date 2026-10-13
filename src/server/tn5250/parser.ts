@@ -3,7 +3,8 @@
 // writeToDisplay, which interoperate with real IBM i hosts.
 import * as zlib from 'node:zlib';
 import * as C from './constants.ts';
-import type { Screen5250, SelectionChoice } from './screen.ts';
+import { GUI_BORDER_CHARS, PLAIN_BORDER_CHARS } from './screen.ts';
+import type { Screen5250, SelectionChoice, WindowTitle } from './screen.ts';
 import type { Telnet5250 } from './telnet.ts';
 import type { Ebcdic } from './ebcdic.ts';
 
@@ -587,25 +588,85 @@ export class Parser5250 {
   }
 
   /**
-   * CREATE WINDOW (5494 FR Table 15-12): the host's menu popup frame,
-   * anchored at the display address the preceding SBA order set. Depth and
-   * width count the rows/columns INSIDE the window; minor structures carry
-   * border presentation (type X'01') and title/footer (type X'10').
+   * CREATE WINDOW (5494 FR Table 15-12): the host's popup frame, anchored
+   * at the display address the preceding SBA order set (the top border
+   * row's left corner attribute). Depth and width count the rows/columns
+   * INSIDE the window. Minor structures: border presentation (type X'01',
+   * Table 15-13) and window title/footer (type X'10', Table 15-14). The
+   * frame itself is drawn by the screen model (setGuiWindow), like the
+   * 5494's "creates the window borders / clears the window area".
    */
   private decodeCreateWindow(rest: number[]): void {
     if (rest.length < 5) {
       this.warn(`CREATE WINDOW: implausible payload ${rest.length}`);
       return;
     }
-    let borderAttr = 0x3a; // default colour border per the FR
+    let borderAttr = 0x3a; // FR default: blue on colour displays
+    let chars = { ...GUI_BORDER_CHARS }; // GUI-capable display: box border
+    let hostChars = false;
+    let title: WindowTitle | null = null;
+    let footer: WindowTitle | null = null;
     let i = 5;
     while (i + 1 < rest.length) {
       const mlen = rest[i];
       const mtype = rest[i + 1];
       if (mlen < 2 || i + mlen > rest.length) break;
-      if (mtype === 0x01 && mlen >= 5) {
-        const attr = rest[i + 4] || rest[i + 3]; // colour || monochrome
+      if (mtype === 0x01 && mlen >= 4) {
+        // [len][X'01'][flags][mono attr][colour attr][8 border chars]
+        const mono = rest[i + 3];
+        const color = mlen >= 5 ? rest[i + 4] : 0;
+        const attr = color >= 0x20 && color <= 0x3f ? color : mono;
         if (attr >= 0x20 && attr <= 0x3f) borderAttr = attr;
+        if (mlen > 5) {
+          // Host-specified border characters (X'00' = default). We are a
+          // GUI-capable display, so the FR lets us draw GUI borders instead
+          // - but explicit characters are honoured (tn5250j does the same).
+          hostChars = true;
+          const at = (k: number, fallback: string): string => {
+            const v = rest[i + k];
+            return v >= 0x01 && v <= 0xfe ? this.ebcdic.ebcdic2uni(v) : fallback;
+          };
+          chars = {
+            ul: at(5, PLAIN_BORDER_CHARS.ul),
+            top: at(6, PLAIN_BORDER_CHARS.top),
+            ur: at(7, PLAIN_BORDER_CHARS.ur),
+            left: at(8, PLAIN_BORDER_CHARS.left),
+            right: at(9, PLAIN_BORDER_CHARS.right),
+            ll: at(10, PLAIN_BORDER_CHARS.ll),
+            bottom: at(11, PLAIN_BORDER_CHARS.bottom),
+            lr: at(12, PLAIN_BORDER_CHARS.lr)
+          };
+        } else {
+          // No characters specified: draw the GUI box (ACS conventions).
+          chars = { ...GUI_BORDER_CHARS };
+        }
+      } else if (mtype === 0x10 && mlen >= 6) {
+        // [len][X'10'][flags][mono attr][colour attr][reserved][text]
+        // Flags: bits 0-1 orientation (00 centred, 01 right, 10 left),
+        // bit 2 = footer. Title text is ignored for pull-down windows.
+        const flags = rest[i + 2];
+        const footerFlag = (flags & 0x20) !== 0;
+        if (!footerFlag && (rest[0] & 0x40) !== 0) {
+          this.log('CREATE WINDOW: pull-down title ignored');
+        } else {
+          const mono = rest[i + 3];
+          const color = rest[i + 4];
+          const attr =
+            color >= 0x20 && color <= 0x3f ? color : mono >= 0x20 && mono <= 0x3f ? mono : 0;
+          let text = '';
+          for (let b = i + 6; b < i + mlen; b++) {
+            const byte = rest[b];
+            text += byte >= 0x40 && byte < 0xff ? this.ebcdic.ebcdic2uni(byte) : ' ';
+          }
+          const t: WindowTitle = {
+            text: text.replace(/[ \u0000]+$/, ''),
+            footer: footerFlag,
+            justify: (flags & 0xc0) === 0x40 ? 'right' : (flags & 0xc0) === 0x80 ? 'left' : 'center',
+            attr
+          };
+          if (footerFlag) footer = t;
+          else title = t;
+        }
       }
       i += mlen;
     }
@@ -616,10 +677,15 @@ export class Parser5250 {
       width: rest[4],
       pullDown: (rest[0] & 0x40) !== 0,
       restrictCursor: (rest[0] & 0x80) !== 0,
-      borderAttr
+      borderAttr,
+      chars,
+      title,
+      footer
     });
     this.log(
-      `CREATE WINDOW: ${rest[3]}x${rest[4]} at ${this.screen.rowOf(this.screen.writePos)},${this.screen.colOf(this.screen.writePos)} border=${borderAttr.toString(16)}`
+      `CREATE WINDOW: ${rest[3]}x${rest[4]} at ${this.screen.rowOf(this.screen.writePos)},${this.screen.colOf(this.screen.writePos)} border=${borderAttr.toString(16)} gui=${!hostChars}` +
+        (title ? ` title="${title.text}"` : '') +
+        (footer ? ` footer="${footer.text}"` : '')
     );
   }
 

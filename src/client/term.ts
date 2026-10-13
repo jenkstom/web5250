@@ -41,6 +41,27 @@ function attrStyle(attr: number): { fg: string; bg: string } {
   return reverse ? { fg: PALETTE.black, bg: fg } : { fg, bg: PALETTE.black };
 }
 
+/**
+ * Box-drawing characters (GUI window borders, DDS line drawing) are drawn
+ * as canvas lines spanning the full cell so adjacent cells join seamlessly
+ * - monospace fonts render these glyphs with gaps at every cell boundary,
+ * which shreds a window's vertical borders into dashes (xterm.js does the
+ * same custom-glyph trick). Bit masks: U+2500.. = ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼.
+ */
+const BOX_LINES: Record<string, { up?: boolean; down?: boolean; left?: boolean; right?: boolean }> = {
+  '\u2500': { left: true, right: true },
+  '\u2502': { up: true, down: true },
+  '\u250c': { right: true, down: true },
+  '\u2510': { left: true, down: true },
+  '\u2514': { right: true, up: true },
+  '\u2518': { left: true, up: true },
+  '\u251c': { right: true, up: true, down: true },
+  '\u2524': { left: true, up: true, down: true },
+  '\u252c': { left: true, right: true, down: true },
+  '\u2534': { left: true, right: true, up: true },
+  '\u253c': { left: true, right: true, up: true, down: true }
+};
+
 export class Terminal {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -320,7 +341,31 @@ export class Terminal {
       if (isNonDisplay(attr)) continue; // hidden field: leave blank
       const ch = this.chars[pos] ?? ' ';
       if (ch === ' ') continue;
-      ctx.fillStyle = attrStyle(attr).fg;
+      const fg = attrStyle(attr).fg;
+      const lines = BOX_LINES[ch];
+      if (lines) {
+        // Full-cell line drawing: centre strokes snap to the device-pixel
+        // grid (+ half a device pixel) so hairlines stay crisp at any
+        // fit() scale, and strokes reach the cell edges so neighbouring
+        // border cells join into one continuous rule.
+        const r = Math.floor(pos / cols);
+        const c = pos % cols;
+        const x0 = c * cellW;
+        const y0 = r * cellH;
+        const px = 0.5 / this.drawScale; // half a device pixel
+        const midX = Math.round((x0 + cellW / 2) * this.drawScale) / this.drawScale + px;
+        const midY = Math.round((y0 + cellH / 2) * this.drawScale) / this.drawScale + px;
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = Math.max(1 / this.drawScale, cellH / 16);
+        ctx.beginPath();
+        if (lines.left) { ctx.moveTo(x0, midY); ctx.lineTo(midX, midY); }
+        if (lines.right) { ctx.moveTo(midX, midY); ctx.lineTo(x0 + cellW, midY); }
+        if (lines.up) { ctx.moveTo(midX, y0); ctx.lineTo(midX, midY); }
+        if (lines.down) { ctx.moveTo(midX, midY); ctx.lineTo(midX, y0 + cellH); }
+        ctx.stroke();
+        continue;
+      }
+      ctx.fillStyle = fg;
       ctx.fillText(
         ch,
         (pos % cols) * cellW + cellW / 2,

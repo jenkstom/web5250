@@ -46,7 +46,7 @@ const CMD_WTD = 0x11, CMD_CLEAR = 0x40, CMD_ERRCODE = 0x21;
 const CMD_RIF = 0x42, CMD_RMD = 0x52;
 const ORDER_SBA = 0x11, ORDER_IC = 0x13, ORDER_SF = 0x1d;
 
-const AID_ENTER = 0xf1, AID_PF1 = 0x31, AID_PF3 = 0x33, AID_PF4 = 0x34, AID_PF9 = 0x39, AID_PF12 = 0x3c;
+const AID_ENTER = 0xf1, AID_PF1 = 0x31, AID_PF3 = 0x33, AID_PF4 = 0x34, AID_PF6 = 0x36, AID_PF9 = 0x39, AID_PF12 = 0x3c;
 
 // ---------------------------------------------------------------- session
 class HostSession {
@@ -219,9 +219,58 @@ class HostSession {
     defs.push(MOUSE_SF);
     defs.push(
       this.text(22, 6, 0x28, status),
-      this.text(23, 6, 0x3a, 'F3=Exit')
+      this.text(23, 6, 0x3a, 'F3=Exit  F6=Test window')
     );
     this.screen(defs, [7, 8], CMD_RMD);
+  }
+
+  /**
+   * A window-only GUI popup (CREATE WINDOW without a DEFINE SELECTION
+   * FIELD - the F4-prompt / confirmation-dialog case). The controller is
+   * expected to draw the border and clear the work area (5494 FR 15-39):
+   * the list behind must survive in the underlying screen and come back
+   * when the window is removed (REMOVE GUI WINDOW only - no CLEAR).
+   */
+  sendPopupWindow() {
+    this.state = 'window';
+    this.currentFields = [{ row: 8, col: 24, len: 10 }];
+    const WIN_SF = [
+      0x15, 0x00, 0x41, 0xd9, 0x51,
+      0x80, 0x00, 0x00, 5, 30, // restrict cursor, depth 5, width 30
+      // border presentation: GUI characters, white; title left-justified,
+      // footer centred (minor length = 6 + text length)
+      0x05, 0x01, 0x80, 0x22, 0x22,
+      0x14, 0x10, 0x80, 0x00, 0x00, 0x00, ...e('Confirm Delete'),
+      0x1f, 0x10, 0x20, 0x00, 0x00, 0x00, ...e('Enter=Confirm  F12=Cancel')
+    ];
+    this.record(
+      0x03,
+      this.wtd(0x20, [
+        ORDER_SBA, 5, 20, ...WIN_SF,
+        ...this.text(6, 23, 0x28, 'Delete Demo item 1?'),
+        ...this.text(7, 23, null, 'Type Y or N.'),
+        ...this.field(8, 23, 0x21, 10),
+        ORDER_IC, 8, 24
+      ]),
+      this.esc(CMD_RMD, 0x00, 0x00)
+    );
+    this.lastReadCmd = CMD_RMD;
+  }
+
+  /** Close the test window: REMOVE GUI WINDOW, status line, re-invite. */
+  closePopupWindow(note) {
+    this.state = 'list';
+    this.currentFields = [];
+    for (let i = 0; i < 10; i++) this.currentFields.push({ row: 7 + i, col: 8, len: 2 });
+    this.log(`closing window: ${note}`);
+    this.record(
+      0x03,
+      // REMOVE GUI WINDOW (5494 FR Table 15-16: length 7, flag + reserved)
+      this.wtd(0x20, [0x15, 0x00, 0x07, 0xd9, 0x59, 0x00, 0x00, 0x00]),
+      this.text(22, 6, 0x28, note),
+      this.esc(CMD_RMD, 0x00, 0x00)
+    );
+    this.lastReadCmd = CMD_RMD;
   }
 
   /**
@@ -601,6 +650,10 @@ class HostSession {
           this.beginMenuFlow(row, col);
           break;
         }
+        if (aid === AID_PF6) {
+          this.sendPopupWindow();
+          break;
+        }
         if (aid === AID_PF3) {
           this.sendMain(this.lastUser);
           break;
@@ -612,6 +665,16 @@ class HostSession {
         } else {
           this.sendList();
         }
+        break;
+      }
+
+      case 'window': {
+        // Any AID closes the test window; the typed text shows the field
+        // made it through the popup read.
+        const answer = this.fields[0]?.trim() ?? '';
+        this.closePopupWindow(
+          `Window closed (answer "${answer || 'none'}").`
+        );
         break;
       }
 

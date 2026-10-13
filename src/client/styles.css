@@ -276,6 +276,18 @@ button.primary { border-color: var(--green); color: var(--green); }
   line-height: 1.25;
 }
 #host-menu.hidden { display: none; }
+/* When the host drew a CREATE WINDOW frame, the border lives in the cell
+   buffer (canvas) per the 5494 FR - the overlay is just the choices on the
+   cleared work area, so the card chrome is dropped. */
+#host-menu.framed {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  display: block;
+}
+/* Framed items sit on exact cell positions - no font-relative padding. */
+#host-menu.framed .host-menu-item { padding: 0; }
 .host-menu-item {
   padding: 0 0.45em;
   white-space: pre;

@@ -35,6 +35,14 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   yellow, turquoise, blue, pink, reverse video), OIA indicators
   (`X SYSTEM`, `X II`, insert `^`, `MW`), audible alarm, and keyboard
   locking identical to a real controller.
+- **GUI windows & pull-down menus**: CREATE WINDOW drawn like the 5494 /
+  IBM ACS does it — border presentation (GUI box characters or host-specified
+  ones) with the frame put into the cell buffer, work area cleared, window
+  title/footer minor structures rendered into the border, covered screen
+  saved and put back on REMOVE GUI WINDOW / RESTORE — plus DEFINE SELECTION
+  FIELD choice lists placed cell-exact inside the window, and box-drawing
+  characters rendered as continuous canvas lines so frames have no font
+  gaps.
 - **Connection menu**: the app opens on a retro green-screen *System
   Selection* panel (number keys / arrows + Enter, or tap) listing the remote
   systems an administrator maintains — each with its own host, port, TLS,

@@ -290,6 +290,77 @@ if (mouseOk) {
     console.log('DOUBLE CLICK host action:', mouseOk ? 'ok' : `FAIL pos=${await oiaPos()}`);
   }
 }
+// Window-only GUI popup (CREATE WINDOW without a selection field, the
+// F4-prompt/confirm-dialog case): the server must draw the 5494 border into
+// the cell buffer, clear the work area, and put the covered screen back on
+// REMOVE GUI WINDOW.
+let winOk = true;
+{
+  const screenText = async () => {
+    await page.keyboard.down('Shift');
+    const any = await cellXY(2, 40);
+    await page.mouse.click(any.x, any.y, { button: 'right' });
+    await page.keyboard.up('Shift');
+    await page.waitForSelector('#ctx-menu:not(.hidden)', { timeout: 3000 });
+    await page.click('#ctx-copy');
+    const t = await page.evaluate(() => navigator.clipboard.readText());
+    const away = await cellXY(20, 40);
+    await page.mouse.click(away.x, away.y);
+    await page.waitForFunction(() => document.getElementById('ctx-menu')?.classList.contains('hidden'));
+    return t;
+  };
+  // back to the list screen (the double-click above ended on the main menu)
+  await page.keyboard.type('4');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => document.getElementById('oia-pos')?.textContent === '7,8',
+    undefined,
+    { timeout: 8000 }
+  );
+  await page.keyboard.press('F6');
+  await page.waitForFunction(
+    () => document.getElementById('oia-pos')?.textContent === '8,24',
+    undefined,
+    { timeout: 8000 }
+  );
+  await page.waitForTimeout(300);
+  const pop = await screenText();
+  winOk =
+    pop.includes('┌') && pop.includes('└') &&
+    pop.includes('Confirm Delete') &&
+    pop.includes('Enter=Confirm') &&
+    pop.includes('Delete Demo item 1?') &&
+    // the covered list rows (items 1-4) lose their tails (work area
+    // cleared); the window's own question text holds "Demo item 1?"
+    !/Demo item [1-5](?![\d?])/.test(pop) &&
+    pop.includes('Demo item 6'); // ...rows below the window stay intact
+  await page.screenshot({ path: `${OUT}/12-window-popup.png` });
+  console.log('WINDOW POPUP border + title + cleared work area:', winOk ? 'ok' : `FAIL text=${JSON.stringify(pop.split('\n').slice(4, 12))}`);
+  // Any AID closes the mock window; park the cursor in the window's field
+  // (the copy-screen click-away above parked it at 20,40), type Y and
+  // Enter - the read must carry it through the popup field.
+  await page.mouse.click(...Object.values(await cellXY(8, 26)));
+  await awaitPos('8,26');
+  await page.keyboard.type('Y');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => document.getElementById('oia-pos')?.textContent === '8,24',
+    undefined,
+    { timeout: 8000 }
+  );
+  await page.waitForTimeout(300);
+  const back = await screenText();
+  winOk =
+    winOk &&
+    back.includes('Demo item 1') && // underlying screen restored
+    back.includes('Window closed (answer "Y")') && // the typed Y travelled
+    !back.includes('┌'); // frame gone
+  await page.screenshot({ path: `${OUT}/13-window-closed.png` });
+  console.log('WINDOW POPUP removal restores the screen:', winOk ? 'ok' : `FAIL text=${JSON.stringify(back.split('\n').slice(4, 12))}`);
+  await page.keyboard.press('F3'); // back to the main menu for the next section
+  await page.waitForTimeout(600);
+}
+
 // Insecure-origin copy: with the clipboard API absent (plain HTTP has no
 // navigator.clipboard), Copy screen must offer a selectable fallback box,
 // not throw silently.
@@ -391,6 +462,7 @@ if (
   !mouseOk ||
   !copyOk ||
   !pasteOk ||
+  !winOk ||
   !fallbackOk
 )
   process.exit(1);
