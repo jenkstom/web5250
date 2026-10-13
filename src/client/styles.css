@@ -50,6 +50,9 @@ html, body {
 }
 
 #brand { color: var(--green); font-weight: 700; letter-spacing: 0.06em; }
+/* Panes of the split view are ~half a window wide: without nowrap the
+   squeezed flex items wrap their text into two-line stacks. */
+#brand, .conn-state, #topbar button, #grid-bar button { white-space: nowrap; }
 
 .conn-state::before {
   content: '';
@@ -70,6 +73,54 @@ html, body {
 
 .spacer { flex: 1; }
 #dev-info { color: var(--dim); font-size: 0.72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Terminal zoom (Fit / ½ / ¼): shown while a session is up; the buttons
+   resize the canvas on large pages without touching the host session. */
+#zoom-group { display: inline-flex; gap: 0.25rem; }
+#topbar button.active, #zoom-group button.active { border-color: var(--green); color: var(--green); }
+
+/* ------------------------------------------------------------ split view ---
+   ?grid=2|4: the page becomes N independent session panes (same-origin
+   iframes of this very app - one WebSocket and one 5250 device per pane,
+   display names deduped by the gateway). */
+#grid {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+#grid.hidden { display: none; }
+#grid-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0.9rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8rem;
+  flex: 0 0 auto;
+}
+#grid-brand { color: var(--green); font-weight: 700; letter-spacing: 0.06em; }
+#grid-hint {
+  color: var(--dim);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#grid-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  gap: 2px;
+  background: var(--line);
+}
+#grid-panes[data-panes='2'] { grid-template-columns: 1fr 1fr; }
+#grid-panes[data-panes='4'] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+#grid-panes iframe { border: 0; width: 100%; height: 100%; background: #000; }
+/* Mark the pane that owns the keyboard. */
+#grid-panes iframe:focus-visible, #grid-panes iframe:focus { outline: 2px solid var(--green); outline-offset: -2px; }
 
 button {
   font: inherit;
@@ -579,6 +630,11 @@ button.primary { border-color: var(--green); color: var(--green); }
 
   #menu-frame { width: 100%; }
   .menu-row { padding: 0.55rem 0.6rem; }
+  #menu-foot { flex-wrap: wrap; gap: 0.6rem; }
   .admin-fields { grid-template-columns: 1fr; }
   .admin-fields label { text-align: left; }
+
+  /* Split view stacks vertically on phones (it is a large-page feature,
+     but the layout should not break if someone opens it there). */
+  #grid-panes[data-panes='2'] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
 }

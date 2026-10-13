@@ -7,12 +7,26 @@
     <title>IBM i 5250 Terminal</title>
   </head>
   <body>
+    <div id="grid" class="hidden">
+      <div id="grid-bar">
+        <span id="grid-brand">IBM i · 5250</span>
+        <span id="grid-hint">Split view — pick a system in each pane; click a pane to type into it</span>
+        <span class="spacer"></span>
+        <button id="grid-exit" type="button" title="Close the split view (ends every pane's session)">Exit split view</button>
+      </div>
+      <div id="grid-panes"></div>
+    </div>
     <div id="app">
       <header id="topbar">
         <span id="brand">IBM i · 5250</span>
         <span id="conn-state" class="conn-state" title="Connection state"></span>
         <span class="spacer"></span>
         <span id="dev-info" title="Session info"></span>
+        <span id="zoom-group" class="hidden">
+          <button id="btn-fit" class="ghost" type="button" title="Fit the terminal to the window">Fit</button>
+          <button id="btn-half" class="ghost" type="button" title="Terminal at half the fitted size">½</button>
+          <button id="btn-quarter" class="ghost" type="button" title="Terminal at quarter the fitted size">¼</button>
+        </span>
         <button id="btn-systems" class="ghost hidden" type="button" title="End the session and pick another system">Systems</button>
         <button id="btn-diag" class="ghost hidden" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
@@ -81,6 +95,8 @@
             <span>↑↓&nbsp;Select</span>
             <span>Enter&nbsp;Connect</span>
             <span class="spacer"></span>
+            <button id="menu-split2" type="button" title="Split view: two independent sessions side by side on this page">Split ×2</button>
+            <button id="menu-split4" type="button" title="Split view: four independent sessions (2 × 2) on this page">Split ×4</button>
             <button id="menu-admin-btn" type="button" class="ghost" title="Edit the system list">Admin</button>
           </div>
         </div>

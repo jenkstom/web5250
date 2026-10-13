@@ -20,6 +20,7 @@
     "mock": "node scripts/mock-host.mjs",
     "visual": "node scripts/visual-test.mjs",
     "test:mobile": "node scripts/mobile-test.mjs",
+    "test:zoomgrid": "node scripts/zoom-grid-test.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "test:real": "node scripts/real-signon-test.mjs",
     "test:auto": "node scripts/auto-test.mjs",

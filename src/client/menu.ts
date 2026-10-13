@@ -196,6 +196,18 @@ export function initMenu(): void {
   $('menu-go').addEventListener('click', () => connectTo(selected));
   $('menu-admin-btn').addEventListener('click', openAdmin);
 
+  // Split view: reload this page with ?grid=N. Each pane is an independent
+  // session (one 5250 device per WebSocket); the stale ?system= of a deep
+  // link is dropped so the panes start at the menu, not mid-session.
+  const splitTo = (n: 2 | 4): void => {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('system');
+    u.searchParams.set('grid', String(n));
+    window.location.href = u.href;
+  };
+  $('menu-split2').addEventListener('click', () => splitTo(2));
+  $('menu-split4').addEventListener('click', () => splitTo(4));
+
   // Display name: persisted per-browser; cleaned while typing. Empty means
   // the gateway picks a name from the configured device prefix.
   const dev = $<HTMLInputElement>('menu-devname');

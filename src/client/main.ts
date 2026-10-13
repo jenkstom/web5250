@@ -34,6 +34,16 @@ const mouseProbeAid = (() => {
   return Number.isInteger(v) && v >= 0x01 && v <= 0xff ? v : null;
 })();
 
+// Split-view mode (?grid=2|4, optionally &systems=<id>,<id> preassigning
+// panes): the page lays out that many independent session panes - same-origin
+// iframes of this very app. The gateway gives every WebSocket its own 5250
+// device (display names deduped server-side), so each pane is a full session
+// with its own menu, zoom and keyboard focus.
+const gridPanes = (() => {
+  const n = Number.parseInt(launchParams.get('grid') ?? '', 10);
+  return n === 2 || n === 4 ? n : null;
+})();
+
 // ---------------------------------------------------------------- transport
 interface SessionTarget {
   system?: MenuSystem;
@@ -468,6 +478,7 @@ function startSession(system: MenuSystem): void {
   // Embedded data-entry launches stay locked into their session: there is
   // no menu to return to behind the iframe.
   if (!autoLaunch) $('btn-systems').classList.remove('hidden');
+  setZoomButtonsVisible(!autoLaunch);
   showOverlay('Connecting…', '', []);
   connect();
 }
@@ -484,11 +495,16 @@ function endSession(): void {
   hostPopup = null;
   renderHostMenu();
   $('btn-systems').classList.add('hidden');
+  setZoomButtonsVisible(false);
   void showMenu(startSession);
 }
 
 /** Landing logic: deep links jump straight into a session, everyone else gets the menu. */
 function boot(): void {
+  if (gridPanes) {
+    bootGrid(gridPanes);
+    return;
+  }
   const params = new URLSearchParams(window.location.search);
   const sysId = Number.parseInt(params.get('system') ?? '', 10);
   if (Number.isInteger(sysId) && sysId > 0) {
@@ -507,12 +523,89 @@ function boot(): void {
     // straight to the environment-default host - a menu has no role embedded.
     target = {};
     if (!autoLaunch) $('btn-systems').classList.remove('hidden');
+    setZoomButtonsVisible(!autoLaunch);
     showOverlay('Connecting…', '', []);
     connect();
     return;
   }
   void showMenu(startSession);
 }
+
+// ---------------------------------------------------------------- split view
+/** The page URL without the split-view params (pane URLs / exit target). */
+function urlWithoutGrid(system?: number): string {
+  const u = new URL(window.location.href);
+  u.searchParams.delete('grid');
+  u.searchParams.delete('systems');
+  if (system !== undefined) u.searchParams.set('system', String(system));
+  else u.searchParams.delete('system');
+  return u.href;
+}
+
+/**
+ * Replace the single-session UI with N independent panes. Each pane is this
+ * same app in an iframe (without the split params - a pane must never spawn
+ * its own grid): `?systems=<id>,<id>` deep links the matching pane, the rest
+ * boot into the system menu for a per-pane pick. One WebSocket and one 5250
+ * device per pane; the gateway dedupes the shared display name (TOM → TOM1).
+ */
+function bootGrid(n: number): void {
+  $('app').classList.add('hidden');
+  $('grid').classList.remove('hidden');
+  const panes = $('grid-panes');
+  panes.dataset.panes = String(n);
+  const preassigned = launchParams
+    .get('systems')
+    ?.split(',')
+    .map((s) => Number.parseInt(s.trim(), 10))
+    .filter((v) => Number.isInteger(v) && v > 0);
+  for (let i = 0; i < n; i++) {
+    const frame = document.createElement('iframe');
+    frame.src = urlWithoutGrid(preassigned?.[i]);
+    frame.title = `5250 session ${i + 1}`;
+    // Copy screen / Paste inside each pane need the clipboard permission
+    // granted to iframes explicitly.
+    frame.setAttribute('allow', 'clipboard-read; clipboard-write');
+    panes.appendChild(frame);
+  }
+  $('grid-exit').addEventListener('click', () => {
+    // The per-pane beforeunload guards fire while the panes unload, so an
+    // active session still asks before this tears them all down.
+    window.location.href = urlWithoutGrid();
+  });
+}
+
+// ------------------------------------------------------------------- zoom
+// Terminal zoom for large pages: Fit fills the stage, ½ / ¼ show the fitted
+// terminal at half / quarter linear size (the stage centers it). The choice
+// persists, so a preferred working size survives reloads and split panes.
+// Declared before the viewport section: fit() below consumes it.
+const ZOOM_KEY = 'web5250.zoom';
+const ZOOM_STEPS = [
+  { id: 'btn-fit', v: null },
+  { id: 'btn-half', v: 0.5 },
+  { id: 'btn-quarter', v: 0.25 }
+] as const;
+let zoom: number | null = (() => {
+  const v = Number.parseFloat(localStorage.getItem(ZOOM_KEY) ?? '');
+  return v === 0.5 || v === 0.25 ? v : null;
+})();
+function setZoom(v: number | null): void {
+  zoom = v;
+  if (v === null) localStorage.removeItem(ZOOM_KEY);
+  else localStorage.setItem(ZOOM_KEY, String(v));
+  renderZoomButtons();
+  fitCanvas();
+}
+function renderZoomButtons(): void {
+  for (const step of ZOOM_STEPS) $(step.id).classList.toggle('active', zoom === step.v);
+}
+/** Zoom controls only mean something while a terminal is on screen. */
+function setZoomButtonsVisible(visible: boolean): void {
+  $('zoom-group').classList.toggle('hidden', !visible);
+}
+for (const step of ZOOM_STEPS) $(step.id).addEventListener('click', () => setZoom(step.v));
+renderZoomButtons();
 
 // ------------------------------------------------------------------ viewport
 // The app's height tracks the *visual* viewport: when a mobile soft keyboard
@@ -553,7 +646,7 @@ function fitCanvas(): void {
     parseFloat(s.paddingTop) - parseFloat(s.paddingBottom) -
     parseFloat(s.rowGap) - $('oia').offsetHeight -
     parseFloat(t.borderTopWidth) - parseFloat(t.borderBottomWidth);
-  if (availW > 0 && availH > 0) term.fit(availW, availH);
+  if (availW > 0 && availH > 0) term.fit(availW * (zoom ?? 1), availH * (zoom ?? 1));
 }
 new ResizeObserver(fitCanvas).observe($('stage'));
 fitCanvas();

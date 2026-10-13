@@ -58,6 +58,13 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   click-to-position, and reconnect handling. Screen state is edited
   server-side; only diffs travel over the WebSocket, and non-display field
   contents are blanked server-side so **passwords never reach the browser**.
+- **Terminal zoom**: on large pages the top bar offers **Fit / ½ / ¼** — the
+  fitted terminal at full, half or quarter size, centred in the window. The
+  choice is remembered per browser (also inside split-view panes).
+- **Split view — several sessions on one page**: the system menu's
+  **Split ×2 / Split ×4** buttons (or `?grid=2|4` deep links) lay out two or
+  four independent sessions side by side; see
+  [Multiple sessions on one page](#multiple-sessions-on-one-page).
 - **Automated data-entry launches**: open the app in an iframe with `?auto=1`
   and it signs on with a server-held identity (`AUTO_SIGNON_*`), types a
   caller-supplied string into the user profile's initial-program screen, and
@@ -207,6 +214,29 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 WebSocket sessions target a system with `?system=<id>` (rejected with 404 if
 the id no longer exists — the browser falls back to the menu). Failed PIN
 attempts lock administration for 60 s after 5 tries.
+
+## Multiple sessions on one page
+
+The gateway gives **every WebSocket its own 5250 device**, so one browser can
+hold several concurrent sessions. The client exposes that as a split view:
+on the system menu, **Split ×2 / Split ×4** reload the page as two side-by-side
+or four (2 × 2) panes. Each pane is an independent session with its own menu,
+top bar, zoom and keyboard focus — click a pane to type into it. **Exit split
+view** closes it (each pane's active session asks before being torn down, as
+usual).
+
+Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
+connect straight to system 1 and system 3 (ids from the menu's admin editor).
+Without `systems=`, every pane boots into the system menu for a per-pane pick.
+If a **Display** name is set, the gateway dedupes it across panes (`TOM` →
+`TOM1`), exactly as it does across browsers.
+
+Two deployment notes:
+
+- `FRAME_ANCESTORS` keeps working for external embedders; the app's own
+  origin is always allowed to frame itself so the panes load.
+- A browser tab holds one 5250 device per pane — closing the tab ends all of
+  that page's host sessions.
 
 ## Automated data-entry launches
 
@@ -359,6 +389,8 @@ npm run test:real       # regression: real-IBM-i SF-order dialect (no FFW bytes,
 node scripts/mock-host.mjs &   # visual/mobile tests drive real Chromium
 PORT=8080 IBM_I_HOST=127.0.0.1 IBM_I_PORT=8023 ADMIN_PIN=1234 npm start &
 npm run visual          # screenshots land in artifacts/
+npm run test:zoomgrid   # zoom buttons + split view: fit/½/¼ sizing, ?grid=2|4
+                        #   panes, per-pane device-name dedupe, exit flow
 npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
                         #   keypad, keyboard open/close shrink+expand
 ```

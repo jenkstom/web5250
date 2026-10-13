@@ -92,9 +92,10 @@ function serveStatic(pathname: string, res: http.ServerResponse): void {
   const type = MIME[ext] ?? 'application/octet-stream';
   const headers: Record<string, string> = { 'content-type': type, 'cache-control': 'no-cache' };
   // Optional lockdown for iframe embedding (automated launches): when
-  // FRAME_ANCESTORS is set, only those origins may frame the app.
+  // FRAME_ANCESTORS is set, only those origins (plus the app itself, which
+  // frames its own pages for the ?grid= split view) may frame the app.
   if (ext === '.html' && cfg.frameAncestors) {
-    headers['content-security-policy'] = `frame-ancestors ${cfg.frameAncestors}`;
+    headers['content-security-policy'] = `frame-ancestors 'self' ${cfg.frameAncestors}`;
   }
   res.writeHead(200, headers);
   fs.createReadStream(file).pipe(res);
