@@ -176,6 +176,12 @@ function handleMessage(data: string): void {
       const parts = [msg.systemName, msg.devName, msg.host, msg.termType].map((v) => String(v ?? ''));
       $('dev-info').textContent = parts.filter(Boolean).join(' · ');
       setConnState('connecting');
+      // Tell a split-view parent who this pane is, so its tab / pane bar can
+      // show the system and device name instead of "Session N".
+      if (window.parent !== window) {
+        const label = [msg.systemName, msg.devName].map((v) => String(v ?? '')).filter(Boolean).join(' · ');
+        window.parent.postMessage({ source: 'web5250', type: 'session-info', label }, parentOrigin);
+      }
       break;
     }
     case 'status': {
@@ -542,6 +548,29 @@ function urlWithoutGrid(system?: number): string {
   return u.href;
 }
 
+interface GridPane {
+  wrap: HTMLDivElement;
+  title: HTMLElement;
+  tab: HTMLButtonElement;
+  frame: HTMLIFrameElement;
+}
+/** Built once per split-view page; empty outside ?grid= mode. */
+const gridPaneList: GridPane[] = [];
+/**
+ * Visual sequence of pane indexes. The panes themselves never move in the
+ * DOM - re-inserting an iframe reloads it and kills its session - so
+ * rearranging rewrites CSS `order` on the fixed wrappers (tiles layout) and
+ * re-appends the tab buttons (tab strip), and tabs view merely toggles
+ * `display`, which pauses an iframe's painting but not its WebSocket.
+ */
+let gridOrder: number[] = [];
+let gridTabsMode = false;
+let gridActiveTab = 0;
+let dragPane: number | null = null;
+
+const GRID_VIEW_KEY = 'web5250.gridview';
+const GRID_TAB_KEY = 'web5250.gridtab';
+
 /**
  * Replace the single-session UI with N independent panes. Each pane is this
  * same app in an iframe (without the split params - a pane must never spawn
@@ -553,6 +582,7 @@ function bootGrid(n: number): void {
   $('app').classList.add('hidden');
   $('grid').classList.remove('hidden');
   const panes = $('grid-panes');
+  const tabbar = $('grid-tabbar');
   panes.dataset.panes = String(n);
   const preassigned = launchParams
     .get('systems')
@@ -560,19 +590,174 @@ function bootGrid(n: number): void {
     .map((s) => Number.parseInt(s.trim(), 10))
     .filter((v) => Number.isInteger(v) && v > 0);
   for (let i = 0; i < n; i++) {
+    const wrap = document.createElement('div');
+    wrap.className = 'grid-pane';
+    const bar = document.createElement('div');
+    bar.className = 'grid-pane-bar';
+    bar.title = 'Drag to move this session';
+    bar.draggable = true;
+    const title = document.createElement('span');
+    title.className = 'gp-title';
+    title.textContent = `Session ${i + 1}`;
+    const paneBtn = (label: string, tip: string, fn: () => void): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.title = tip;
+      b.addEventListener('click', fn);
+      return b;
+    };
+    bar.append(
+      title,
+      paneBtn('◀', 'Move this session left', () => movePane(i, -1)),
+      paneBtn('▶', 'Move this session right', () => movePane(i, 1))
+    );
     const frame = document.createElement('iframe');
     frame.src = urlWithoutGrid(preassigned?.[i]);
     frame.title = `5250 session ${i + 1}`;
     // Copy screen / Paste inside each pane need the clipboard permission
     // granted to iframes explicitly.
     frame.setAttribute('allow', 'clipboard-read; clipboard-write');
-    panes.appendChild(frame);
+    wrap.append(bar, frame);
+    panes.appendChild(wrap);
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'grid-tab';
+    tab.textContent = title.textContent;
+    tab.title = 'Show this session';
+    tab.draggable = true;
+    tab.addEventListener('click', () => showTab(i));
+    tabbar.appendChild(tab);
+    gridPaneList.push({ wrap, title, tab, frame });
+    wirePaneDrag(wrap, tab, i);
   }
+  gridOrder = gridPaneList.map((_, i) => i);
+
+  // Pane labels arrive from the panes themselves: the hello handler posts
+  // system + device name up to the parent.
+  window.addEventListener('message', (e) => {
+    const d = e.data as { source?: string; type?: string; label?: string };
+    if (d?.source !== 'web5250' || d?.type !== 'session-info' || typeof d.label !== 'string') return;
+    const i = gridPaneList.findIndex((p) => p.frame.contentWindow === e.source);
+    if (i >= 0) setPaneLabel(i, d.label);
+  });
+
+  gridTabsMode = localStorage.getItem(GRID_VIEW_KEY) === 'tabs';
+  const savedTab = Number.parseInt(localStorage.getItem(GRID_TAB_KEY) ?? '', 10);
+  gridActiveTab = Number.isInteger(savedTab) && savedTab >= 0 && savedTab < n ? savedTab : 0;
+  $('grid-view-tiles').addEventListener('click', () => setGridView(false));
+  $('grid-view-tabs').addEventListener('click', () => setGridView(true));
+  $('grid-view-tiles').classList.toggle('active', !gridTabsMode);
+  $('grid-view-tabs').classList.toggle('active', gridTabsMode);
+  applyGridOrder();
+  applyGridView();
+
   $('grid-exit').addEventListener('click', () => {
     // The per-pane beforeunload guards fire while the panes unload, so an
     // active session still asks before this tears them all down.
     window.location.href = urlWithoutGrid();
   });
+}
+
+function setPaneLabel(i: number, label: string): void {
+  const p = gridPaneList[i];
+  p.title.textContent = label;
+  p.tab.textContent = label;
+}
+
+/** Move a pane one slot left/right in the visual sequence. */
+function movePane(i: number, dir: -1 | 1): void {
+  const from = gridOrder.indexOf(i);
+  const to = from + dir;
+  if (from < 0 || to < 0 || to >= gridOrder.length) return;
+  gridOrder.splice(from, 1);
+  gridOrder.splice(to, 0, i);
+  applyGridOrder();
+}
+
+/** Drop a dragged pane onto another pane's slot (insert-at-position). */
+function reorderPane(src: number, dst: number): void {
+  if (src === dst) return;
+  const from = gridOrder.indexOf(src);
+  const to = gridOrder.indexOf(dst);
+  if (from < 0 || to < 0) return;
+  gridOrder.splice(from, 1);
+  gridOrder.splice(to, 0, src);
+  applyGridOrder();
+}
+
+function applyGridOrder(): void {
+  const tabbar = $('grid-tabbar');
+  gridOrder.forEach((paneIdx, pos) => {
+    gridPaneList[paneIdx].wrap.style.order = String(pos);
+    tabbar.appendChild(gridPaneList[paneIdx].tab); // re-append = strip order
+  });
+}
+
+function showTab(i: number): void {
+  gridActiveTab = i;
+  localStorage.setItem(GRID_TAB_KEY, String(i));
+  applyGridView();
+  // Hand the keyboard straight to the newly shown session.
+  gridPaneList[i].frame.contentWindow?.focus();
+}
+
+function setGridView(tabs: boolean): void {
+  gridTabsMode = tabs;
+  if (tabs) localStorage.setItem(GRID_VIEW_KEY, 'tabs');
+  else localStorage.removeItem(GRID_VIEW_KEY);
+  $('grid-view-tiles').classList.toggle('active', !tabs);
+  $('grid-view-tabs').classList.toggle('active', tabs);
+  applyGridView();
+}
+
+function applyGridView(): void {
+  $('grid-tabbar').classList.toggle('hidden', !gridTabsMode);
+  $('grid-panes').classList.toggle('tabs', gridTabsMode);
+  for (let i = 0; i < gridPaneList.length; i++) {
+    gridPaneList[i].tab.classList.toggle('active', gridTabsMode && i === gridActiveTab);
+    gridPaneList[i].wrap.style.display = gridTabsMode && i !== gridActiveTab ? 'none' : '';
+  }
+}
+
+/** Drag & drop for both the pane bars (tiles) and the tabs; same swap. */
+function wirePaneDrag(wrap: HTMLDivElement, tab: HTMLButtonElement, i: number): void {
+  const start = (e: DragEvent): void => {
+    dragPane = i;
+    if (e.dataTransfer) {
+      e.dataTransfer.setData('text/plain', String(i));
+      e.dataTransfer.effectAllowed = 'move';
+    }
+    $('grid-panes').classList.add('dragging');
+  };
+  const end = (): void => {
+    dragPane = null;
+    $('grid-panes').classList.remove('dragging');
+    for (const p of gridPaneList) {
+      p.wrap.classList.remove('drop-target');
+      p.tab.classList.remove('drop-target');
+    }
+  };
+  const target = (el: HTMLElement): void => {
+    el.addEventListener('dragover', (e) => {
+      if (dragPane === null || dragPane === i) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      el.classList.add('drop-target');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drop-target'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('drop-target');
+      if (dragPane !== null) reorderPane(dragPane, i);
+    });
+  };
+  wrap.addEventListener('dragstart', start); // fired by the bar, bubbles
+  tab.addEventListener('dragstart', start);
+  wrap.addEventListener('dragend', end);
+  tab.addEventListener('dragend', end);
+  target(wrap);
+  target(tab);
 }
 
 // ------------------------------------------------------------------- zoom

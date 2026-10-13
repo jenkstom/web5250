@@ -109,6 +109,7 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+#grid-bar button.active { border-color: var(--green); color: var(--green); }
 #grid-panes {
   flex: 1 1 auto;
   min-height: 0;
@@ -118,9 +119,69 @@ html, body {
 }
 #grid-panes[data-panes='2'] { grid-template-columns: 1fr 1fr; }
 #grid-panes[data-panes='4'] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-#grid-panes iframe { border: 0; width: 100%; height: 100%; background: #000; }
+
+/* Panes: fixed DOM nodes - moving an iframe in the DOM reloads it (and its
+   session), so rearranging swaps CSS order / visibility instead. */
+.grid-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.grid-pane.drop-target { outline: 2px dashed var(--green); outline-offset: -2px; }
+/* Tabs mode: one cell instead of the tile layout - the single visible pane
+   fills the whole area (the hidden ones are display:none). */
+#grid-panes.tabs { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+#grid-panes.tabs .grid-pane { grid-area: 1 / 1 / 2 / 2; }
+.grid-pane-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.12rem 0.45rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.7rem;
+  color: var(--dim);
+  cursor: grab;
+  user-select: none;
+}
+.grid-pane-bar:active { cursor: grabbing; }
+.gp-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid-pane-bar button { font-size: 0.62rem; padding: 0.02rem 0.38rem; }
+#grid-panes iframe { border: 0; width: 100%; flex: 1 1 auto; min-height: 0; background: #000; }
+/* While dragging, iframes must not swallow the pointer events. */
+#grid-panes.dragging iframe { pointer-events: none; }
 /* Mark the pane that owns the keyboard. */
 #grid-panes iframe:focus-visible, #grid-panes iframe:focus { outline: 2px solid var(--green); outline-offset: -2px; }
+
+/* Tabs view: one pane on stage, the rest hidden but still connected. */
+#grid-tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 0.3rem 0.6rem 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+#grid-tabbar.hidden { display: none; }
+.grid-tab {
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 0.72rem;
+  padding: 0.22rem 0.8rem;
+  cursor: pointer;
+  max-width: 15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-tab.active { color: var(--green); border-color: var(--green); background: #000; }
+.grid-tab.drop-target { border-color: var(--warn); color: var(--warn); }
 
 button {
   font: inherit;

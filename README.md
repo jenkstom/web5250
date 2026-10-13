@@ -231,6 +231,16 @@ Without `systems=`, every pane boots into the system menu for a per-pane pick.
 If a **Display** name is set, the gateway dedupes it across panes (`TOM` →
 `TOM1`), exactly as it does across browsers.
 
+**Rearranging and tabs.** Each pane carries a slim bar (system · device name)
+that doubles as a drag handle: drag it onto another tile — or drag the tabs in
+**Tabs** view — to rearrange; ◀ / ▶ buttons do the same per pane. The
+**Tabs** button switches the page to one session at a time with a tab strip
+up top; the hidden sessions keep running (only their painting pauses), and
+clicking a tab brings that session back and hands it the keyboard. Neither
+rearranging nor switching views reloads a pane — panes are never moved in the
+DOM, only repositioned — so a session opened as a tile can continue as a tab.
+The Tiles/Tabs choice and the active tab are remembered.
+
 Two deployment notes:
 
 - `FRAME_ANCESTORS` keeps working for external embedders; the app's own

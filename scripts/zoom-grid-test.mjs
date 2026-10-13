@@ -169,6 +169,91 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
   check('keystroke moved only pane 1 cursor', moved !== before, `${before} → ${moved}, pane2 at ${otherBefore}`);
 }
 
+// ---- 7b. rearrange tiles + tabs view - sessions must never reload
+{
+  // A sentinel that only survives as long as the iframe document does: a
+  // DOM move of an iframe would reload it and wipe the value.
+  for (const f of panes) await f.evaluate(() => { window.__sentinel = 42; });
+
+  const wrapLefts = () => page.evaluate(() =>
+    [...document.querySelectorAll('.grid-pane')].map((w) => w.getBoundingClientRect().left));
+  const before = await wrapLefts();
+  await page.evaluate(() => {
+    const btns = document.querySelector('.grid-pane .grid-pane-bar').querySelectorAll('button');
+    btns[btns.length - 1].click(); // ▶ on the first pane
+  });
+  const after = await wrapLefts();
+  check('▶ moves the first tile right', after[0] > before[0] && after[1] < before[1],
+    `${before.map(Math.round)} -> ${after.map(Math.round)}`);
+
+  // Synthetic drag: drop the first pane's bar onto the second pane.
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    const bar = document.querySelector('.grid-pane-bar');
+    bar.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true }));
+    const target = document.querySelectorAll('.grid-pane')[1];
+    target.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+    target.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+    bar.dispatchEvent(new DragEvent('dragend', { dataTransfer: dt, bubbles: true }));
+  });
+  const dragged = await wrapLefts();
+  check('drag onto a tile reorders back', Math.abs(dragged[0] - before[0]) <= 1,
+    `${dragged.map(Math.round)}`);
+  const sent = [];
+  for (const f of panes) sent.push(await f.evaluate(() => window.__sentinel));
+  check('rearranging did not reload the panes', sent.every((s) => s === 42), JSON.stringify(sent));
+
+  // Tabs view: one pane on stage, the other hidden but still connected.
+  await page.click('#grid-view-tabs');
+  check('tab bar visible in tabs mode', await page.isVisible('#grid-tabbar'));
+  const visible = await page.evaluate(() =>
+    [...document.querySelectorAll('.grid-pane')].map((w) => w.style.display !== 'none'));
+  check('only the active pane is on stage', visible.filter(Boolean).length === 1, JSON.stringify(visible));
+  const hiddenState = await panes[1].evaluate(() => document.getElementById('conn-state')?.dataset.state);
+  check('hidden pane stays connected', hiddenState === 'connected', String(hiddenState));
+
+  const tabTexts = await page.evaluate(() =>
+    [...document.querySelectorAll('.grid-tab')].map((t) => t.textContent));
+  check('tabs show system · device names',
+    tabTexts[0]?.includes('MULTI') && tabTexts[1]?.includes('MULTI1'), tabTexts.join(' | '));
+
+  // Switch to the second tab via the tab strip.
+  await page.evaluate(() => document.querySelectorAll('.grid-tab')[1].click());
+  await page.waitForTimeout(200);
+  const vis2 = await page.evaluate(() =>
+    [...document.querySelectorAll('.grid-pane')].map((w) => w.style.display !== 'none'));
+  check('tab switch moves the stage', vis2[0] === false && vis2[1] === true, JSON.stringify(vis2));
+  const fills = await page.evaluate(() => {
+    const w = document.querySelector('.grid-pane:not([style*="none"])').getBoundingClientRect();
+    const g = document.getElementById('grid-panes').getBoundingClientRect();
+    return { paneW: w.width, gridW: g.width, paneH: w.height, gridH: g.height };
+  });
+  check('tabbed pane fills the whole area',
+    fills.paneW > fills.gridW * 0.95 && fills.paneH > fills.gridH * 0.95, JSON.stringify(fills));
+  await page.screenshot({ path: `${OUT}/05-tabs.png` });
+
+  // Back to tiles: everything on stage again and still alive.
+  await page.click('#grid-view-tiles');
+  const vis3 = await page.evaluate(() =>
+    [...document.querySelectorAll('.grid-pane')].map((w) => w.style.display !== 'none'));
+  check('tiles view shows every pane again', vis3.every(Boolean), JSON.stringify(vis3));
+  const states = [];
+  for (const f of panes) {
+    states.push(await f.evaluate(() => document.getElementById('conn-state')?.dataset.state));
+  }
+  check('both sessions still connected after switching', states.every((s) => s === 'connected'), states.join(' | '));
+  const sent2 = [];
+  for (const f of panes) sent2.push(await f.evaluate(() => window.__sentinel));
+  check('view switches did not reload the panes', sent2.every((s) => s === 42), JSON.stringify(sent2));
+
+  // The view choice persists across a reload.
+  await page.click('#grid-view-tabs');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#grid:not(.hidden)', { timeout: 5000 });
+  await page.waitForTimeout(800); // panes boot
+  check('tabs mode persists across reload', await page.isVisible('#grid-tabbar'));
+}
+
 // ---- 8. preassigned deep link ?grid=2&systems=1,1 connects both panes
 await page.goto(`${BASE}/?grid=2&systems=1,1`, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('#grid:not(.hidden)', { timeout: 5000 });
