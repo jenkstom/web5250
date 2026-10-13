@@ -13,6 +13,8 @@ export interface Config {
   termType: string;
   /** Claim mouse capability in the 5250 query reply (GUI discovery). */
   mouseGui: boolean;
+  /** How many inbound records to capture per session for Diag (IBM_I_TRACE_RECORDS). */
+  traceRecords: number;
   devPrefix: string | null;
   allowCustomHost: boolean;
   /** PIN guarding host-list administration; null disables the admin UI. */
@@ -35,6 +37,12 @@ export interface Config {
 const bool = (v: string | undefined, def: boolean): boolean => {
   if (v === undefined || v === '') return def;
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
+};
+
+/** Integer clamped to [min, max] - for knobs with a sane operating range. */
+const clampInt = (v: string | undefined, min: number, max: number, def: number): number => {
+  const n = Number.parseInt(v ?? '', 10);
+  return Number.isInteger(n) ? Math.max(min, Math.min(max, n)) : def;
 };
 
 const int = (v: string | undefined, def: number): number => {
@@ -71,6 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     codePage,
     termType,
     mouseGui: ['1', 'true'].includes((env.IBM_I_MOUSE_GUI ?? '').toLowerCase()),
+    traceRecords: clampInt(env.IBM_I_TRACE_RECORDS, 8, 5000, 8),
     devPrefix: devPrefix === undefined || devPrefix === '' ? null : devPrefix.toUpperCase(),
     allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false),
     adminPin,

@@ -21,6 +21,8 @@ export interface Tn5250ClientOptions {
   connectTimeoutMs?: number;
   /** Claim pointer-device capability in the query reply (IBM_I_MOUSE_GUI=1). */
   queryMouseGui?: boolean;
+  /** Inbound records captured per session for Diag (IBM_I_TRACE_RECORDS). */
+  traceRecords?: number;
 }
 
 export class Tn5250Client {
@@ -91,7 +93,7 @@ export class Tn5250Client {
   }
 
   private capture(rx: Buffer): void {
-    if (this.rxLogged < 8) {
+    if (this.rxLogged < (this.opts.traceRecords ?? 8)) {
       this.rxLogged++;
       this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] rx#${this.rxLogged} ${rx.toString('hex')}`);
     }

@@ -88,6 +88,7 @@ export class GatewaySession {
       termType,
       deviceName: this.devName,
       queryMouseGui: cfg.mouseGui,
+      traceRecords: cfg.traceRecords,
       codePage
     });
     // Terminal host state (connection failed, host dropped us): tear the
