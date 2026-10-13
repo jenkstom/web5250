@@ -175,7 +175,11 @@ export class GatewaySession {
     if (t === 'mouseevent') {
       // Host-programmed mouse action (5494 FR): look up the event in the
       // table the host sent; honour the move-cursor flag, then send the
-      // programmed AID exactly like the corresponding key press.
+      // programmed AID exactly like the corresponding key press. When no
+      // read is pending, a real 5250 latches the AID until one arrives -
+      // so send it regardless of the local waiting state (the app's menu
+      // flow counts on this: it holds the session without a read invite
+      // and expects the next mouse event anyway).
       const EV: Record<string, number> = {
         leftdown: 0x01, leftdouble: 0x03, rightdown: 0x04, rightdouble: 0x06
       };
@@ -185,9 +189,9 @@ export class GatewaySession {
         const def = screen.mouseButtonFor(code);
         const r = Number(msg.r);
         const c = Number(msg.c);
-        if (def && Number.isInteger(r) && Number.isInteger(c) && screen.lock === 'none' && screen.waitingForInput) {
+        if (def && Number.isInteger(r) && Number.isInteger(c)) {
           if (def.moveCursor) screen.clickTo(r, c);
-          if (!this.client.sendAid(def.aid)) this.beeped = true;
+          if (!this.client.sendMouseAid(def.aid)) this.beeped = true;
         } else {
           this.beeped = true;
         }

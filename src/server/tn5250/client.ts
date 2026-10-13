@@ -270,6 +270,31 @@ export class Tn5250Client {
     return true;
   }
 
+  /**
+   * Host-programmed mouse AID without the waiting/lock gates. A real 5250
+   * latches an AID generated while no read is pending and delivers it with
+   * the next read; over telnet, sending the record at once is equivalent
+   * (the host buffers it). Live menu flows hold the session with no read
+   * invite and still expect the next mouse event.
+   */
+  sendMouseAid(aid: number): boolean {
+    if (this.screen.errorCodeActive) return false;
+    const wasWaiting = this.screen.waitingForInput;
+    const body = wasWaiting && this.dataIncludedFor(aid) ? this.screen.buildReadResponse() : Buffer.alloc(0);
+    this.diag(
+      `[tn5250 ${this.opts.deviceName ?? '-'}] mouse aid 0x${aid.toString(16)} ` +
+        `cursor=${this.screen.rowOf(this.screen.cursorPos)},${this.screen.colOf(this.screen.cursorPos)} ` +
+        `waiting=${wasWaiting} read=0x${this.screen.readType.toString(16)} body=${body.toString('hex')}`
+    );
+    if (wasWaiting) {
+      this.screen.waitingForInput = false;
+      this.screen.lockSystem();
+    }
+    this.telnet.sendGds(0, 3, Buffer.concat([Buffer.from([...this.cursorBytes(), aid]), body]));
+    this.onScreenChange();
+    return true;
+  }
+
   /** PRINT - AID 0xF6, no field data. */
   sendPrint(): void {
     this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_PRINT]));
