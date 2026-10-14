@@ -469,11 +469,13 @@ async function main() {
       const term = new Term();
       let hello = null;
       const statuses = [];
+      const keyevents = [];
       sock.addEventListener('message', (ev) => {
         const msg = JSON.parse(String(ev.data));
         term.apply(msg);
         if (msg.t === 'hello') hello = msg;
         if (msg.t === 'status') statuses.push(msg.status);
+        if (msg.t === 'keyevent') keyevents.push(msg.k);
       });
       const closed = new Promise((resolve) => sock.addEventListener('close', () => resolve(true)));
       await new Promise((resolve, reject) => {
@@ -481,7 +483,7 @@ async function main() {
         sock.addEventListener('error', reject);
       });
       for (let i = 0; i < 60 && !hello; i++) await sleep(50);
-      return { sock, term, hello, statuses, closed };
+      return { sock, term, hello, statuses, keyevents, closed };
     };
 
     const owner = await openOn('?devname=SHAREDEV');
@@ -535,6 +537,24 @@ async function main() {
     for (const ch of 'BACK') back.sock.send(JSON.stringify({ t: 'key', k: 'char', ch }));
     check('mirrors follow the re-attached owner', await waitFor(v1, () => v1.term.row(9).includes('MIRRORBACK'), 5000), `"${v1.term.row(9).trim()}"`);
     check('no viewer ever saw a detached takeover', !v1.statuses.includes('detached') && !v2.statuses.includes('detached'), JSON.stringify(v1.statuses));
+
+    // Non-printing keys are named for the mirrors (the toast the browser
+    // renders); printable characters echo on the screen and stay unreported.
+    back.sock.send(JSON.stringify({ t: 'key', k: 'insert' }));
+    check(
+      'viewer is told the owner pressed a special key',
+      await waitFor(v1, () => v1.keyevents.length === 1 && v1.keyevents[0] === 'insert', 3000),
+      JSON.stringify(v1.keyevents)
+    );
+    back.sock.send(JSON.stringify({ t: 'key', k: 'pf3' }));
+    check(
+      'the next key replaces it',
+      await waitFor(v1, () => v1.keyevents.length === 2 && v1.keyevents[1] === 'pf3', 3000),
+      JSON.stringify(v1.keyevents)
+    );
+    back.sock.send(JSON.stringify({ t: 'key', k: 'char', ch: 'Z' }));
+    await sleep(500);
+    check('printable characters are not announced', v1.keyevents.length === 2, JSON.stringify(v1.keyevents));
 
     // Ending the session ends every mirror with it.
     back.sock.send(JSON.stringify({ t: 'end' }));

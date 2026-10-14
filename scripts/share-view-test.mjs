@@ -92,6 +92,26 @@ await sleep(700);
 check('owner cursor advanced', (await ownerPos()) !== beforeOwner, `${beforeOwner} -> ${await ownerPos()}`);
 check('mirror cursor follows the owner', (await mirrorPos()) === (await ownerPos()), `mirror=${await mirrorPos()} owner=${await ownerPos()}`);
 
+// ---- 4b. the mirror names the owner's special keys (not plain typing)
+const toastText = () => mirror.evaluate(() => document.querySelector('.viewer-key')?.textContent ?? '');
+const toastShown = () => mirror.evaluate(() => document.querySelector('.viewer-key')?.classList.contains('show') === true);
+await owner.keyboard.press('F3');
+check(
+  'key toast names the function key',
+  (await mirror
+    .waitForFunction(() => document.querySelector('.viewer-key')?.classList.contains('show'), undefined, { timeout: 5000 })
+    .then(() => true, () => false)) && (await toastText()) === 'F3',
+  await toastText()
+);
+await owner.keyboard.press('Enter');
+await sleep(400);
+check('the next key replaces the toast', (await toastText()) === 'Enter', await toastText());
+await owner.keyboard.type('AB'); // echoes on screen (or beeps) - never the toast
+await sleep(400);
+check('plain typing never feeds the toast', (await toastText()) === 'Enter', await toastText());
+await sleep(2300);
+check('toast clears after two seconds', !(await toastShown()));
+
 // ---- 5. the mirror cannot type
 await mirror.focus('.pane .screen-canvas');
 await mirror.keyboard.type('XXX');

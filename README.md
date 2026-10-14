@@ -290,6 +290,11 @@ mirror** of that session:
 
 - The mirror receives the same screen stream as the owner: cells, cursor,
   OIA indicators, even host-drawn windows and pull-downs, in real time.
+- **The owner's special keys are named on screen.** Keys that don't echo as
+  text — Enter, F1–F24, Tab, Field Exit, SysReq, Reset, Roll, arrows … —
+  appear as a small badge in the mirror's corner for two seconds (or until
+  the next one), so a viewer can keep up with what is driving the screen.
+  Printable characters are not announced; they echo on the screen anyway.
 - **Nothing a viewer does reaches the host.** Keystrokes, clicks, paste and
   the on-screen keypad are all dropped client- and server-side; the mirror
   has no keyboard at all. Local text selection and copy still work.

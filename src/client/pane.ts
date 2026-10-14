@@ -80,6 +80,42 @@ const SHARE_ICON =
   '<circle cx="18" cy="5" r="2.7"/><circle cx="6" cy="12" r="2.7"/><circle cx="18" cy="19" r="2.7"/>' +
   '<line x1="8.5" y1="10.7" x2="15.5" y2="6.6"/><line x1="8.5" y1="13.3" x2="15.5" y2="17.4"/></svg>';
 
+/**
+ * What a mirror calls the owner's key presses. Printable characters never
+ * arrive as key events (they echo on the screen); everything else gets a
+ * name a viewer can read at a glance.
+ */
+const KEY_LABELS: Record<string, string> = {
+  enter: 'Enter',
+  clear: 'Clear',
+  rollup: 'Roll Up',
+  rolldown: 'Roll Down',
+  tab: 'Tab',
+  btab: 'Backtab',
+  fieldexit: 'Field Exit',
+  fieldplus: 'Field +',
+  fieldminus: 'Field −',
+  backspace: 'Backspace',
+  delete: 'Delete',
+  insert: 'Insert',
+  up: '↑ Up',
+  down: '↓ Down',
+  left: '← Left',
+  right: '→ Right',
+  home: 'Home',
+  end: 'End',
+  sysreq: 'SysReq',
+  attn: 'Attn',
+  reset: 'Reset',
+  print: 'Print',
+  help: 'Help'
+};
+function keyLabel(k: string): string {
+  const pf = /^pf(\d{1,2})$/.exec(k);
+  if (pf) return `F${pf[1]}`;
+  return KEY_LABELS[k] ?? k;
+}
+
 export const SESSION_KEY = 'web5250.session';
 
 export class SessionPane {
@@ -106,6 +142,7 @@ export class SessionPane {
   private readonly shareBtn: HTMLButtonElement;
   private readonly hostMenuEl: HTMLDivElement;
   private readonly overlayEl: HTMLDivElement;
+  private readonly keyToastEl: HTMLDivElement;
   private readonly lockEl: HTMLElement;
   private readonly insertEl: HTMLElement;
   private readonly mwEl: HTMLElement;
@@ -120,6 +157,7 @@ export class SessionPane {
   private hostPopup: HostPopup | null = null;
   private zoom = 1;
   private flashTimer: number | undefined;
+  private keyToastTimer: number | undefined;
 
   // drag-selection state
   private selPressing = false;
@@ -190,7 +228,12 @@ export class SessionPane {
     this.hostMenuEl.setAttribute('aria-label', 'Host menu');
     this.overlayEl = document.createElement('div');
     this.overlayEl.className = 'pane-overlay hidden';
-    this.screenEl.append(this.canvas, this.hostMenuEl, this.overlayEl);
+    // Names the owner's non-printing key presses for a couple of seconds -
+    // only mirrors ever receive the events that feed it.
+    this.keyToastEl = document.createElement('div');
+    this.keyToastEl.className = 'viewer-key';
+    this.keyToastEl.setAttribute('aria-live', 'polite');
+    this.screenEl.append(this.canvas, this.hostMenuEl, this.overlayEl, this.keyToastEl);
 
     const oia = document.createElement('div');
     oia.className = 'oia';
@@ -370,6 +413,9 @@ export class SessionPane {
     this.viewOnly = false;
     this.shareToken = null;
     this.barEl.classList.remove('hidden');
+    window.clearTimeout(this.keyToastTimer);
+    this.keyToastTimer = undefined;
+    this.keyToastEl.classList.remove('show');
     this.hostPopup = null;
     this.renderHostMenu();
     this.term.resizeGrid(24, 80);
@@ -549,7 +595,26 @@ export class SessionPane {
         this.renderOia(msg as unknown as OiaState & { t: string });
         break;
       }
+      case 'keyevent': {
+        // The session's owner pressed a key that does not echo as text;
+        // name it briefly so a mirror's viewer can keep up.
+        this.showKeyPressed(keyLabel(String(msg.k ?? '')));
+        break;
+      }
     }
+  }
+
+  // ------------------------------------------------------ viewer key toast
+  /** Show the named key for 2 s - or until the next one replaces it. */
+  private showKeyPressed(label: string): void {
+    if (!label) return;
+    this.keyToastEl.textContent = label;
+    this.keyToastEl.classList.add('show');
+    window.clearTimeout(this.keyToastTimer);
+    this.keyToastTimer = window.setTimeout(() => {
+      this.keyToastTimer = undefined;
+      this.keyToastEl.classList.remove('show');
+    }, 2000);
   }
 
   // ----------------------------------------------------------------- OIA

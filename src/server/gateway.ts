@@ -280,6 +280,15 @@ export class HostSession {
     }, 16);
   }
 
+  /**
+   * Tell the mirrors which key the owner just pressed, so their overlay can
+   * name it. Printable characters never come through here - they echo on
+   * the screen anyway; the caller filters them out.
+   */
+  notifyViewersOfKey(k: string): void {
+    for (const v of this.viewers) v.sendKeyEvent(k);
+  }
+
   private broadcast(): void {
     const s = this.screen;
     const all = [...this.frontends, ...this.viewers];
@@ -426,6 +435,7 @@ export class GatewaySession {
     }
     if (t === 'sysreq') {
       this.core.client.sendSystemRequest(typeof msg.text === 'string' ? msg.text : undefined);
+      this.core.notifyViewersOfKey('sysreq');
       return;
     }
     if (t === 'ping') {
@@ -502,6 +512,13 @@ export class GatewaySession {
       return;
     }
 
+    // Name the key for the mirrors: everything that does not echo as text
+    // on the screen (Enter, PF keys, Tab, SysReq, ...) helps a viewer keep
+    // up; printable characters and cursor-placement clicks are visible
+    // already. Broadcast even when the key is about to be rejected - a
+    // locked-keyboard attempt is exactly what a watcher wants explained.
+    if (k !== 'char' && k !== 'click') this.core.notifyViewersOfKey(k);
+
     // Mouse click: place the cursor at the clicked cell (the screen model
     // applies the same freedom as arrow movement, incl. attribute-cell
     // stepping).
@@ -561,6 +578,11 @@ export class GatewaySession {
   /** Automation lifecycle for the embedding page (?auto=1 contract). */
   sendAuto(phase: 'ended', reason: string, detail: string): void {
     this.send('auto', { phase, reason, detail });
+  }
+
+  /** The owner pressed a (non-printing) key - mirrors name it on screen. */
+  sendKeyEvent(k: string): void {
+    this.send('keyevent', { k });
   }
 
   /**

@@ -288,6 +288,28 @@ html, body {
   padding: 0.25rem 0.7rem;
   white-space: pre;
 }
+
+/* Viewer's key-name toast: names the owner's non-printing key presses
+   (Enter, F3, Tab, ...) for two seconds - or until the next one - so a
+   mirror's viewer can keep up with what is driving the screen. */
+.viewer-key {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.6rem;
+  z-index: 35; /* under the pane status overlay (40) */
+  padding: 0.1rem 0.55rem;
+  background: rgba(4, 8, 6, 0.85);
+  border: 1px solid var(--green);
+  border-radius: 4px;
+  color: var(--green);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.viewer-key.show { opacity: 1; }
 .oia-left { display: flex; gap: 0.9rem; color: var(--green); }
 .oia-lock.busy { color: var(--warn); }
 .oia-msg { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; }
