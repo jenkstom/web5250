@@ -11,11 +11,13 @@ import { SessionPane, SESSION_KEY, type SessionTarget, type PaneServices } from 
 import { attachKeyboard, mapEvent, type SendKey } from './keyboard.ts';
 import { buildKeypad } from './keypad.ts';
 import {
+  closePanePickers,
   fetchSystems,
   hideMenu,
   initMenu,
   loadMeta,
   menuVisible,
+  openPanePicker,
   setSplitHandler,
   showMenu,
   type MenuSystem
@@ -44,6 +46,8 @@ const urlGridPanes = (() => {
 const panes: SessionPane[] = [];
 let activePane: SessionPane | null = null;
 let gridMode = urlGridPanes !== null;
+/** Split orientation: 'h' = panes side by side, 'v' = stacked. */
+let splitDir: 'h' | 'v' = 'h';
 let tabsMode = false;
 let menuTarget: SessionPane | null = null; // pane the shared system menu fills
 
@@ -80,6 +84,10 @@ const paneServices: PaneServices = {
   onPaneClick(pane) {
     setActive(pane);
     focusTerminal();
+    // Typing belongs to the newly focused pane: drop focus that a picker
+    // input of another pane is still holding (its mousedown was prevented).
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae?.closest('.sys-menu') && !pane.screenEl.contains(ae)) ae.blur();
   },
   openContextMenu(pane, e) {
     menuPane = pane;
@@ -216,13 +224,16 @@ function popOut(pane: SessionPane): void {
   const u = new URL(window.location.href);
   u.searchParams.delete('grid');
   u.searchParams.delete('systems');
+  u.searchParams.delete('split');
   if (pane.systemId !== null) u.searchParams.set('system', String(pane.systemId));
   else u.searchParams.delete('system');
   u.searchParams.set('attach', pane.token);
   // window.open must run inside the click gesture or the popup blocker eats
   // it. The session itself is safe either way: the new window attaches to
   // the same token, detaching this pane's front-end server-side.
-  const win = window.open(u.href, 'web5250', 'popup=yes,width=1000,height=680');
+  // The window name is per session: a constant name would make the second
+  // pop-out navigate (and silently end) the first one's window.
+  const win = window.open(u.href, `web5250-${pane.token}`, 'popup=yes,width=1000,height=680');
   if (!win) {
     window.alert('The browser blocked the pop-up window. Allow pop-ups for this site and try again.');
     return;
@@ -241,7 +252,11 @@ function setActive(pane: SessionPane | null): void {
     setConnState(activePane.connState);
     $('dev-info').textContent = activePane.label;
     document.title = activePane.label ? `${activePane.label} · web5250` : 'IBM i 5250 Terminal';
-  }
+    // A pane whose system picker is open has no session to type into - the
+    // keyboard stays with the picker (its input handles arrows/Enter/Esc).
+    if (!coarsePointer) {
+      (activePane.screenEl.querySelector('.sys-menu input') as HTMLElement | null)?.focus();
+    }  }
   if (gridMode && tabsMode) layoutPanes();
 }
 
@@ -252,6 +267,8 @@ function layoutPanes(): void {
   const count = panes.length;
   gridMode = gridMode && count > 0;
   wrap.classList.toggle('split', gridMode && count > 1);
+  wrap.classList.toggle('h', gridMode && count > 1 && splitDir === 'h');
+  wrap.classList.toggle('v', gridMode && count > 1 && splitDir === 'v');
   wrap.classList.toggle('tabs', gridMode && count > 1 && tabsMode);
   wrap.dataset.panes = String(count);
   for (const p of panes) p.setShowBar(gridMode && count > 1);
@@ -267,6 +284,9 @@ function layoutPanes(): void {
   }
   renderTabbar();
   fitPanes();
+  $('btn-splith').classList.toggle('active', splitDir === 'h');
+  $('btn-splitv').classList.toggle('active', splitDir === 'v');
+  syncGridUrl(); // ?grid= tracks the live pane count for reloads
 }
 
 /** The tab strip for tabs mode: one button per pane, click to focus. */
@@ -310,42 +330,82 @@ function exitSplit(keepFirst: boolean): void {
     p.end();
     removePaneEl(p);
   }
-  const u = new URL(window.location.href);
-  u.searchParams.delete('grid');
-  u.searchParams.delete('systems');
-  history.replaceState(null, '', u.href);
+  syncGridUrl();
   layoutPanes();
 }
 
-/** Enter split mode with n panes, reusing the existing ones in place. */
-function startSplit(n: number): void {
+/** Split orientation into the URL (?split=h|v), keeping ?grid= for reloads. */
+function syncGridUrl(): void {
+  const u = new URL(window.location.href);
+  if (gridMode) {
+    // Split supersedes the single-session deep links (?system=/?attach=).
+    u.searchParams.delete('system');
+    u.searchParams.delete('attach');
+    u.searchParams.set('grid', String(panes.length));
+    u.searchParams.set('split', splitDir);
+  } else {
+    u.searchParams.delete('grid');
+    u.searchParams.delete('split');
+    u.searchParams.delete('systems');
+  }
+  history.replaceState(null, '', u.href);
+}
+
+/**
+ * Enter or steer split view. From a single pane: two panes in the chosen
+ * direction. Already split the same way: one more pane. Split the other way:
+ * the whole grid re-orients (sessions are untouched - it is the same panes).
+ */
+function splitView(dir: 'h' | 'v'): void {
+  const entering = !gridMode || panes.length < 2;
+  const sameDir = gridMode && splitDir === dir;
+  splitDir = dir;
   gridMode = true;
   hideMenu();
-  const u = new URL(window.location.href);
-  u.searchParams.delete('system');
-  u.searchParams.set('grid', String(n));
-  history.replaceState(null, '', u.href);
-  while (panes.length < n) createPane();
-  while (panes.length > n) {
-    const p = panes[panes.length - 1];
-    p.end();
-    removePaneEl(p);
-  }
+  if (entering) while (panes.length < 2) createPane();
+  else if (sameDir && panes.length < MAX_PANES) createPane(); // split further
   saveGridState();
   layoutPanes();
-  // A pane without a target needs the shared menu.
-  const empty = panes.find((p) => p.systemId === null && !p.target.attach);
-  if (empty) openMenuFor(empty);
+  syncGridUrl();
+  // Every pane without a target offers its own in-pane system picker.
+  const empties = panes.filter((p) => p.systemId === null && !p.target.attach);
+  const first = empties[0] ?? panes[0];
+  if (first) setActive(first);
+  for (const p of empties) {
+    openPanePicker(
+      p.screenEl,
+      (s) => {
+        p.connect({ system: s });
+        focusTerminal();
+      },
+      { focus: p === first }
+    );
+  }
 }
 
-/** Open the shared system menu; a pick fills the given pane. */
+/**
+ * Open system selection for a pane: an in-pane picker while the split view
+ * is on stage (the full-window menu would cover the other live panes), the
+ * classic full-screen menu for the single-pane / landing states.
+ */
 function openMenuFor(pane: SessionPane): void {
   menuTarget = pane;
   setActive(pane);
-  void showMenu((s) => {
-    hideMenu();
+  const pick = (s: MenuSystem): void => {
     menuTarget?.connect({ system: s });
     menuTarget = null;
+  };
+  if (gridMode && panes.length > 1) {
+    hideMenu();
+    openPanePicker(pane.screenEl, (s) => {
+      pick(s);
+      focusTerminal();
+    });
+    return;
+  }
+  void showMenu((s) => {
+    hideMenu();
+    pick(s);
   });
 }
 
@@ -500,6 +560,7 @@ function boot(): void {
   const attachToken = params.get('attach');
 
   if (urlGridPanes !== null) {
+    splitDir = params.get('split') === 'v' ? 'v' : 'h';
     const preassigned = params
       .get('systems')
       ?.split(',')
@@ -517,10 +578,19 @@ function boot(): void {
       });
     }
     setActive(panes[0] ?? null);
-    // Open the shared menu only for panes with no target at all - a pane
-    // reattaching via its saved token is mid-connect here, not empty.
-    const empty = panes.find((p) => p.systemId === null && !p.target.attach);
-    if (empty) openMenuFor(empty);
+    // Panes with no target at all each offer their own in-pane picker (a
+    // pane reattaching via its saved token is mid-connect here, not empty).
+    const empties = panes.filter((p) => p.systemId === null && !p.target.attach);
+    for (const p of empties) {
+      openPanePicker(
+        p.screenEl,
+        (s) => {
+          p.connect({ system: s });
+          focusTerminal();
+        },
+        { focus: p === (empties[0] ?? panes[0]) }
+      );
+    }
     return;
   }
 
@@ -725,10 +795,26 @@ const uiSurfaceOpen = (): boolean =>
 const sendKey: SendKey = (k, ch) => {
   activePane?.sendKey(k, ch);
 };
+// Escape dismisses open pane pickers before the terminal mapping can turn it
+// into SysReq. This capture listener is registered before attachKeyboard's,
+// so it sees the key first; when focus is already inside a picker (or the
+// landing menu) their own handlers deal with it.
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key !== 'Escape') return;
+    if (e.target instanceof HTMLElement && e.target.closest('.sys-menu, #menu')) return;
+    if (closePanePickers()) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  },
+  { capture: true }
+);
 attachKeyboard(sendKey, () => !uiSurfaceOpen());
 buildKeypad(sendKey);
 initMenu();
-setSplitHandler((n) => startSplit(n));
+setSplitHandler((dir) => splitView(dir));
 
 $('btn-systems').addEventListener('click', () => {
   const pane = activePane ?? panes[0];
@@ -738,10 +824,23 @@ $('btn-systems').addEventListener('click', () => {
     openMenuFor(pane);
   }
 });
+$('btn-splith').addEventListener('click', () => steerSplit('h'));
+$('btn-splitv').addEventListener('click', () => steerSplit('v'));
+/** Top-bar split buttons re-orient the live grid (they never add panes). */
+function steerSplit(dir: 'h' | 'v'): void {
+  if (!gridMode || panes.length < 2) {
+    splitView(dir);
+    return;
+  }
+  if (splitDir === dir) return;
+  splitDir = dir;
+  layoutPanes();
+}
 $('btn-addpane').addEventListener('click', () => {
   if (panes.length < MAX_PANES) {
     const pane = createPane();
-    setActive(pane);
+    // The new pane has no target yet - offer its picker right away.
+    openMenuFor(pane);
   }
 });
 $('grid-view-tiles').addEventListener('click', () => setTabsMode(false));

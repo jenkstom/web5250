@@ -637,6 +637,12 @@ export class SessionPane {
     };
 
     this.screenEl.addEventListener('mousedown', (e) => {
+      // The pane's own system picker (split view) manages its inputs and
+      // focus itself; a press there only makes this pane the focused one.
+      if ((e.target as HTMLElement).closest('.sys-menu')) {
+        this.services.onPaneClick(this);
+        return;
+      }
       // Suppressing the default focus (the tap would close a just-opened
       // soft keyboard on touch); the shell picks the focus target.
       // preventDefault also stops middle-click autoscroll.
@@ -706,6 +712,7 @@ export class SessionPane {
     // click is the application's, like on ACS. Shift+right-click keeps the
     // local menu reachable; ?mouseprobe= sends the experiment AID instead.
     this.screenEl.addEventListener('contextmenu', (e) => {
+      if ((e.target as HTMLElement).closest('.sys-menu')) return; // picker has its own
       e.preventDefault();
       const probe = new URLSearchParams(window.location.search).get('mouseprobe');
       const probeAid = (() => {

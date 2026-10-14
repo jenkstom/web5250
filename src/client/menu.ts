@@ -108,8 +108,8 @@ export function hideMenu(): void {
 }
 
 /** The shell's in-place split handler (installed at startup). */
-let onSplit: ((n: number) => void) | null = null;
-export function setSplitHandler(fn: (n: number) => void): void {
+let onSplit: ((dir: 'h' | 'v') => void) | null = null;
+export function setSplitHandler(fn: (dir: 'h' | 'v') => void): void {
   onSplit = fn;
 }
 
@@ -224,10 +224,11 @@ export function initMenu(): void {
   $('menu-go').addEventListener('click', () => connectTo(selected));
   $('menu-admin-btn').addEventListener('click', openAdmin);
 
-  // Split view: the shell lays the current page out into n panes in place
-  // (no navigation) and keeps ?grid=n in the URL for reloads/deep links.
-  $('menu-split2').addEventListener('click', () => onSplit?.(2));
-  $('menu-split4').addEventListener('click', () => onSplit?.(4));
+  // Split view: the shell lays the current page out into split panes in
+  // place (no navigation) and keeps ?grid= in the URL for reloads/deep
+  // links. Horizontal = side by side, vertical = stacked.
+  $('menu-splith').addEventListener('click', () => onSplit?.('h'));
+  $('menu-splitv').addEventListener('click', () => onSplit?.('v'));
 
   // Display name: persisted per-browser; cleaned while typing. Empty means
   // the gateway picks a name from the configured device prefix.
@@ -241,6 +242,222 @@ export function initMenu(): void {
   });
 
   initAdmin();
+}
+
+// ---------------------------------------------------------- pane pickers
+// In split view the system selection happens *inside* the pane that needs a
+// system: the landing menu above is a full-window overlay, exactly right as
+// the app's entry point but wrong when it would cover the other live panes.
+// A PanePicker is that menu shrunk into one pane - same rows, same keys,
+// no admin/split/display chrome (those belong to the landing menu).
+const pickers: PanePicker[] = [];
+
+function prunePickers(): void {
+  for (let i = pickers.length - 1; i >= 0; i--) {
+    if (!pickers[i].el.isConnected) pickers.splice(i, 1);
+  }
+}
+
+/** One picker per mount: reopening replaces instead of stacking. */
+export function openPanePicker(
+  mount: HTMLElement,
+  onPick: (s: MenuSystem) => void,
+  opts: { focus?: boolean } = {}
+): void {
+  prunePickers();
+  const existing = pickers.find((p) => p.el.parentElement === mount);
+  existing?.close();
+  const picker = new PanePicker(mount, onPick, opts.focus ?? true);
+  pickers.push(picker);
+}
+
+/** Dismiss every open pane picker (Escape). Returns true if any closed. */
+export function closePanePickers(): boolean {
+  prunePickers();
+  const open = [...pickers];
+  for (const p of open) p.close();
+  return open.length > 0;
+}
+
+class PanePicker {
+  readonly el: HTMLDivElement;
+  private readonly listEl: HTMLUListElement;
+  private readonly emptyEl: HTMLElement;
+  private readonly errEl: HTMLElement;
+  private readonly option: HTMLInputElement;
+  private rows: MenuSystem[] = [];
+  private selected = 0;
+
+  constructor(
+    mount: HTMLElement,
+    private readonly onPick: (s: MenuSystem) => void,
+    focus: boolean
+  ) {
+    const el = document.createElement('div');
+    el.className = 'sys-menu';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', 'Select a system for this pane');
+    const frame = document.createElement('div');
+    frame.className = 'sys-menu-frame';
+    const title = document.createElement('div');
+    title.className = 'sys-menu-title';
+    title.textContent = 'SYSTEM SELECTION';
+    const sub = document.createElement('p');
+    sub.className = 'sys-menu-sub';
+    sub.textContent = 'Select the system for this pane';
+    this.listEl = document.createElement('ul');
+    this.listEl.className = 'sys-menu-list';
+    this.emptyEl = document.createElement('p');
+    this.emptyEl.className = 'sys-menu-empty hidden';
+    this.errEl = document.createElement('p');
+    this.errEl.className = 'sys-menu-error hidden';
+    const cmd = document.createElement('div');
+    cmd.className = 'sys-menu-cmd';
+    const label = document.createElement('label');
+    label.textContent = 'Option ==>';
+    this.option = document.createElement('input');
+    this.option.autocomplete = 'off';
+    this.option.autocapitalize = 'off';
+    this.option.spellcheck = false;
+    this.option.inputMode = 'numeric';
+    this.option.maxLength = 2;
+    this.option.setAttribute('aria-label', 'System number');
+    label.append(this.option);
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'primary';
+    go.textContent = 'Connect';
+    go.addEventListener('click', () => this.connectSelected());
+    cmd.append(label, go);
+    const foot = document.createElement('div');
+    foot.className = 'sys-menu-foot';
+    foot.append(
+      (() => {
+        const s = document.createElement('span');
+        s.textContent = '↑↓ Select';
+        return s;
+      })(),
+      (() => {
+        const s = document.createElement('span');
+        s.textContent = 'Enter Connect';
+        return s;
+      })(),
+      (() => {
+        const s = document.createElement('span');
+        s.className = 'spacer';
+        return s;
+      })(),
+      (() => {
+        const s = document.createElement('span');
+        s.textContent = 'Esc Cancel';
+        return s;
+      })()
+    );
+    frame.append(title, sub, this.listEl, this.emptyEl, this.errEl, cmd, foot);
+    el.append(frame);
+    this.el = el;
+
+    // Same keyboard contract as the landing menu: arrows / typed number
+    // select, Enter connects, Escape cancels - from anywhere in the picker.
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.select(this.selected - 1);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.select(this.selected + 1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        this.connectSelected();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        this.close();
+      }
+    });
+    this.option.addEventListener('input', () => {
+      const typed = Number.parseInt(this.option.value, 10);
+      if (Number.isInteger(typed) && typed >= 1 && typed <= this.rows.length) this.select(typed - 1);
+    });
+
+    mount.append(el);
+    if (focus) this.option.focus();
+    void this.refresh();
+  }
+
+  private async refresh(): Promise<void> {
+    try {
+      this.rows = await fetchSystems();
+      this.errEl.classList.add('hidden');
+    } catch (e) {
+      this.rows = [];
+      this.errEl.textContent = `Could not load the system list — ${String((e as Error).message ?? e)}`;
+      this.errEl.classList.remove('hidden');
+    }
+    this.selected = Math.min(this.selected, Math.max(this.rows.length - 1, 0));
+    this.render();
+  }
+
+  private render(): void {
+    this.listEl.replaceChildren(
+      ...this.rows.map((s, i) => {
+        const li = document.createElement('li');
+        li.className = 'menu-row' + (i === this.selected ? ' sel' : '');
+        const num = document.createElement('span');
+        num.className = 'row-num';
+        num.textContent = `${i + 1}.`;
+        const main = document.createElement('span');
+        const name = document.createElement('span');
+        name.className = 'row-name';
+        name.textContent = s.name;
+        main.appendChild(name);
+        if (s.description) {
+          const desc = document.createElement('span');
+          desc.className = 'row-desc';
+          desc.textContent = ` — ${s.description}`;
+          main.appendChild(desc);
+        }
+        const sub = document.createElement('span');
+        sub.className = 'row-sub';
+        sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'}`;
+        main.appendChild(sub);
+        li.append(num, main);
+        li.addEventListener('click', () => (this.selected === i ? this.connectTo(i) : this.select(i)));
+        return li;
+      })
+    );
+    if (this.rows.length === 0 && this.errEl.classList.contains('hidden')) {
+      this.emptyEl.textContent = 'No systems configured.\nLeave split view and add one under Admin.';
+      this.emptyEl.classList.remove('hidden');
+    } else {
+      this.emptyEl.classList.add('hidden');
+    }
+    this.option.value = this.rows.length ? String(this.selected + 1) : '';
+  }
+
+  private select(i: number): void {
+    this.selected = Math.max(0, Math.min(i, this.rows.length - 1));
+    this.render();
+  }
+
+  private connectSelected(): void {
+    const typed = Number.parseInt(this.option.value, 10);
+    const idx =
+      Number.isInteger(typed) && typed >= 1 && typed <= this.rows.length ? typed - 1 : this.selected;
+    this.connectTo(idx);
+  }
+
+  private connectTo(i: number): void {
+    const s = this.rows[i];
+    if (!s) return;
+    this.close();
+    this.onPick(s);
+  }
+
+  close(): void {
+    this.el.remove();
+    const i = pickers.indexOf(this);
+    if (i >= 0) pickers.splice(i, 1);
+  }
 }
 
 // ------------------------------------------------------------------ admin

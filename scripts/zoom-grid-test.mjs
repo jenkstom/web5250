@@ -69,8 +69,8 @@ await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
 // ---- 1. menu state
 await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
 check('zoom group hidden on menu', !(await page.isVisible('#zoom-group')));
-check('menu has Split ×2 button', await page.isVisible('#menu-split2'));
-check('menu has Split ×4 button', await page.isVisible('#menu-split4'));
+check('menu has Split ↔ button', await page.isVisible('#menu-splith'));
+check('menu has Split ↕ button', await page.isVisible('#menu-splitv'));
 
 // ---- 2. connect: zoom group appears, Fit is active
 await page.click('#menu .menu-row');
@@ -125,32 +125,36 @@ check('reload reattached the same session', (await page.textContent('#dev-info')
   `${JSON.stringify(await page.textContent('#dev-info'))} vs ${JSON.stringify(devBefore)}`);
 await page.click('#btn-fit');
 
-// ---- 5. Systems → menu → Split ×2 (in place - no navigation, one shell)
+// ---- 5. Systems → menu → Split ↔ (in place - no navigation, one shell)
 await page.click('#btn-systems');
 await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
 check('zoom group hidden again on menu', !(await page.isVisible('#zoom-group')));
 await page.fill('#menu-devname', 'MULTI');
-await page.click('#menu-split2');
-await page.waitForSelector('#panes.split', { timeout: 5000 });
+await page.click('#menu-splith');
+await page.waitForSelector('#panes.split.h', { timeout: 5000 });
 check('split layout with 2 panes', (await page.locator('#panes .pane').count()) === 2);
 check('still one app shell (no iframes)', (await page.locator('#panes iframe').count()) === 0);
-check('URL kept ?grid=2', page.url().includes('grid=2'));
+check('URL kept ?grid=2&split=h', page.url().includes('grid=2') && page.url().includes('split=h'));
 check('top bar still present', await page.isVisible('#topbar'));
-// The shared menu reopens for the first pane without a session.
-await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
-check('menu reopened for the empty pane', true);
+// Each pane without a session shows its own in-pane picker; the full-window
+// menu is gone.
+await page.waitForSelector(`${paneSel(0)} .sys-menu .menu-row`, { timeout: 5000 });
+await page.waitForSelector(`${paneSel(1)} .sys-menu .menu-row`, { timeout: 5000 });
+check('a picker per empty pane', (await page.locator('.sys-menu').count()) === 2);
+check('full-window menu closed', !(await page.isVisible('#menu')));
 await page.waitForTimeout(400);
 await page.screenshot({ path: `${OUT}/02-grid-menus.png` });
 
 // ---- 6. sign on in both panes → two independent sessions
-// Pane 0: the reopened menu is already targeting it.
-async function signOnActivePane(paneIdx = 0) {
-  await page.keyboard.press('Enter'); // picks the selected system row
+async function waitConnected() {
   await page.waitForFunction(
     () => document.getElementById('conn-state')?.dataset.state === 'connected',
     undefined,
     { timeout: 10000 }
   );
+}
+async function signOnActivePane(paneIdx = 0) {
+  await waitConnected();
   const { x, y } = await cellXY(9, 45, `${paneSel(paneIdx)} canvas`);
   await page.mouse.click(x, y);
   await page.keyboard.type('MOCKUSER');
@@ -164,18 +168,34 @@ async function signOnActivePane(paneIdx = 0) {
   );
   await page.waitForTimeout(600);
 }
+// Pane 0: its picker holds focus (first empty pane) - Enter picks the row.
+await page.keyboard.press('Enter');
 await signOnActivePane(0);
 const name0 = await page.textContent('#dev-info');
 check('pane 1 signed on (MULTI)', name0.includes('MULTI'), name0);
 
-// Pane 2: click it (focus), open its menu via the pane header, sign on.
-await page.click(`${paneSel(1)} .pane-screen`);
-await page.click(`${paneSel(1)} .pane-menubtn`);
-await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
+// Pane 2: its picker is already open in the pane - one click on the (already
+// selected) row connects it and focuses the pane.
+await page.click(`${paneSel(1)} .sys-menu .menu-row`);
 await signOnActivePane(1);
 const name1 = await page.textContent('#dev-info');
 check('pane 2 signed on (deduped name)', name1.includes('MULTI') && name1 !== name0, `${name0} | ${name1}`);
 await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
+
+// ---- 6b. re-orient the live grid: sessions keep running either way
+{
+  await page.click('#btn-splitv');
+  await page.waitForSelector('#panes.split.v', { timeout: 5000 });
+  check('Split ↕ stacks the panes', (await page.locator('#panes .pane').count()) === 2);
+  check('stacked: panes in one column', await page.evaluate(() => {
+    const els = [...document.querySelectorAll('#panes .pane')];
+    return els[0].getBoundingClientRect().left === els[1].getBoundingClientRect().left;
+  }));
+  await page.click('#btn-splith');
+  await page.waitForSelector('#panes.split.h', { timeout: 5000 });
+  check('sessions survive re-orienting',
+    (await page.evaluate(() => document.getElementById('conn-state')?.dataset.state)) === 'connected');
+}
 
 // ---- 7. typing goes only to the focused pane
 {
@@ -283,18 +303,26 @@ check('pane removed after pop-out', (await page.locator('#panes .pane').count())
 await popup.close();
 
 // Close the empty pane: its session detaches (grace) and the layout
-// shrinks to the still-connected pane.
+// shrinks to the still-connected pane - which is the classic single-session
+// view again (the split controls go away with it).
 const closeBtn = page.locator('.pane[data-pane="1"] .pane-closebtn');
 await closeBtn.click();
 await page.waitForTimeout(400);
 check('× closes a pane', (await page.locator('#panes .pane').count()) === 1);
+check('closing the last extra pane leaves the classic view',
+  !(await page.locator('#panes.split').count()));
 check('surviving pane still connected',
   await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');
 
-// Adding again works after closing (the + button re-enables).
+// Re-enter split from the menu: + Pane is back and adds again.
+await page.click('#btn-systems');
+await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
+await page.click('#menu-splith');
+await page.waitForSelector('#panes.split', { timeout: 5000 });
+check('split re-entered from the menu', (await page.locator('#panes .pane').count()) === 2);
 await page.click('#btn-addpane');
 await page.waitForTimeout(600);
-check('+ re-enabled and adds again', (await page.locator('#panes .pane').count()) === 2);
+check('+ re-enabled and adds again', (await page.locator('#panes .pane').count()) === 3);
 
 // ---- 8. preassigned deep link ?grid=2&systems=1,1 connects both panes
 await page.goto(`${BASE}/?grid=2&systems=1,1`, { waitUntil: 'domcontentloaded' });

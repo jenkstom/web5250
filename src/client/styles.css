@@ -108,22 +108,27 @@ html, body {
   min-height: 0;
   gap: 0.35rem;
 }
-/* Split mode: the panes become grid cells (odd counts: the lone trailing
-   pane spans the full width). */
+/* Split mode: the panes become grid cells in one row (h) or one column (v)
+   - any count lays out uniformly, so odd counts need no special cases. */
 #panes.split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-auto-rows: 1fr;
   gap: 2px;
   align-items: stretch;
   justify-items: stretch;
 }
-#panes.split[data-panes='1'] { grid-template-columns: 1fr; }
-#panes.split[data-panes='3'] .pane:nth-child(3),
-#panes.split[data-panes='5'] .pane:nth-child(5) { grid-column: 1 / -1; }
+#panes.split.h {
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+#panes.split.v {
+  grid-auto-flow: row;
+  grid-auto-rows: 1fr;
+  grid-template-columns: 1fr;
+}
 /* Tabs mode: one pane on stage, the rest hidden but still connected; the
    strip above the panes switches between them. */
-#panes.split.tabs { grid-template-columns: 1fr; grid-auto-rows: 1fr; }
+#panes.split.tabs { grid-auto-flow: row; grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: 1fr; }
 #tabbar {
   flex: 0 0 auto;
   display: flex;
@@ -640,6 +645,102 @@ button.primary { border-color: var(--green); color: var(--green); }
   font-size: 0.72rem;
   user-select: none;
 }
+
+/* ---------------------------------------------------- pane system picker */
+/* The landing menu's CRT panel shrunk into one split-view pane: same rows
+   (.menu-row above), same keys, scoped to the pane that needs a system. */
+.sys-menu {
+  position: absolute;
+  inset: 0;
+  z-index: 45; /* over the pane status overlay (40) */
+  display: flex;
+  overflow: auto;
+  padding: 0.5rem;
+  line-height: normal; /* .pane-screen sets 0 for the canvas */
+  background:
+    radial-gradient(ellipse at 50% 40%, #0d1a12 0%, var(--bg) 65%, #050805 100%);
+}
+.sys-menu-frame {
+  margin: auto; /* centers, and keeps the top reachable when scrolling */
+  width: min(100%, 30rem);
+  border: 6px double #2f4a3b;
+  background: #040705;
+  padding-bottom: 0.8rem;
+  box-shadow:
+    0 0 50px rgba(75, 228, 99, 0.07),
+    inset 0 0 90px rgba(0, 0, 0, 0.55);
+  text-shadow: 0 0 7px rgba(75, 228, 99, 0.28);
+}
+.sys-menu-title {
+  background: var(--green);
+  color: #04140a;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-align: center;
+  padding: 0.3rem 0 0.25rem;
+  text-shadow: none;
+  font-size: 0.8rem;
+  user-select: none;
+}
+.sys-menu-sub {
+  color: var(--dim);
+  text-align: center;
+  font-size: 0.72rem;
+  margin: 0.6rem 0.5rem 0.4rem;
+}
+.sys-menu-list { list-style: none; margin: 0 0.4rem; padding: 0; }
+.sys-menu-empty, .sys-menu-error {
+  text-align: center;
+  color: var(--warn);
+  font-size: 0.75rem;
+  margin: 0.8rem 1rem;
+  white-space: pre-line;
+}
+.sys-menu-error { color: var(--err); }
+.sys-menu-empty.hidden, .sys-menu-error.hidden { display: none; }
+.sys-menu-cmd {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem 0.1rem;
+  color: var(--green);
+  font-size: 0.8rem;
+}
+.sys-menu-cmd input {
+  width: 4.5ch;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--green);
+  color: var(--green);
+  font: inherit;
+  text-align: center;
+  caret-color: var(--green);
+  padding: 0.1rem 0.2rem;
+  outline: none;
+}
+.sys-menu-foot {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.45rem 0.9rem 0;
+  color: var(--dim);
+  font-size: 0.68rem;
+  user-select: none;
+}
+.sys-menu-frame button {
+  border-radius: 0;
+  border: 1px solid var(--green);
+  color: var(--green);
+  background: transparent;
+  padding: 0.24rem 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  text-shadow: none;
+}
+.sys-menu-frame button:hover { background: rgba(75, 228, 99, 0.14); color: var(--green); border-color: var(--green); }
+.sys-menu-frame button.primary { background: var(--green); color: #04140a; font-weight: 700; }
+.sys-menu-frame button.primary:hover { background: #6df57f; color: #04140a; }
 
 /* ------------------------------------------------------- admin modal ----- */
 #admin-modal {

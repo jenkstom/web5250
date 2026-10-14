@@ -121,7 +121,7 @@ check('keypad has cursor arrows', arrows);
 // ------------------------------------------------------ soft keyboard focus
 // Tapping the screen must focus the hidden input: on a real device that
 // gesture is what raises the OS keyboard.
-await page.tap('#terminal');
+await page.tap('.pane-screen');
 await page.waitForTimeout(150);
 const focus1 = await page.evaluate(() => document.activeElement?.id);
 check('tap on terminal focuses the hidden typing input', focus1 === 'mobile-input', `activeElement=#${focus1}`);

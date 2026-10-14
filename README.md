@@ -67,10 +67,10 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   copying as blanks; see
   [Mouse selection and clipboard](#mouse-selection-and-clipboard).
 - **Split view — several sessions on one page, one chrome**: the system
-  menu's **Split ×2 / Split ×4** buttons (or `?grid=` deep links) arrange the
-  page into independent terminal panes under the same top bar; **+ Pane**
-  adds more (up to 6) and **↗ pops a session out into a real browser window**
-  without losing it; see
+  menu's **Split ↔ / Split ↕** buttons (or `?grid=` deep links) arrange the
+  page into independent terminal panes side by side or stacked under the
+  same top bar; **+ Pane** adds more (up to 6) and **↗ pops a session out
+  into a real browser window** without losing it; see
   [Multiple sessions on one page](#multiple-sessions-on-one-page).
 - **Sessions outlive their window**: every session carries an unguessable
   re-attach token; a closed tab, a reload, a dropped connection or a split
@@ -233,19 +233,23 @@ attempts lock administration for 60 s after 5 tries.
 
 The gateway gives **every WebSocket its own 5250 device**, so one browser can
 hold several concurrent sessions. Split view is a layout mode of the app
-itself — **no nested views, no iframes**: on the system menu, **Split ×2 /
-Split ×4** arrange the current page into two side-by-side or four (2 × 2)
-terminal panes under the same top bar. **+ Pane** adds more (up to 6; the
-layout re-flows, a lone trailing pane spans the full width) and a pane's **×**
-button closes it. Each pane is an independent session with its own screen,
+itself — **no nested views, no iframes**: on the system menu, **Split ↔**
+lays the page out as terminal panes side by side and **Split ↕** stacks
+them, each press adding one more pane (any count works). The top bar's
+**Split ↔ / Split ↕** buttons re-orient the live grid without touching the
+sessions, **+ Pane** adds another (up to 6) and a pane's **×** button
+closes it. Each pane is an independent session with its own screen,
 OIA strip and keyboard focus — click a pane (or its tab in Tabs mode) to type
-into it; the top bar always describes the focused session.
+into it; the top bar always describes the focused session. A pane that has
+no system yet shows its own **system picker inside the pane** (the full-page
+menu stays the landing state of the single-session view).
 
 Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
-connect straight to system 1 and system 3 (ids from the menu's admin editor).
-Without `systems=`, every pane boots into the system menu for a per-pane pick.
-If a **Display** name is set, the gateway dedupes it across panes (`TOM` →
-`TOM1`), exactly as it does across browsers.
+connect straight to system 1 and system 3 (ids from the menu's admin editor;
+add `&split=v` for a stacked layout). Without `systems=`, every pane boots
+into its in-pane picker for a per-pane pick. If a **Display** name is set,
+the gateway dedupes it across panes (`TOM` → `TOM1`), exactly as it does
+across browsers.
 
 **Rearranging and tabs.** Each pane carries a slim header (system · device
 name) with ◀ / ▶ buttons that move it within the layout. The **Tabs** button
