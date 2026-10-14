@@ -369,6 +369,32 @@ button.primary { border-color: var(--green); color: var(--green); }
   border-radius: 4px;
 }
 #ctx-menu button:hover { background: rgba(75, 228, 99, 0.14); }
+#ctx-menu button:disabled { color: #5a6a5f; cursor: default; }
+#ctx-menu button:disabled:hover { background: transparent; }
+
+/* Brief confirmation after a drag-selection copy (silence would leave you
+   wondering whether it worked; an alert per copy would be maddening). */
+#copy-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 3.4rem;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--panel);
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: 6px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.78rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 96;
+  white-space: nowrap;
+}
+#copy-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
 
 /* ------------------------------------------------- host pull-down menu --- */
 /* The host's own right-click menu (DEFINE SELECTION FIELD window), placed

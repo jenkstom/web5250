@@ -62,6 +62,19 @@ const BOX_LINES: Record<string, { up?: boolean; down?: boolean; left?: boolean; 
   '\u253c': { left: true, right: true, up: true, down: true }
 };
 
+/**
+ * A marked screen region: anchor and focus cell (1-based, in the order the
+ * user marked them - normalize with selRange() before use). `rect` selects
+ * a column-rectangle (Alt+drag) instead of the linear flow selection.
+ */
+interface Selection {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+  rect: boolean;
+}
+
 export class Terminal {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -72,6 +85,7 @@ export class Terminal {
   rows = 24;
   cols = 80;
   cursor: [number, number] = [1, 1]; // 1-based
+  private selection: Selection | null = null;
   private focused_ = true;
   /** Blink phase for the reverse-video cursor underline (530 ms cadence). */
   private blinkOn = true;
@@ -110,6 +124,7 @@ export class Terminal {
     this.chars = new Array(n).fill(' ');
     this.attrs = new Array(n).fill(0x20);
     this.fields = [];
+    this.selection = null; // cell coordinates no longer mean anything
     this.measure();
     this.render();
   }
@@ -205,20 +220,119 @@ export class Terminal {
     return [row, col];
   }
 
+  /** Like hitTest, but for drags: outside the grid clamps to the edge cell. */
+  cellClamped(x: number, y: number): [number, number] {
+    const rect = this.canvas.getBoundingClientRect();
+    const scale = (this.cellW * this.cols) / rect.width;
+    const col = Math.floor((x * scale) / this.cellW) + 1;
+    const row = Math.floor((y * scale) / this.cellH) + 1;
+    return [Math.max(1, Math.min(this.rows, row)), Math.max(1, Math.min(this.cols, col))];
+  }
+
   /** Clicks place the cursor at the clicked position (server validates). */
   clickToMessage(x: number, y: number): { r: number; c: number } | null {
     const hit = this.hitTest(x, y);
     return hit ? { r: hit[0], c: hit[1] } : null;
   }
 
+  /**
+   * The visible text of the whole screen grid. Non-display (password) cells
+   * read as blanks - their stored characters are what the user typed, and a
+   * screen dump must never carry them into the clipboard.
+   */
   text(): string {
     const out: string[] = [];
     for (let r = 0; r < this.rows; r++) {
       let line = '';
-      for (let c = 0; c < this.cols; c++) line += this.chars[r * this.cols + c];
+      for (let c = 0; c < this.cols; c++) {
+        const pos = r * this.cols + c;
+        line += isNonDisplay(this.attrs[pos]) ? ' ' : this.chars[pos];
+      }
       out.push(line.replace(/\s+$/, ''));
     }
     return out.join('\n');
+  }
+
+  // ---------------------------------------------------------------- selection
+  get hasSelection(): boolean {
+    return this.selection !== null;
+  }
+
+  /** Start (or restart) a mark at the given cell; nothing is highlighted yet. */
+  beginSelection(row: number, col: number, rect: boolean): void {
+    this.selection = { r1: row, c1: col, r2: row, c2: col, rect };
+  }
+
+  /** Drag the mark to another cell; cells outside the grid are clamped in. */
+  extendSelection(row: number, col: number): void {
+    if (!this.selection) return;
+    this.selection.r2 = Math.max(1, Math.min(this.rows, row));
+    this.selection.c2 = Math.max(1, Math.min(this.cols, col));
+    this.queueRender();
+  }
+
+  clearSelection(): void {
+    if (!this.selection) return;
+    this.selection = null;
+    this.queueRender();
+  }
+
+  /** Double-click helper: mark the run of non-space characters around the cell. */
+  selectWord(row: number, col: number): void {
+    row = Math.max(1, Math.min(this.rows, row));
+    col = Math.max(1, Math.min(this.cols, col));
+    const at = (c: number): string => this.chars[(row - 1) * this.cols + c - 1] ?? ' ';
+    const inWord = (c: number): boolean => at(c) !== ' ' && !isNonDisplay(this.attrs[(row - 1) * this.cols + c - 1]);
+    let start = col;
+    let end = col;
+    if (inWord(col)) {
+      while (start > 1 && inWord(start - 1)) start--;
+      while (end < this.cols && inWord(end + 1)) end++;
+    } else {
+      // blank (or hidden) cell: mark the run of blanks it sits in
+      while (end < this.cols && at(end + 1) === ' ') end++;
+    }
+    this.selection = { r1: row, c1: start, r2: row, c2: end, rect: false };
+    this.queueRender();
+  }
+
+  /** Anchor..focus in reading order, per the current shape. */
+  private selRange(): { r1: number; c1: number; r2: number; c2: number; rect: boolean } {
+    const s = this.selection!;
+    const r1 = Math.min(s.r1, s.r2);
+    const r2 = Math.max(s.r1, s.r2);
+    if (s.rect) {
+      return { r1, r2, c1: Math.min(s.c1, s.c2), c2: Math.max(s.c1, s.c2), rect: true };
+    }
+    // Linear: the anchor's position orders the range.
+    const p1 = (s.r1 - 1) * this.cols + (s.c1 - 1);
+    const p2 = (s.r2 - 1) * this.cols + (s.c2 - 1);
+    return p1 <= p2
+      ? { r1: s.r1, c1: s.c1, r2: s.r2, c2: s.c2, rect: false }
+      : { r1: s.r2, c1: s.c2, r2: s.r1, c2: s.c1, rect: false };
+  }
+
+  /**
+   * The characters under the selection, rows joined with newlines like a
+   * terminal copy: the first row runs to end-of-line, the last starts at the
+   * column, each line trimmed of trailing blanks. Hidden (non-display) cells
+   * come out as blanks, exactly as they render.
+   */
+  selectionText(): string {
+    if (!this.selection) return '';
+    const { r1, c1, r2, c2, rect } = this.selRange();
+    const lines: string[] = [];
+    for (let r = r1; r <= r2; r++) {
+      const c0 = rect || r === r1 ? c1 : 1;
+      const cEnd = rect || r === r2 ? c2 : this.cols;
+      let line = '';
+      for (let c = c0; c <= cEnd; c++) {
+        const pos = (r - 1) * this.cols + c - 1;
+        line += isNonDisplay(this.attrs[pos]) ? ' ' : this.chars[pos];
+      }
+      lines.push(line.replace(/\s+$/, ''));
+    }
+    return lines.join('\n');
   }
 
   private queueRender(): void {
@@ -371,6 +485,20 @@ export class Terminal {
         (pos % cols) * cellW + cellW / 2,
         Math.floor(pos / cols) * cellH + cellH / 2 + 1
       );
+    }
+
+    // Selection highlight: a translucent light wash over the marked cells,
+    // drawn on top of the glyphs so they stay readable. A linear selection
+    // flows like text (first row runs to the end of the line, last one ends
+    // at the mark); a rectangular one marks the same columns on every row.
+    if (this.selection) {
+      const { r1, c1, r2, c2, rect } = this.selRange();
+      const wash = 'rgba(238, 243, 238, 0.35)';
+      for (let r = r1; r <= r2; r++) {
+        const c0 = rect || r === r1 ? c1 : 1;
+        const cEnd = rect || r === r2 ? c2 : cols;
+        fillRun(r - 1, c0 - 1, cEnd - 1, 0, cellH, wash);
+      }
     }
 
     if (cursorPos >= 0 && cursorPos < rows * cols) {

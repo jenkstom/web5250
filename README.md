@@ -61,6 +61,11 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
 - **Terminal zoom**: on large pages the top bar offers **Fit / ½ / ¼** — the
   fitted terminal at full, half or quarter size, centred in the window. The
   choice is remembered per browser (also inside split-view panes).
+- **Select & copy**: drag with the left button to mark a screen region and it
+  is on the clipboard when you release (Alt+drag marks a column rectangle,
+  double-click a word, Ctrl+C re-copies) — with hidden-field contents always
+  copying as blanks; see
+  [Mouse selection and clipboard](#mouse-selection-and-clipboard).
 - **Split view — several sessions on one page**: the system menu's
   **Split ×2 / Split ×4** buttons (or `?grid=2|4` deep links) lay out two or
   four independent sessions side by side; see
@@ -343,6 +348,25 @@ may embed the app at all.
 While the OIA shows `X SYSTEM` or `X II`, data keys are blocked exactly like
 a real terminal (SysReq, Attn and Reset still work). The on-screen keypad
 (button in the top bar) mirrors everything for touch devices.
+
+### Mouse selection and clipboard
+
+Right-click opens the local menu (**Copy selection** / **Copy screen** /
+**Paste**). Text can also be marked directly on the screen, the way a desktop
+terminal emulator does:
+
+- **Left-drag** marks a text-flow selection and copies it to the clipboard on
+  release. **Alt+drag** marks a column rectangle instead (handy for option
+  numbers or record columns).
+- **Double-click** marks the word under the mouse (unless the host programmed
+  the double click itself).
+- **Ctrl+C** / **Cmd+C** re-copies the standing mark; a plain click clears it
+  and places the host cursor as before.
+- Text in hidden (non-display) fields - e.g. the sign-on password - always
+  copies as blanks.
+
+On plain-HTTP origins without the async clipboard API the copy falls back to
+`execCommand`, and to a selectable dialog box if the browser blocks that too.
 
 ## Publishing through Pangolin
 

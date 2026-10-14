@@ -89,6 +89,7 @@ function signalSessionEnd(reason: string, detail: string): void {
 }
 
 function sendKey(k: string, ch?: string): void {
+  term.clearSelection(); // typing abandons a marked region
   if (k === 'char' && ch !== undefined) {
     send({ t: 'key', k: 'char', ch });
     return;
@@ -237,7 +238,12 @@ function handleMessage(data: string): void {
     case 'update': {
       if (msg.mouse && typeof msg.mouse === 'object') setHostMouse(msg.mouse);
       if ('popup' in msg) setHostPopup(msg.popup);
-      if (Array.isArray(msg.cells)) term.applyCells(msg.cells as (number | string)[][]);
+      if (Array.isArray(msg.cells)) {
+        // A host-driven change invalidates a marked region (the text under
+        // it moved); typing echoes arrive here too, which clears as well.
+        if (term.hasSelection) term.clearSelection();
+        term.applyCells(msg.cells as (number | string)[][]);
+      }
       if (Array.isArray(msg.cursor)) term.setCursor((msg.cursor as number[])[0], (msg.cursor as number[])[1]);
       $('oia-pos').textContent = `${term.cursor[0]},${term.cursor[1]}`;
       if (msg.beep === true) flash();
@@ -452,6 +458,46 @@ function showCopyFallback(text: string, label: string): void {
   box.select();
 }
 $('copy-close').addEventListener('click', () => $('copy-fallback').classList.add('hidden'));
+
+// Drag-selection copies silently (a dialog per copy would be maddening);
+// a brief toast confirms it. execCommand('copy') inside the mouseup gesture
+// still works on plain-HTTP origins where the async clipboard API is
+// missing or refuses - only when even that fails does the selectable
+// fallback box above appear.
+let toastTimer: number | undefined;
+function showCopiedToast(chars: number): void {
+  const toast = $('copy-toast');
+  toast.textContent = `${chars} characters copied`;
+  toast.classList.add('show');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toast.classList.remove('show'), 1600);
+}
+function copySelection(): void {
+  const text = term.selectionText();
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => showCopiedToast(text.length), () => copySelectionFallback(text));
+    return;
+  }
+  copySelectionFallback(text);
+}
+function copySelectionFallback(text: string): void {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  if (ok) showCopiedToast(text.length);
+  else showCopyFallback(text, 'Selected text');
+}
 
 // ------------------------------------------------------------ leave guard
 /** True while leaving/restarting would kill a session the user signed on to. */
@@ -940,25 +986,71 @@ mobileInput.addEventListener('focusout', () => {
 });
 
 const terminal = $('terminal');
+// --- drag selection --------------------------------------------------------
+// Left-drag marks a screen region and copies it on release (like PuTTY);
+// plain drag marks a text-flow selection, Alt+drag a column rectangle. A
+// press without movement stays a plain click and places the host cursor as
+// before - the click is deferred to mouseup, where the two are told apart.
+let selPressing = false;
+let selAnchor: { r: number; c: number } | null = null;
+let selMarked = false;
+let selRect = false;
+
 terminal.addEventListener('mousedown', (e) => {
   // Suppressing the default focus (the tap would focus #terminal itself,
   // closing a just-opened keyboard); focusTerminal() picks the right target.
   // preventDefault also stops middle-click autoscroll.
   e.preventDefault();
-  // Left click places the cursor at the clicked cell (the gateway applies
-  // the same freedom as arrow movement). Right-click opens the terminal's
-  // own menu instead - see the contextmenu handler below. With the host's
-  // pull-down menu up, a click outside it dismisses the selection
-  // (returned to the host as choice 0, exactly like ACS).
+  // Left click: with the host's pull-down menu up it dismisses the
+  // selection (returned to the host as choice 0, exactly like ACS);
+  // otherwise it starts a possible mark, dropping any previous one.
   if (e.button === 0) {
     if (hostPopupOpen()) {
       send({ t: 'pick', choice: 0 });
     } else {
-      const rect = termHit(e);
-      if (rect) send({ t: 'key', k: 'click', r: rect.r, c: rect.c });
+      selAnchor = termHit(e);
+      selPressing = selAnchor !== null;
+      selMarked = false;
+      selRect = e.altKey;
+      term.clearSelection();
     }
   }
   focusTerminal();
+});
+/** Cell under a mouse event, clamped into the grid (drags leave the canvas). */
+function termCellClamped(e: MouseEvent): [number, number] {
+  const canvas = $('screen-canvas');
+  const bounds = canvas.getBoundingClientRect();
+  return term.cellClamped(e.clientX - bounds.left, e.clientY - bounds.top);
+}
+window.addEventListener('mousemove', (e) => {
+  if (!selPressing || !selAnchor) return;
+  const [r, c] = termCellClamped(e);
+  if (!selMarked && r === selAnchor.r && c === selAnchor.c) return;
+  if (!selMarked) {
+    selMarked = true;
+    term.beginSelection(selAnchor.r, selAnchor.c, selRect);
+  }
+  term.extendSelection(r, c);
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button !== 0 || !selPressing) return;
+  selPressing = false;
+  const anchor = selAnchor;
+  selAnchor = null;
+  if (selMarked) {
+    selMarked = false;
+    copySelection();
+    return;
+  }
+  // Plain click: place the host cursor at the clicked cell (the gateway
+  // applies the same freedom as arrow movement).
+  if (anchor) send({ t: 'key', k: 'click', r: anchor.r, c: anchor.c });
+});
+// A drag that ends outside the window never sees the mouseup.
+window.addEventListener('blur', () => {
+  selPressing = false;
+  selAnchor = null;
 });
 function termHit(e: MouseEvent): { r: number; c: number } | null {
   const canvas = $('screen-canvas');
@@ -967,11 +1059,18 @@ function termHit(e: MouseEvent): { r: number; c: number } | null {
 }
 // Host-programmed double click (e.g. the app's zoom function): the two
 // single clicks have already parked the cursor on the cell; the second
-// click additionally fires the programmed AID.
+// click additionally fires the programmed AID. Without a programmed
+// action the double click marks the word under the mouse (and copies it,
+// like any completed mark).
 terminal.addEventListener('dblclick', (e) => {
-  if (hostMouse.leftdouble === undefined) return;
   const hit = termHit(e);
-  if (hit) send({ t: 'mouseevent', ev: 'leftdouble', r: hit.r, c: hit.c });
+  if (!hit) return;
+  if (hostMouse.leftdouble === undefined) {
+    term.selectWord(hit.r, hit.c);
+    copySelection();
+    return;
+  }
+  send({ t: 'mouseevent', ev: 'leftdouble', r: hit.r, c: hit.c });
 });
 
 // Right-click over the terminal: the browser's own menu (save image,
@@ -1003,6 +1102,18 @@ terminal.addEventListener('contextmenu', (e) => {
   const card = ctxMenu.getBoundingClientRect();
   ctxMenu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - card.width - 8))}px`;
   ctxMenu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - card.height - 8))}px`;
+  $<HTMLButtonElement>('ctx-copysel').disabled = !term.hasSelection;
+});
+// Ctrl+C / Cmd+C copies the marked region. Without a mark the key stays
+// with the browser (nothing to interrupt); typing surfaces keep their
+// native copy.
+window.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.code !== 'KeyC') return;
+  if (!term.hasSelection || uiSurfaceOpen()) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  e.preventDefault();
+  copySelection();
 });
 function hideCtxMenu(): void {
   ctxMenu.classList.add('hidden');
@@ -1017,6 +1128,13 @@ window.addEventListener(
 );
 window.addEventListener('blur', hideCtxMenu);
 
+// Copy the marked region (the menu item is disabled without a mark); the
+// toast is copySelection's own feedback.
+$('ctx-copysel').addEventListener('click', () => {
+  copySelection();
+  hideCtxMenu();
+  focusTerminal();
+});
 // Copy screen: the visible text of the whole screen grid. The brief label
 // swap is the only feedback (the menu closes right after anyway).
 $('ctx-copy').addEventListener('click', (e) => {
