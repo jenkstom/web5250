@@ -30,6 +30,15 @@ export interface PaneServices {
   onPopOut(pane: SessionPane): void;
   /** Close (remove) this pane; its session detaches into the grace. */
   onClose(pane: SessionPane): void;
+  /** A drag of this pane's header (or tab) started / ended. */
+  onPaneDragStart(pane: SessionPane): void;
+  onPaneDragEnd(): void;
+  /** A dragged pane hovered / left / was dropped onto this pane. The event
+   *  carries the position: a drop near an edge splits the pane instead of
+   *  swapping (tabs drop without one - always a swap). */
+  onPaneDragOver(pane: SessionPane, e?: DragEvent): void;
+  onPaneDragLeave(pane: SessionPane): void;
+  onPaneDrop(pane: SessionPane, e?: DragEvent): void;
   /** A completed mark (drag release / double-click) - shell copies it. */
   onSelectionCopied(pane: SessionPane): void;
   /** A host-programmed beep: shell keeps the single AudioContext. */
@@ -187,6 +196,36 @@ export class SessionPane {
     this.el.append(this.barEl, this.screenEl, oia);
     this.term = new Terminal(this.canvas);
     this.wireMouse();
+    this.wireDrag();
+  }
+
+  /**
+   * Drag the pane by its header (or its tab): dropping it on another pane's
+   * middle swaps the two, on one of its edges splits that pane's slot with
+   * the dragged pane taking that side.
+   */
+  private wireDrag(): void {
+    const { services } = this;
+    this.labelEl.title = 'Drag onto a pane to swap, or onto its edge to split';
+    this.barEl.draggable = true;
+    this.barEl.addEventListener('dragstart', (e) => {
+      if (e.dataTransfer) {
+        e.dataTransfer.setData('text/plain', String(this.index));
+        e.dataTransfer.effectAllowed = 'move';
+      }
+      services.onPaneDragStart(this);
+    });
+    this.el.addEventListener('dragend', () => services.onPaneDragEnd());
+    this.el.addEventListener('dragover', (e) => {
+      e.preventDefault(); // without it the drop never fires
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      services.onPaneDragOver(this, e);
+    });
+    this.el.addEventListener('dragleave', () => services.onPaneDragLeave(this));
+    this.el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      services.onPaneDrop(this, e);
+    });
   }
 
   // ------------------------------------------------------------- shell API

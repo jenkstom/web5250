@@ -263,12 +263,89 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
     `${before} → ${moved}, pane2 at ${other} (was ${otherBefore})`);
 }
 
+// ---- 7a. drag a pane header onto the other pane: they swap places
+{
+  const labelOf = (i) => page.evaluate(
+    (i) => document.querySelector(`.pane[data-pane="${i}"] .pane-label`)?.textContent, i);
+  const before0 = await labelOf(0);
+  const before1 = await labelOf(1);
+  await page.dragAndDrop(`${paneSel(0)} .pane-label`, `${paneSel(1)} .pane-screen`);
+  await page.waitForTimeout(300);
+  check('dragging a header swaps panes',
+    (await labelOf(0)) === before1 && (await labelOf(1)) === before0,
+    `${before0} | ${before1} -> ${await labelOf(0)} | ${await labelOf(1)}`);
+  check('sessions survive the swap',
+    (await page.evaluate(() => document.getElementById('conn-state')?.dataset.state)) === 'connected');
+  // And back, so the rest of the run keeps its assumptions about order.
+  await page.dragAndDrop(`${paneSel(0)} .pane-label`, `${paneSel(1)} .pane-screen`);
+  await page.waitForTimeout(300);
+  check('swapping back restores the order',
+    (await labelOf(0)) === before0 && (await labelOf(1)) === before1);
+}
+
+// ---- 7a-2. drop at a pane's EDGE: the dragged pane takes that side of the
+// target's slot (drop on the middle stays a swap).
+{
+  const idxOf = (label) => page.evaluate(
+    (label) => [...document.querySelectorAll('#panes .pane')]
+      .findIndex((p) => p.querySelector('.pane-label')?.textContent === label), label);
+  const labelOf = (i) => page.evaluate(
+    (i) => document.querySelector(`.pane[data-pane="${i}"] .pane-label`)?.textContent, i);
+  const boxOf = (i) => page.evaluate((i) => {
+    const r = document.querySelector(`.pane[data-pane="${i}"]`).getBoundingClientRect();
+    return { left: Math.round(r.left), top: Math.round(r.top) };
+  }, i);
+
+  // Three panes: one left, a top/bottom pair on the right.
+  await page.click(`${paneSel(1)} .pane-splitbtn-v`);
+  await page.waitForTimeout(300);
+  const L0 = await labelOf(0);
+  const L1 = await labelOf(1);
+  const L2 = await labelOf(2);
+  const sz = await page.evaluate(() => {
+    const b = document.querySelector('.pane[data-pane="2"]').getBoundingClientRect();
+    return { w: b.width, h: b.height };
+  });
+
+  // Drop pane 1 on pane 3's LEFT edge: pane 3's slot splits, pane 1 takes
+  // the left half -> one pane on top, two side by side under it.
+  await page.dragAndDrop(`${paneSel(0)} .pane-label`, `${paneSel(2)} .pane-screen`,
+    { targetPosition: { x: 6, y: sz.h / 2 } });
+  await page.waitForTimeout(300);
+  const i0 = await idxOf(L0);
+  const i1 = await idxOf(L1);
+  const i2 = await idxOf(L2);
+  const [b0, b1, b2] = [await boxOf(i0), await boxOf(i1), await boxOf(i2)];
+  check('edge drop splits the target slot',
+    i0 >= 0 && i1 >= 0 && i2 >= 0 && b1.top < b0.top && b0.left < b2.left && Math.abs(b0.top - b2.top) < 2,
+    `L0@${JSON.stringify(b0)} L1@${JSON.stringify(b1)} L2@${JSON.stringify(b2)}`);
+  await page.click(`${paneSel(i1)} .pane-screen`);
+  check('sessions survive an edge drop',
+    (await page.evaluate(() => document.getElementById('conn-state')?.dataset.state)) === 'connected');
+
+  // Back to two panes in the original order for the sections below: close
+  // the empty pane, then swap the pair back.
+  const emptyIdx = await page.evaluate(
+    () => document.querySelector('#panes .pane .sys-menu')?.closest('.pane')?.dataset.pane);
+  await page.locator(`${paneSel(emptyIdx)} .pane-closebtn`).click();
+  await page.waitForTimeout(300);
+  await page.dragAndDrop(`${paneSel(await idxOf(L0))} .pane-label`, `${paneSel(await idxOf(L1))} .pane-screen`);
+  await page.waitForTimeout(300);
+  check('restored to the original two-pane order',
+    (await idxOf(L0)) === 0 && (await idxOf(L1)) === 1);
+}
+
 // ---- 7b. tabs view - sessions must survive
 {
   await page.click('#grid-view-tabs');
   check('tab strip visible in tabs mode', await page.isVisible('#tabbar'));
   const onStage = await page.locator('#panes .pane').count();
   check('only the active pane is on stage', onStage === 1, String(onStage));
+  check('the solo tab pane fills the stage', await page.evaluate(() => {
+    const pane = document.querySelector('#panes .pane').getBoundingClientRect();
+    const wrap = document.getElementById('panes').getBoundingClientRect();
+    return pane.height >= wrap.height * 0.85 && pane.width >= wrap.width * 0.85;
+  }));
 
   // Switch panes through the tab strip; the hidden ones stay connected.
   const tabs = page.locator('#tabbar .tab');
@@ -347,6 +424,11 @@ await page.waitForTimeout(400);
 check('× closes a pane', (await page.locator('#panes .pane').count()) === 1);
 check('closing the last extra pane leaves the classic view',
   !(await page.locator('#panes .split').count()));
+check('the last pane fills the stage', await page.evaluate(() => {
+  const pane = document.querySelector('#panes .pane').getBoundingClientRect();
+  const wrap = document.getElementById('panes').getBoundingClientRect();
+  return pane.height >= wrap.height * 0.85 && pane.width >= wrap.width * 0.85;
+}));
 check('surviving pane still connected',
   await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');
 

@@ -243,10 +243,12 @@ in its half; the fresh half shows its own **system picker inside the pane**
 Splits nest freely — split the bottom half of a ↔/↕ pair side by side and
 you get one large pane over two smaller ones — up to 6 panes. Every
 **divider line is draggable** to resize the two sides it separates
-(double-click resets a divider to halves), and the arrangement plus divider
-positions survive a reload. **+ Pane** splits the roomiest pane, and
-clicking a pane (or its tab in Tabs mode) hands it the keyboard; the top bar
-always describes the focused session.
+(double-click resets a divider to halves), **dragging a pane by its header
+onto another pane swaps the two** — or onto one of its **edges to split
+that pane's slot** with the dragged pane taking that side — and the
+arrangement plus divider positions survive a reload. **+ Pane** splits the
+roomiest pane, and clicking a pane (or its tab in Tabs mode) hands it the
+keyboard; the top bar always describes the focused session.
 
 Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
 connect straight to system 1 and system 3 (ids from the menu's admin
@@ -257,7 +259,8 @@ panes (`TOM` → `TOM1`), exactly as it does across browsers.
 **Tabs.** The **Tabs** button switches to one session at a time with a tab
 strip up top; the hidden sessions keep running, and clicking a tab brings
 that session back and hands it the keyboard. Nothing ever reloads — panes
-are plain DOM. The Tiles/Tabs choice and the active tab are remembered.
+are plain DOM. Dragging a pane by its header (or a tab) onto another pane
+swaps the two. The Tiles/Tabs choice and the active tab are remembered.
 
 **Pop-out: a pane becomes a real browser window.** The ↗ button on a pane
 header opens a popup window that takes over the pane's running session — same

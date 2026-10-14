@@ -52,6 +52,7 @@ const panes: SessionPane[] = []; // tree-traversal order (data-pane order)
 let activePane: SessionPane | null = null;
 let tabsMode = false;
 let menuTarget: SessionPane | null = null; // pane the shared system menu fills
+let dragPane: SessionPane | null = null; // pane whose header/tab is being dragged
 
 interface SplitNode {
   dir: 'h' | 'v';
@@ -93,6 +94,50 @@ function removeLeaf(n: LayoutNode, target: SessionPane): LayoutNode | null {
   const b = removeLeaf(n.b, target);
   if (a && b) return { ...n, a, b };
   return a ?? b;
+}
+
+/** Structural edit: two panes trade leaves (a dragged pane dropped on one). */
+function swapLeaves(n: LayoutNode, x: SessionPane, y: SessionPane): LayoutNode {
+  if (n === x) return y;
+  if (n === y) return x;
+  if (n instanceof SessionPane) return n;
+  return { ...n, a: swapLeaves(n.a, x, y), b: swapLeaves(n.b, x, y) };
+}
+
+/**
+ * Structural edit: a dragged pane dropped at an edge of another pane. The
+ * target's slot becomes an oriented pair - the dragged pane takes the
+ * dropped side of it, the target keeps the other half.
+ */
+function insertAtEdge(
+  root: LayoutNode,
+  src: SessionPane,
+  dst: SessionPane,
+  side: 'left' | 'right' | 'top' | 'bottom'
+): LayoutNode {
+  let t = removeLeaf(root, src);
+  if (!t) t = dst; // src was the root (paranoia - a drop needs two panes)
+  const dir: 'h' | 'v' = side === 'left' || side === 'right' ? 'h' : 'v';
+  const srcFirst = side === 'left' || side === 'top';
+  const pair: SplitNode = srcFirst
+    ? { dir, a: src, b: dst, frac: 0.5 }
+    : { dir, a: dst, b: src, frac: 0.5 };
+  return replaceLeaf(t, dst, pair);
+}
+
+/** Where a drag point sits in a pane: an edge zone or the middle (swap). */
+type DropZone = 'left' | 'right' | 'top' | 'bottom' | 'center';
+function dropZone(r: DOMRect, x: number, y: number): DropZone {
+  const near = Math.min(36, r.width / 4); // x-axis threshold
+  const nearY = Math.min(36, r.height / 4);
+  const edges: [DropZone, number, number][] = [
+    ['left', x - r.left, near],
+    ['right', r.right - x, near],
+    ['top', y - r.top, nearY],
+    ['bottom', r.bottom - y, nearY]
+  ];
+  edges.sort((p, q) => p[1] - q[1]);
+  return edges[0][1] <= edges[0][2] ? edges[0][0] : 'center';
 }
 
 /** The panes list and data-pane indexes follow the tree's traversal order. */
@@ -168,8 +213,15 @@ function renderLayout(): void {
   const solo = layout === null || layout instanceof SessionPane || (tabsMode && panes.length > 1);
   const shown = solo ? (activePane ?? panes[0]) : null;
   wrap.replaceChildren();
-  if (shown) wrap.append(shown.el);
-  else if (layout) wrap.append(buildNode(layout));
+  if (shown) {
+    // A pane leaving a split keeps its inline flex share (grow 0.5 as a
+    // lone flex item means HALF the box, not all of it) - back to the
+    // stylesheet's fill.
+    clearFlex(shown.el);
+    wrap.append(shown.el);
+  } else if (layout) {
+    wrap.append(buildNode(layout));
+  }
   wrap.dataset.panes = String(panes.length);
   // split controls exist only while there is something to manage
   $('split-group').classList.toggle('hidden', panes.length < 2);
@@ -190,6 +242,12 @@ function applyFlex(el: HTMLElement, frac: number): void {
   el.style.flexGrow = String(frac);
   el.style.flexShrink = '0';
   el.style.flexBasis = '0';
+}
+
+function clearFlex(el: HTMLElement): void {
+  el.style.flexGrow = '';
+  el.style.flexShrink = '';
+  el.style.flexBasis = '';
 }
 
 function buildNode(n: LayoutNode): HTMLElement {
@@ -325,6 +383,44 @@ const paneServices: PaneServices = {
   onClose(pane) {
     if (!pane.confirmLeave()) return;
     closePane(pane);
+  },
+  onPaneDragStart(pane) {
+    dragPane = pane;
+    pane.el.classList.add('drag-source');
+  },
+  onPaneDragEnd() {
+    dragPane = null;
+    for (const p of panes) {
+      p.el.classList.remove('drag-source', 'drop-target', 'drop-target-left', 'drop-target-right', 'drop-target-top', 'drop-target-bottom');
+      tabOf(p)?.classList.remove('drop-target');
+    }
+  },
+  onPaneDragOver(pane, e) {
+    if (!dragPane || dragPane === pane) return;
+    const zone = e ? dropZone(pane.el.getBoundingClientRect(), e.clientX, e.clientY) : 'center';
+    const cls = zone === 'center' ? 'drop-target' : `drop-target-${zone}`;
+    if (!pane.el.classList.contains(cls)) {
+      paneServices.onPaneDragLeave(pane);
+      pane.el.classList.add(cls);
+    }
+  },
+  onPaneDragLeave(pane) {
+    pane.el.classList.remove('drop-target', 'drop-target-left', 'drop-target-right', 'drop-target-top', 'drop-target-bottom');
+    tabOf(pane)?.classList.remove('drop-target');
+  },
+  onPaneDrop(pane, e) {
+    const src = dragPane;
+    const zone = e ? dropZone(pane.el.getBoundingClientRect(), e.clientX, e.clientY) : 'center';
+    paneServices.onPaneDragEnd();
+    if (!src || src === pane) return;
+    if (zone === 'center') {
+      layout = swapLeaves(layout ?? src, src, pane);
+    } else {
+      layout = insertAtEdge(layout ?? src, src, pane, zone);
+    }
+    syncPanesFromLayout();
+    renderLayout();
+    saveGridState();
   },
   onSelectionCopied(pane) {
     copySelection(pane);
@@ -479,7 +575,7 @@ function setActive(pane: SessionPane | null): void {
   if (tabsMode && panes.length > 1) renderLayout();
 }
 
-/** The tab strip for tabs mode: one button per pane, click to focus. */
+/** The tab strip for tabs mode: one button per pane, click (or drag) to focus. */
 function renderTabbar(): void {
   const bar = $('tabbar');
   const show = panes.length > 1 && tabsMode;
@@ -491,14 +587,33 @@ function renderTabbar(): void {
       b.type = 'button';
       b.className = 'tab' + (p === activePane ? ' active' : '');
       b.textContent = p.label || `Session ${p.index + 1}`;
-      b.title = 'Show this session';
+      b.title = 'Show this session (drag onto another tab to swap)';
       b.addEventListener('click', () => {
         setActive(p);
         focusTerminal();
       });
+      // Tabs drag with the same swap semantics as pane headers.
+      b.draggable = true;
+      b.addEventListener('dragstart', () => paneServices.onPaneDragStart(p));
+      b.addEventListener('dragend', () => paneServices.onPaneDragEnd());
+      b.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        paneServices.onPaneDragOver(p);
+      });
+      b.addEventListener('dragleave', () => paneServices.onPaneDragLeave(p));
+      b.addEventListener('drop', (e) => {
+        e.preventDefault();
+        paneServices.onPaneDrop(p);
+      });
       return b;
     })
   );
+}
+
+/** The tab button showing this pane (tabs mode only). */
+function tabOf(p: SessionPane): HTMLElement | null {
+  if (!(panes.length > 1 && tabsMode)) return null;
+  return $('tabbar').children[panes.indexOf(p)] as HTMLElement | null;
 }
 
 function setTabsMode(tabs: boolean): void {

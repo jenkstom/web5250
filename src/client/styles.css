@@ -168,6 +168,7 @@ html, body {
 .splitter.dragging::after { background: var(--green); }
 
 .pane {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
@@ -180,6 +181,26 @@ html, body {
   overflow: hidden;
 }
 .pane.active-pane { border-color: #3a5a48; }
+
+/* Drag & drop feedback: a dragged pane dims; a pane under it outlines for a
+   swap, or previews the half an edge drop will split off. */
+.pane.drag-source { opacity: 0.55; }
+.pane.drop-target { outline: 2px dashed var(--green); outline-offset: -3px; }
+.pane.drop-target-left::after,
+.pane.drop-target-right::after,
+.pane.drop-target-top::after,
+.pane.drop-target-bottom::after {
+  content: '';
+  position: absolute;
+  z-index: 30;
+  background: rgba(75, 228, 99, 0.2);
+  border: 1px dashed var(--green);
+}
+.pane.drop-target-left::after { inset: 0 auto 0 0; width: calc(50% - 3px); }
+.pane.drop-target-right::after { inset: 0 0 0 auto; width: calc(50% - 3px); }
+.pane.drop-target-top::after { inset: 0 0 auto 0; height: calc(50% - 3px); }
+.pane.drop-target-bottom::after { inset: auto 0 0 0; height: calc(50% - 3px); }
+.tab.drop-target { color: var(--green); border-color: var(--green); }
 
 /* Pane header - always present: every pane carries its own split / system /
  * pop-out / close controls, single-pane view included. */
