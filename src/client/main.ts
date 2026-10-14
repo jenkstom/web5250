@@ -382,7 +382,7 @@ const paneServices: PaneServices = {
   },
   onClose(pane) {
     if (!pane.confirmLeave()) return;
-    closePane(pane);
+    closePane(pane, true); // the confirm said "End the current session?"
   },
   onPaneDragStart(pane) {
     dragPane = pane;
@@ -513,10 +513,16 @@ function removeFromTree(pane: SessionPane): void {
   syncPanesFromLayout();
 }
 
-/** Close a pane; its session detaches and stays re-attachable in grace. */
-function closePane(pane: SessionPane): void {
+/**
+ * Close a pane. `end` (the × button after its confirm) ends the host session
+ * outright - the device name and the user's message queue free up on the
+ * host immediately; without it (pop-out) the session detaches into the
+ * grace, which is what keeps it transferable.
+ */
+function closePane(pane: SessionPane, end = false): void {
   const wasMulti = panes.length > 1;
-  pane.detach();
+  if (end) pane.end();
+  else pane.detach();
   removeFromTree(pane);
   if (panes.length === 0) {
     exitSplit(false);
@@ -1092,7 +1098,11 @@ $('btn-addpane').addEventListener('click', () => {
 $('grid-view-tiles').addEventListener('click', () => setTabsMode(false));
 $('grid-view-tabs').addEventListener('click', () => setTabsMode(true));
 $('btn-exitsplit').addEventListener('click', () => {
-  // Deliberate exit: the extra sessions end now (skipping the grace).
+  // Deliberate exit: the extra sessions end now (skipping the grace) - the
+  // same confirm a single pane's × would ask for each of them.
+  const active = panes.slice(1).filter((p) => p.sessionActive());
+  const what = active.length === 1 ? 'the extra session' : `the ${active.length} extra sessions`;
+  if (active.length > 0 && !window.confirm(`End ${what}?`)) return;
   exitSplit(true);
 });
 

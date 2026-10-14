@@ -126,6 +126,7 @@ check('reload reattached the same session', (await page.textContent('#dev-info')
 await page.click('#btn-fit');
 
 // ---- 5. Systems → menu → Split ↔ (in place - no navigation, one shell)
+page.once('dialog', (d) => void d.accept().catch(() => {})); // Systems ends the live session: asks
 await page.click('#btn-systems');
 await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
 check('zoom group hidden again on menu', !(await page.isVisible('#zoom-group')));
@@ -182,6 +183,28 @@ const name0 = await page.textContent('#dev-info');
 check('pane 1 signed on (deduped name)', name0.includes('MULTI') && name0 !== name1, `${name1} | ${name0}`);
 await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
 
+// ---- 6a. closing an active session asks first; dismissing keeps the pane.
+// window.confirm is stubbed for these assertions: this Chromium/Playwright
+// pair double-delivers dialog events and blocks the click until they are
+// handled, which makes asserting on the native dialogs racy.
+{
+  await page.evaluate(() => {
+    window.__nativeConfirm = window.confirm;
+    window.__confirms = [];
+    window.__confirmReply = false;
+    window.confirm = (m) => {
+      window.__confirms.push(m);
+      return window.__confirmReply;
+    };
+  });
+  await page.click(`${paneSel(0)} .pane-closebtn`);
+  await page.waitForTimeout(300);
+  const asked = await page.evaluate(() => window.__confirms);
+  check('closing an active session asks', asked.length === 1 && asked[0].includes('End the current session'),
+    JSON.stringify(asked));
+  check('dismissing keeps the pane', (await page.locator('#panes .pane').count()) === 2);
+}
+
 // ---- 6b. split a pane in place: the focused pane halves, the rest is
 // untouched; the divider between the halves is draggable.
 {
@@ -235,9 +258,15 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
   void fullH;
   await page.screenshot({ path: `${OUT}/03b-nested-split.png` });
 
-  // Closing the empty pane collapses the layout back onto pane 2.
+  // Connect the fresh pane: it lands on the sign-on screen, and closing it
+  // there is free - no confirm (the logon exception).
+  await page.click(`${paneSel(2)} .sys-menu .menu-row`);
+  await page.waitForTimeout(700);
+  await page.evaluate(() => { window.__confirms = []; });
   await page.click(`${paneSel(2)} .pane-closebtn`);
   await page.waitForTimeout(400);
+  const askedLogon = await page.evaluate(() => window.__confirms);
+  check('closing on the sign-on screen asks nothing', askedLogon.length === 0, JSON.stringify(askedLogon));
   check('closing a pane collapses the split', (await page.locator('#panes .pane').count()) === 2);
   const hBack = await page.evaluate(() =>
     Math.round(document.querySelector('.pane[data-pane="1"]').getBoundingClientRect().height));
@@ -246,6 +275,7 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
 
 // ---- 7. typing goes only to the focused pane
 {
+  await page.evaluate(() => { window.confirm = window.__nativeConfirm; });
   await page.click(`${paneSel(0)} .pane-screen`);
   const { x, y } = await cellXY(10, 20);
   await page.mouse.click(x, y);
@@ -433,6 +463,7 @@ check('surviving pane still connected',
   await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');
 
 // Re-enter split from the menu: + Pane is back and adds again.
+page.once('dialog', (d) => void d.accept().catch(() => {})); // Systems ends the live session: asks
 await page.click('#btn-systems');
 await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
 await page.click('#menu-splith');
@@ -441,6 +472,28 @@ check('split re-entered from the menu', (await page.locator('#panes .pane').coun
 await page.click('#btn-addpane');
 await page.waitForTimeout(600);
 check('+ re-enabled and adds again', (await page.locator('#panes .pane').count()) === 3);
+
+// A closed pane ends its session outright, so its device name frees
+// immediately (no grace zombie): the next pane to connect gets it back.
+{
+  const devOf = (i) => page.evaluate(
+    (i) => document.querySelector(`.pane[data-pane="${i}"] .pane-label`)?.textContent?.split(' · ')[1], i);
+  const emptyIdx = await page.evaluate(
+    () => document.querySelector('#panes .pane .sys-menu')?.closest('.pane')?.dataset.pane);
+  await page.click(`${paneSel(emptyIdx)} .sys-menu .menu-row`);
+  await page.waitForTimeout(900);
+  const freedDev = await devOf(emptyIdx);
+  await page.click(`${paneSel(emptyIdx)} .pane-closebtn`); // sign-on screen: no confirm
+  await page.waitForTimeout(400);
+  await page.click('#btn-addpane');
+  await page.waitForTimeout(600);
+  const empty2 = await page.evaluate(
+    () => document.querySelector('#panes .pane .sys-menu')?.closest('.pane')?.dataset.pane);
+  await page.click(`${paneSel(empty2)} .sys-menu .menu-row`);
+  await page.waitForTimeout(900);
+  check('a closed pane frees its device name', (await devOf(empty2)) === freedDev,
+    `${freedDev} -> ${await devOf(empty2)}`);
+}
 
 // ---- 8. preassigned deep link ?grid=2&systems=1,1 connects both panes
 await page.goto(`${BASE}/?grid=2&systems=1,1`, { waitUntil: 'domcontentloaded' });
@@ -460,6 +513,7 @@ await page.screenshot({ path: `${OUT}/04-grid-deeplink.png` });
 
 // ---- 9. Exit split returns to the single-pane app (pane 1's session ends,
 // pane 0's keeps running - it is the app's only session again).
+page.once('dialog', (d) => void d.accept().catch(() => {})); // Exit split ends the extra session
 await page.click('#btn-exitsplit');
 await page.waitForTimeout(500);
 check('back to single pane', (await page.locator('#panes .pane').count()) === 1);

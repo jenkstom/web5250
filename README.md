@@ -266,9 +266,17 @@ swaps the two. The Tiles/Tabs choice and the active tab are remembered.
 header opens a popup window that takes over the pane's running session — same
 5250 device, same screen, mid-typing — and the pane disappears from the
 layout. This works because sessions live in the gateway, not in the page (see
-[Sessions outlive their window](#sessions-outlive-their-window)). Closing a
-pane (×) detaches its session the same way: it stays re-attachable for the
-grace period rather than dying.
+[Sessions outlive their window](#sessions-outlive-their-window)).
+
+**Close (×) ends the session.** After its confirmation (skipped on the
+sign-on screen and for never-assigned panes), closing a pane ends the host
+session outright: the device name and the signed-on user's message queue
+free up immediately. That matters because IBM i shows
+*Message queue USER is allocated to another job* on the next sign-on of the
+same user while one of their jobs lingers — the detach grace is exactly such
+a lingering job, so × refuses to leave one behind. The grace still covers
+its intended cases: a closed tab, a reload, a dropped connection and the
+moment of a pop-out transfer.
 
 Two deployment notes:
 
@@ -276,7 +284,8 @@ Two deployment notes:
   longer frames anything itself).
 - A browser tab holds one 5250 device per pane. With the default grace
   period the sessions survive the tab closing for a while and are then
-  cleaned up host-side; use **Exit split** to end them immediately.
+  cleaned up host-side; use **Exit split** (or a pane's ×) to end them
+  immediately.
 
 ## Sessions outlive their window
 

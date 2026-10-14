@@ -152,7 +152,7 @@ export class SessionPane {
       ),
       btn('pane-menubtn', '☰', 'Pick a system for this pane', () => services.openSystemMenu(this)),
       this.popBtn,
-      btn('pane-closebtn', '×', 'Close this pane (the session stays available for a while)', () =>
+      btn('pane-closebtn', '×', 'Close this pane (an active session is asked for and then ended)', () =>
         services.onClose(this)
       )
     );
@@ -259,8 +259,15 @@ export class SessionPane {
     return this.hasSocket() && !this.onSignonScreen;
   }
 
+  /**
+   * Closing this pane must be confirmed once a session is past the sign-on
+   * screen - the pane's token dies with it, so even with a gateway grace
+   * period the session is gone for good. The sign-on screen (and anything
+   * before/after a live session: connecting, ended, never assigned) is free
+   * to leave.
+   */
   confirmLeave(): boolean {
-    return !this.sessionActive() || this.graceMs > 0 || window.confirm('End the current session?');
+    return !this.sessionActive() || window.confirm('End the current session?');
   }
 
   // -------------------------------------------------------------- connect
