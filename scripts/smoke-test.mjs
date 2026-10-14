@@ -430,6 +430,137 @@ async function main() {
     await sleep(200);
   }
 
+  // ------------------------------- 10b. share / view-only mirrors (?view=)
+  // A session's hello carries an independent share token; ?view=<token>
+  // attaches read-only mirrors (any number at once) that see the same
+  // screen stream, cannot type, cannot end the session, and follow it down
+  // when it ends. The share token must not double as a control token.
+  console.log('\n10b. Share link / view-only mirrors');
+  {
+    const SHARE_PORT = HTTP_PORT + 2;
+    procs.push(
+      spawn(process.execPath, ['dist/server.js'], {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          PORT: String(SHARE_PORT),
+          IBM_I_HOST: '127.0.0.1',
+          IBM_I_PORT: String(MOCK_PORT),
+          IBM_I_DEV_PREFIX: 'SHARE_',
+          IBM_I_TERM_TYPE: 'IBM-3477-FC',
+          IBM_I_CODEPAGE: 'cp037',
+          SESSION_GRACE_MS: '8000',
+          WEB5250_DB: join(mkdtempSync(join(tmpdir(), 'web5250-smoke-')), 'menu.db')
+        }
+      })
+    );
+    let healthy = false;
+    for (let i = 0; i < 50 && !healthy; i++) {
+      try {
+        healthy = (await fetch(`http://127.0.0.1:${SHARE_PORT}/healthz`)).ok;
+      } catch {
+        await sleep(200);
+      }
+    }
+    check('share gateway became healthy', healthy);
+
+    const openOn = async (qs) => {
+      const sock = new WebSocket(`ws://127.0.0.1:${SHARE_PORT}/ws${qs}`);
+      const term = new Term();
+      let hello = null;
+      const statuses = [];
+      sock.addEventListener('message', (ev) => {
+        const msg = JSON.parse(String(ev.data));
+        term.apply(msg);
+        if (msg.t === 'hello') hello = msg;
+        if (msg.t === 'status') statuses.push(msg.status);
+      });
+      const closed = new Promise((resolve) => sock.addEventListener('close', () => resolve(true)));
+      await new Promise((resolve, reject) => {
+        sock.addEventListener('open', resolve);
+        sock.addEventListener('error', reject);
+      });
+      for (let i = 0; i < 60 && !hello; i++) await sleep(50);
+      return { sock, term, hello, statuses, closed };
+    };
+
+    const owner = await openOn('?devname=SHAREDEV');
+    check(
+      'hello carries a share token distinct from the session token',
+      typeof owner.hello?.shareToken === 'string' && owner.hello.shareToken.length >= 16 && owner.hello.shareToken !== owner.hello?.sessionToken,
+      JSON.stringify({ sessionToken: owner.hello?.sessionToken, shareToken: owner.hello?.shareToken })
+    );
+    check('owner reaches the sign-on screen', await waitFor(owner, () => owner.term.text().includes('Sign On'), 8000));
+
+    // Two mirrors at once (the link works for any number of viewers).
+    const v1 = await openOn(`?view=${owner.hello.shareToken}`);
+    const v2 = await openOn(`?view=${owner.hello.shareToken}`);
+    check('viewer hello is marked view-only', v1.hello?.viewOnly === true && v2.hello?.viewOnly === true, JSON.stringify(v1.hello));
+    check('viewer gets no control token', v1.hello?.sessionToken === undefined, JSON.stringify(v1.hello));
+    check(
+      'viewers see the current screen',
+      (await waitFor(v1, () => v1.term.text().includes('Sign On'), 5000)) &&
+        (await waitFor(v2, () => v2.term.text().includes('Sign On'), 5000))
+    );
+
+    // The mirror follows the owner in real time (typed characters).
+    for (const ch of 'MIRROR') owner.sock.send(JSON.stringify({ t: 'key', k: 'char', ch }));
+    check(
+      'both mirrors follow the owner typing',
+      (await waitFor(v1, () => v1.term.row(9).includes('MIRROR'), 5000)) &&
+        (await waitFor(v2, () => v2.term.row(9).includes('MIRROR'), 5000)),
+      `v1="${v1.term.row(9).trim()}" v2="${v2.term.row(9).trim()}"`
+    );
+    const before = owner.term.row(9);
+
+    // Viewer input is dropped - watching never becomes typing.
+    v1.sock.send(JSON.stringify({ t: 'key', k: 'char', ch: 'X' }));
+    v1.sock.send(JSON.stringify({ t: 'enter' }));
+    await sleep(700);
+    check('viewer keystrokes change nothing (owner)', owner.term.row(9) === before, `"${owner.term.row(9).trim()}"`);
+    check('viewer keystrokes change nothing (viewer)', v1.term.row(9) === before, `"${v1.term.row(9).trim()}"`);
+
+    // A viewer {t:'end'} must not end a session it does not own.
+    v2.sock.send(JSON.stringify({ t: 'end' }));
+    await sleep(600);
+    check('viewer cannot end the session', !(await Promise.race([owner.closed, sleep(300).then(() => false)])));
+
+    // The owner detaching does not disturb the mirrors; a re-attach resumes
+    // in front of them (and no viewer ever sees a takeover 'detached').
+    owner.sock.close();
+    await sleep(400);
+    check('mirrors stay up while the owner is away', !(await Promise.race([v1.closed, sleep(300).then(() => false)])));
+    const back = await openOn(`?attach=${owner.hello.sessionToken}`);
+    check('owner re-attaches to the same device', back.hello?.devName === 'SHAREDEV', JSON.stringify(back.hello?.devName));
+    for (const ch of 'BACK') back.sock.send(JSON.stringify({ t: 'key', k: 'char', ch }));
+    check('mirrors follow the re-attached owner', await waitFor(v1, () => v1.term.row(9).includes('MIRRORBACK'), 5000), `"${v1.term.row(9).trim()}"`);
+    check('no viewer ever saw a detached takeover', !v1.statuses.includes('detached') && !v2.statuses.includes('detached'), JSON.stringify(v1.statuses));
+
+    // Ending the session ends every mirror with it.
+    back.sock.send(JSON.stringify({ t: 'end' }));
+    check('mirror 1 closes with the session', await Promise.race([v1.closed, sleep(3000).then(() => false)]));
+    check('mirror 2 closes with the session', await Promise.race([v2.closed, sleep(3000).then(() => false)]));
+
+    // A dead share link reports itself instead of a bare close.
+    const lateViewer = await openOn(`?view=${owner.hello.shareToken}`);
+    check(
+      'dead share token refused with a status error',
+      await waitFor(lateViewer, () => lateViewer.term.rawLog.some((m) => m.includes('no longer available')), 5000),
+      JSON.stringify(lateViewer.term.rawLog.slice(-2))
+    );
+    lateViewer.sock.close();
+
+    // The share token must not double as an attach (control) token.
+    const hijack = await openOn(`?attach=${owner.hello.shareToken}`);
+    check(
+      'share token cannot attach as a controller',
+      await waitFor(hijack, () => hijack.term.rawLog.some((m) => m.includes('no longer available')), 5000),
+      JSON.stringify(hijack.term.rawLog.slice(-2))
+    );
+    hijack.sock.close();
+    await sleep(200);
+  }
+
   // ------------------------------------- 11. host failure reaps the session
   console.log('\n11. Host failure tears down the session');
   const openSession = async (url) => {

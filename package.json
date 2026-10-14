@@ -21,6 +21,7 @@
     "visual": "node scripts/visual-test.mjs",
     "test:mobile": "node scripts/mobile-test.mjs",
     "test:zoomgrid": "node scripts/zoom-grid-test.mjs",
+    "test:share": "node scripts/share-view-test.mjs",
     "test:select": "node scripts/select-test.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "test:real": "node scripts/real-signon-test.mjs",

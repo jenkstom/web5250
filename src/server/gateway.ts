@@ -11,7 +11,10 @@
 // attaches to a core and streams it. Detaching (tab close, reload, moving a
 // split-view pane into its own window) keeps the core alive for the grace
 // period, re-attachable by its token via ?attach=...; a second attach takes
-// the session over exclusively from the first front-end.
+// the session over exclusively from the first front-end. Separately, any
+// number of *viewers* can attach read-only via the session's share token
+// (?view=...): they receive the same screen stream but no input of theirs is
+// accepted, and they neither evict anyone nor keep the session alive.
 import type { WebSocket } from 'ws';
 import * as C from './tn5250/constants.ts';
 import { Tn5250Client } from './tn5250/client.ts';
@@ -33,6 +36,8 @@ export interface SessionQuery {
   systemId?: number;
   /** Re-attach token (?attach=<token>) for an existing host session. */
   attach?: string;
+  /** Share token (?view=<token>): attach as a read-only mirror. */
+  view?: string;
   /** ?auto=1 automated data-entry launch parameters. */
   auto?: AutoQuery;
 }
@@ -64,6 +69,8 @@ const LOCK_SAFE_KEYS = new Set(['reset', 'sysreq', 'attn', 'print']);
  */
 export class HostSession {
   readonly token = newSessionToken();
+  /** Read-only mirror key (?view=): grants watching, never control. */
+  readonly shareToken = newSessionToken();
   readonly devName: string | null;
   readonly sessionInfo: { host: string; port: number; ssl: boolean; termType: string; codePage: string };
   readonly systemName: string | undefined;
@@ -71,7 +78,7 @@ export class HostSession {
   /**
    * How long the session survives with no front-end attached. Automated
    * launches keep the strict close-equals-teardown contract their embedders
-   * rely on, whatever the configured grace.
+   * rely on, whatever the configured grace. Viewers never extend it.
    */
   readonly graceMs: number;
   readonly client: Tn5250Client;
@@ -80,9 +87,11 @@ export class HostSession {
   lastStatus = 'connecting';
   lastStatusDetail: string | undefined;
   private frontends: GatewaySession[] = [];
+  private viewers: GatewaySession[] = [];
   private started = false; // client.connect() called exactly once
   private destroyed = false;
   private graceTimer: NodeJS.Timeout | null = null;
+  private broadcastTimer: NodeJS.Timeout | null = null;
 
   constructor(cfg: Config, query: SessionQuery, system?: SystemRow) {
     // Connection parameters resolve in order: explicit URL overrides
@@ -130,6 +139,7 @@ export class HostSession {
       this.lastStatus = s;
       this.lastStatusDetail = detail;
       for (const f of this.frontends) f.sendStatus(s, detail);
+      for (const v of this.viewers) v.sendStatus(s, detail);
       if (s === 'closed' || s === 'error') this.destroy();
     };
     // ?auto=1 launch: sign on with the configured assumed-identity account
@@ -184,9 +194,27 @@ export class HostSession {
     return frontend;
   }
 
+  /**
+   * Bind a read-only mirror socket (?view=<share token>). Any number may be
+   * attached at once; none of them can drive the session, evict the
+   * controlling front-end or extend the grace period.
+   */
+  attachViewer(ws: WebSocket): GatewaySession {
+    const viewer = new GatewaySession(this, ws, true);
+    this.viewers.push(viewer);
+    return viewer;
+  }
+
+  /** A viewer socket went away: nothing else changes. */
+  viewerClosed(viewer: GatewaySession): void {
+    this.viewers = this.viewers.filter((v) => v !== viewer);
+  }
+
   /** The browser socket went away (close/error): detach, arm the grace. */
   frontendClosed(frontend: GatewaySession): void {
     this.removeFrontend(frontend);
+    // Viewers deliberately do not count: a mirror with nobody able to type
+    // must not keep a signed-on host session (and its device) alive.
     if (this.frontends.length > 0 || this.destroyed) return;
     if (this.graceMs === 0) {
       this.destroy();
@@ -209,6 +237,10 @@ export class HostSession {
     if (this.destroyed) return;
     this.destroyed = true;
     this.cancelGrace();
+    if (this.broadcastTimer) {
+      clearTimeout(this.broadcastTimer);
+      this.broadcastTimer = null;
+    }
     removeSession(this.token);
     this.automation?.destroy();
     devices.release(this.devName);
@@ -217,7 +249,9 @@ export class HostSession {
     // attached browser socket too, so no controller-side connection is left
     // dangling. No-op when the browser or the shutdown path closed it first.
     for (const f of [...this.frontends]) f.sessionDestroyed();
+    for (const v of [...this.viewers]) v.sessionDestroyed();
     this.frontends = [];
+    this.viewers = [];
   }
 
   /** First attach drives connect(); later ones replay instead. */
@@ -229,7 +263,40 @@ export class HostSession {
 
   private onScreenChange(): void {
     this.automation?.onScreen();
-    for (const f of this.frontends) f.scheduleFlush();
+    this.scheduleBroadcast();
+  }
+
+  /**
+   * One pending flush for the whole session: the controlling front-end and
+   * every viewer watch the same screen, so the diff is computed once and
+   * delivered to all of them. (Per-front-end dedup state - cursor, OIA,
+   * mouse/popup maps - stays inside each GatewaySession.)
+   */
+  scheduleBroadcast(): void {
+    if (this.broadcastTimer || this.destroyed) return;
+    this.broadcastTimer = setTimeout(() => {
+      this.broadcastTimer = null;
+      this.broadcast();
+    }, 16);
+  }
+
+  private broadcast(): void {
+    const s = this.screen;
+    const all = [...this.frontends, ...this.viewers];
+    if (s.structureDirty) {
+      for (const f of all) f.sendSnapshot();
+      s.structureDirty = false;
+      s.dirty.clear();
+      return;
+    }
+    const mouse = mouseJson(s);
+    const popup = popupJson(s);
+    let cells: (number | string)[][] | null = null;
+    if (s.dirty.size > 0) {
+      cells = encodeDirty(s);
+      s.dirty.clear();
+    }
+    for (const f of all) f.deliver(mouse, popup, cells);
   }
 
   private removeFrontend(frontend: GatewaySession): void {
@@ -247,7 +314,6 @@ export class HostSession {
 // ------------------------------------------------------------- the front-end
 /** One attached browser socket: diff state + the client->session messages. */
 export class GatewaySession {
-  private flushTimer: NodeJS.Timeout | null = null;
   private closed = false;
   private lastSentCursor = -1;
   private lastSentOia = '';
@@ -257,16 +323,36 @@ export class GatewaySession {
 
   constructor(
     private readonly core: HostSession,
-    private readonly ws: WebSocket
+    private readonly ws: WebSocket,
+    /** Read-only mirror (?view=): streams out, nothing but pings accepted in. */
+    private readonly viewOnly = false
   ) {}
 
   start(): void {
+    if (this.viewOnly) {
+      // A mirror never drives the session: no connect(), no automation, and
+      // crucially no session/share token - the attach token is the session's
+      // full-control credential and must not reach a viewer.
+      this.send('hello', {
+        ...this.core.sessionInfo,
+        systemName: this.core.systemName,
+        systemId: this.core.systemId,
+        devName: this.core.devName,
+        viewOnly: true,
+        rows: this.core.screen.rows,
+        cols: this.core.screen.cols
+      });
+      this.sendStatus(this.core.lastStatus, this.core.lastStatusDetail);
+      this.sendSnapshot();
+      return;
+    }
     this.send('hello', {
       ...this.core.sessionInfo,
       systemName: this.core.systemName,
       systemId: this.core.systemId,
       devName: this.core.devName,
       sessionToken: this.core.token,
+      shareToken: this.core.shareToken,
       graceMs: this.core.graceMs,
       rows: this.core.screen.rows,
       cols: this.core.screen.cols
@@ -280,8 +366,8 @@ export class GatewaySession {
     } else {
       // Re-attach to a live session: replay where the host connection stands
       // (no status event will fire for an already-connected client) and the
-      // current screen as a full snapshot - diff state is per front-end, so
-      // it starts from scratch.
+      // current screen as a full snapshot. The pending diff flags stay put:
+      // they are the broadcast's to consume for every other front-end.
       this.sendStatus(this.core.lastStatus, this.core.lastStatusDetail);
       this.sendSnapshot();
     }
@@ -291,7 +377,6 @@ export class GatewaySession {
   evict(): void {
     if (this.closed) return;
     this.closed = true;
-    this.stopFlushTimer();
     this.send('status', { status: 'detached', detail: 'The session was opened in another window.' });
     if (this.ws.readyState === 1) this.ws.close(1000, 'detached');
     this.core.frontendClosed(this); // removes only; attach already re-armed
@@ -300,7 +385,6 @@ export class GatewaySession {
   /** The core died (host, expiry, explicit end): follow it down. */
   sessionDestroyed(): void {
     this.closed = true;
-    this.stopFlushTimer();
     if (this.ws.readyState === 1) this.ws.close(1000, 'session ended');
   }
 
@@ -308,8 +392,8 @@ export class GatewaySession {
   socketClosed(): void {
     if (this.closed) return;
     this.closed = true;
-    this.stopFlushTimer();
-    this.core.frontendClosed(this);
+    if (this.viewOnly) this.core.viewerClosed(this);
+    else this.core.frontendClosed(this);
   }
 
   /** Client -> gateway message. */
@@ -325,6 +409,10 @@ export class GatewaySession {
       return;
     }
     const t = msg.t as string;
+
+    // A mirror only ever keeps the connection alive; every other message is
+    // control of a session this socket does not own.
+    if (this.viewOnly && t !== 'ping') return;
 
     if (t === 'end') {
       // Deliberate exit (Systems button, split-view teardown): end the host
@@ -368,7 +456,7 @@ export class GatewaySession {
         } else {
           this.beeped = true;
         }
-        this.scheduleFlush();
+        this.core.scheduleBroadcast();
       }
       return;
     }
@@ -380,7 +468,7 @@ export class GatewaySession {
       const c = Number(msg.c);
       if (Number.isInteger(aid) && Number.isInteger(r) && Number.isInteger(c)) {
         if (!this.core.client.sendMouseProbe(aid, r, c)) this.beeped = true;
-        this.scheduleFlush();
+        this.core.scheduleBroadcast();
       }
       return;
     }
@@ -390,7 +478,7 @@ export class GatewaySession {
       const choice = Number(msg.choice);
       if (Number.isInteger(choice)) {
         if (!this.core.client.sendSelectionPick(choice)) this.beeped = true;
-        this.scheduleFlush();
+        this.core.scheduleBroadcast();
       }
       return;
     }
@@ -410,7 +498,7 @@ export class GatewaySession {
     // the automation hands over control.
     if (this.core.suppressKeys) {
       this.beeped = true;
-      this.scheduleFlush();
+      this.core.scheduleBroadcast();
       return;
     }
 
@@ -423,7 +511,7 @@ export class GatewaySession {
       if (screen.lock === 'none' && Number.isInteger(r) && Number.isInteger(c)) {
         screen.clickTo(r, c);
       }
-      this.scheduleFlush();
+      this.core.scheduleBroadcast();
       return;
     }
 
@@ -437,14 +525,14 @@ export class GatewaySession {
       } else if (k === 'print') {
         this.core.client.sendPrint();
       }
-      this.scheduleFlush();
+      this.core.scheduleBroadcast();
       return;
     }
 
     if (k === 'help') {
       if (screen.lock === 'none' && screen.waitingForInput) this.core.client.sendHelp();
       else this.beeped = true;
-      this.scheduleFlush();
+      this.core.scheduleBroadcast();
       return;
     }
 
@@ -452,13 +540,13 @@ export class GatewaySession {
     if (aid !== undefined) {
       const ok = this.core.client.sendAid(aid);
       if (!ok) this.beeped = true;
-      this.scheduleFlush();
+      this.core.scheduleBroadcast();
       return;
     }
 
     const reject = this.core.client.localKey(k, ch);
     if (reject) this.beeped = true;
-    this.scheduleFlush();
+    this.core.scheduleBroadcast();
   }
 
   // ------------------------------------------------------------- outbound
@@ -475,70 +563,25 @@ export class GatewaySession {
     this.send('auto', { phase, reason, detail });
   }
 
-  /** Compact host mouse bindings for the browser: {rightdown: 132, ...}. */
-  private mouseMap(s: { mouseButtons: { event: number; aid: number }[] }): string {
-    const out: Record<string, number> = {};
-    const NAME: Record<number, string> = { 0x01: 'leftdown', 0x03: 'leftdouble', 0x04: 'rightdown', 0x06: 'rightdouble' };
-    for (const d of s.mouseButtons) {
-      const n = NAME[d.event];
-      if (n) out[n] = d.aid;
-    }
-    return JSON.stringify(out);
-  }
-
   /**
-   * Compact GUI popup state for the browser: the DEFINE SELECTION FIELD
-   * choice list (with the CREATE WINDOW frame when the host drew one).
-   * Null when no menu is up; the host re-sends both when paging.
+   * The shared broadcast payload (computed once by the core): per-frontend
+   * dedup + the parts that are inherently per-frontend (cursor, OIA, beep).
    */
-  private popupJson(s: { guiWindow: { row: number; col: number; depth: number; width: number } | null; selection: { row: number; col: number; choices: { row: number; col: number; text: string; state: number }[] } | null }): string {
-    const sel = s.selection;
-    if (!sel) return '';
-    const win = s.guiWindow;
-    return JSON.stringify({
-      window: win ? [win.row, win.col, win.depth, win.width] : null,
-      field: [sel.row, sel.col],
-      choices: sel.choices.map((c) => [c.row, c.col, c.text, c.state])
-    });
-  }
-
-  scheduleFlush(): void {
-    if (this.flushTimer || this.closed) return;
-    this.flushTimer = setTimeout(() => {
-      this.flushTimer = null;
-      this.flush();
-    }, 16);
-  }
-
-  private stopFlushTimer(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = null;
-  }
-
-  private flush(): void {
+  deliver(mouse: string, popup: string, cells: (number | string)[][] | null): void {
     if (this.closed) return;
     const s = this.core.screen;
 
-    if (s.structureDirty) {
-      this.sendSnapshot();
-      return;
-    }
-
-    const mouse = this.mouseMap(s);
     if (mouse !== this.lastSentMouse) {
       this.lastSentMouse = mouse;
       this.send('update', { mouse: JSON.parse(mouse) });
     }
 
-    const popup = this.popupJson(s);
     if (popup !== this.lastSentPopup) {
       this.lastSentPopup = popup;
       this.send('update', { popup: popup ? JSON.parse(popup) : null });
     }
 
-    if (s.dirty.size > 0) {
-      const cells = this.encodeDirty();
-      s.dirty.clear();
+    if (cells && cells.length > 0) {
       this.send('update', { cells });
     }
 
@@ -555,21 +598,23 @@ export class GatewaySession {
     }
   }
 
-  /** Full screen + OIA: first contact or a re-attach replay. */
-  private sendSnapshot(): void {
+  /**
+   * Full screen + OIA: first contact, a re-attach replay, or a structure
+   * change the broadcast is flushing. Reads only - the shared pending-diff
+   * flags belong to the core's broadcast loop.
+   */
+  sendSnapshot(): void {
     const s = this.core.screen;
-    s.structureDirty = false;
-    s.dirty.clear();
     this.lastSentCursor = -1;
-    const mouse = this.mouseMap(s);
+    const mouse = mouseJson(s);
     this.lastSentMouse = mouse;
-    const popup = this.popupJson(s);
+    const popup = popupJson(s);
     this.lastSentPopup = popup;
     this.send('screen', {
       rows: s.rows,
       cols: s.cols,
       cursor: [s.rowOf(s.cursorPos), s.colOf(s.cursorPos)],
-      cells: this.encodeCells(0, s.size),
+      cells: encodeCells(s, 0, s.size),
       // Input-field layout so browsers can underline enterable areas.
       // [dataStart, dataCellCount, attr]; bypass fields are not enterable.
       fields: s.fields
@@ -593,33 +638,62 @@ export class GatewaySession {
     this.lastSentOia = key;
     this.send('oia', { ...oia });
   }
+}
 
-  private encodeDirty(): (number | string)[][] {
-    const s = this.core.screen;
-    const out: (number | string)[][] = [];
-    const sorted = [...s.dirty].sort((a, b) => a - b);
-    for (const pos of sorted) out.push(...this.encodeCells(pos, pos + 1));
-    return out;
-  }
+// ------------------------------------------------------------ wire encoding
+/** The screen type of a tn5250 client, named for the helpers below. */
+type Screen = Tn5250Client['screen'];
 
-  /**
-   * Cells as [pos, attr, ch] triples. Non-display cells (password fields:
-   * attrs X'27'/X'2F'/X'37'/X'3F' per 5494 Table 15-10) are blanked before
-   * leaving the server so secrets never reach the browser. Underscore attrs
-   * (bit 0x04, e.g. 0x25/0x26 prompt fields) are ordinary visible fields.
-   * Attribute positions are sent as plain blanks: a real display shows the
-   * attribute byte as an unadorned blank, never with the field's video —
-   * otherwise a reverse/underscore field appears to start one cell left of
-   * the cursor.
-   */
-  private encodeCells(from: number, to: number): (number | string)[][] {
-    const s = this.core.screen;
-    const out: (number | string)[][] = [];
-    for (let p = from; p < to && p < s.size; p++) {
-      const attr = s.attrPlace[p] ? 0x20 : s.attrs[p];
-      const ch = C.isNonDisplayAttr(s.attrs[p]) ? ' ' : s.chars[p] === '\u0000' ? ' ' : s.chars[p];
-      out.push([p, attr, ch]);
-    }
-    return out;
+/** Compact host mouse bindings for the browser: {rightdown: 132, ...}. */
+function mouseJson(s: Screen): string {
+  const out: Record<string, number> = {};
+  const NAME: Record<number, string> = { 0x01: 'leftdown', 0x03: 'leftdouble', 0x04: 'rightdown', 0x06: 'rightdouble' };
+  for (const d of s.mouseButtons) {
+    const n = NAME[d.event];
+    if (n) out[n] = d.aid;
   }
+  return JSON.stringify(out);
+}
+
+/**
+ * Compact GUI popup state for the browser: the DEFINE SELECTION FIELD
+ * choice list (with the CREATE WINDOW frame when the host drew one).
+ * Empty string when no menu is up; the host re-sends both when paging.
+ */
+function popupJson(s: Screen): string {
+  const sel = s.selection;
+  if (!sel) return '';
+  const win = s.guiWindow;
+  return JSON.stringify({
+    window: win ? [win.row, win.col, win.depth, win.width] : null,
+    field: [sel.row, sel.col],
+    choices: sel.choices.map((c) => [c.row, c.col, c.text, c.state])
+  });
+}
+
+function encodeDirty(s: Screen): (number | string)[][] {
+  const out: (number | string)[][] = [];
+  const sorted = [...s.dirty].sort((a, b) => a - b);
+  for (const pos of sorted) out.push(...encodeCells(s, pos, pos + 1));
+  return out;
+}
+
+/**
+ * Cells as [pos, attr, ch] triples. Non-display cells (password fields:
+ * attrs X'27'/X'2F'/X'37'/X'3F' per 5494 Table 15-10) are blanked before
+ * leaving the server so secrets never reach the browser - mirrors included.
+ * Underscore attrs (bit 0x04, e.g. 0x25/0x26 prompt fields) are ordinary
+ * visible fields. Attribute positions are sent as plain blanks: a real
+ * display shows the attribute byte as an unadorned blank, never with the
+ * field's video - otherwise a reverse/underscore field appears to start one
+ * cell left of the cursor.
+ */
+function encodeCells(s: Screen, from: number, to: number): (number | string)[][] {
+  const out: (number | string)[][] = [];
+  for (let p = from; p < to && p < s.size; p++) {
+    const attr = s.attrPlace[p] ? 0x20 : s.attrs[p];
+    const ch = C.isNonDisplayAttr(s.attrs[p]) ? ' ' : s.chars[p] === '\u0000' ? ' ' : s.chars[p];
+    out.push([p, attr, ch]);
+  }
+  return out;
 }

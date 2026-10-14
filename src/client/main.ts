@@ -35,6 +35,13 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
 const launchParams = new URLSearchParams(window.location.search);
 const autoLaunch = ['1', 'true'].includes(launchParams.get('auto') ?? '');
 
+// View-only mirror (?view=<share token>): this page renders one session it
+// may watch but never drive. The link was copied by the session's owner
+// (the pane-header share button) and works from any browser that can reach
+// this origin - remotely included.
+const shareViewToken = launchParams.get('view');
+const shareView = !!shareViewToken;
+
 // Deep link (?grid=1..6, optionally &systems=<id>,<id> preassigning panes):
 // the page boots that many session panes in a balanced default tree. The
 // same layout is reachable interactively (splitting panes, + Pane).
@@ -355,7 +362,7 @@ const paneServices: PaneServices = {
   autoLaunch,
   onPaneClick(pane) {
     setActive(pane);
-    focusTerminal();
+    if (!pane.viewOnly) focusTerminal();
     // Typing belongs to the newly focused pane: drop focus that a picker
     // input of another pane is still holding (its mousedown was prevented).
     const ae = document.activeElement as HTMLElement | null;
@@ -370,6 +377,8 @@ const paneServices: PaneServices = {
     ctxMenu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - card.width - 8))}px`;
     ctxMenu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - card.height - 8))}px`;
     $<HTMLButtonElement>('ctx-copysel').disabled = !pane.term.hasSelection;
+    // A view-only mirror can copy but never paste into the host.
+    $('ctx-paste').classList.toggle('hidden', pane.viewOnly);
   },
   openSystemMenu(pane) {
     openMenuFor(pane);
@@ -379,6 +388,9 @@ const paneServices: PaneServices = {
   },
   onPopOut(pane) {
     popOut(pane);
+  },
+  onShare(pane) {
+    copyShareLink(pane);
   },
   onClose(pane) {
     if (!pane.confirmLeave()) return;
@@ -690,11 +702,12 @@ function setConnState(state: string): void {
               ? ''
               : 'error';
   // Systems makes sense only while a session is up (the menu itself is the
-  // landing state); embedded launches never get it. Zoom applies to real
-  // sessions for the same reason.
+  // landing state); embedded launches never get it, and a view-only mirror
+  // has no system of its own to switch. Zoom is pure client-side sizing, so
+  // the mirror keeps it.
   const anySocket = panes.some((p) => p.hasSocket());
-  $('btn-systems').classList.toggle('hidden', autoLaunch || !anySocket);
-  $('zoom-group').classList.toggle('hidden', autoLaunch || !anySocket);
+  $('btn-systems').classList.toggle('hidden', autoLaunch || shareView || !anySocket);
+  $('zoom-group').classList.toggle('hidden', autoLaunch || (!shareView && !anySocket));
 }
 
 /** Automated-launch lifecycle: exactly one postMessage per ended launch. */
@@ -769,23 +782,19 @@ $('copy-close').addEventListener('click', () => $('copy-fallback').classList.add
 // missing or refuses - only when even that fails does the selectable
 // fallback box above appear.
 let toastTimer: number | undefined;
-function showCopiedToast(chars: number): void {
+function showToast(text: string): void {
   const toast = $('copy-toast');
-  toast.textContent = `${chars} characters copied`;
+  toast.textContent = text;
   toast.classList.add('show');
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove('show'), 1600);
 }
-function copySelection(pane: SessionPane): void {
-  const text = pane.term.selectionText();
-  if (!text) return;
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).then(() => showCopiedToast(text.length), () => copySelectionFallback(text));
-    return;
-  }
-  copySelectionFallback(text);
+function showCopiedToast(chars: number): void {
+  showToast(`${chars} characters copied`);
 }
-function copySelectionFallback(text: string): void {
+
+/** Synchronous copy attempt that works on insecure origins (inside a user gesture). */
+function execCopy(text: string): boolean {
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
@@ -799,7 +808,44 @@ function copySelectionFallback(text: string): void {
     ok = false;
   }
   ta.remove();
-  if (ok) showCopiedToast(text.length);
+  return ok;
+}
+
+// The view-only share link: one URL that mirrors this pane's session in any
+// other window - locally or on a remote machine that can reach this origin.
+// Built from the page URL so sub-path deployments (Pangolin rules without
+// rewrite) produce working links; every parameter of this page is dropped -
+// the link carries only the share token.
+function copyShareLink(pane: SessionPane): void {
+  const token = pane.shareToken;
+  if (!token) return;
+  const u = new URL(window.location.href);
+  for (const key of [...u.searchParams.keys()]) u.searchParams.delete(key);
+  u.searchParams.set('view', token);
+  const link = u.href;
+  const done = () => showToast('Share link copied — opens a view-only mirror');
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(link).then(done, () => {
+      if (!execCopy(link)) showCopyFallback(link, 'Share link');
+      else done();
+    });
+    return;
+  }
+  if (execCopy(link)) done();
+  else showCopyFallback(link, 'Share link');
+}
+
+function copySelection(pane: SessionPane): void {
+  const text = pane.term.selectionText();
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => showCopiedToast(text.length), () => copySelectionFallback(text));
+    return;
+  }
+  copySelectionFallback(text);
+}
+function copySelectionFallback(text: string): void {
+  if (execCopy(text)) showCopiedToast(text.length);
   else showCopyFallback(text, 'Selected text');
 }
 
@@ -807,8 +853,9 @@ function copySelectionFallback(text: string): void {
 // Closing the tab or navigating away drops the sockets; with a gateway grace
 // period the sessions survive that and are offered again on reload, so
 // leaving costs nothing and must not nag. Embedded launches (?auto=1) are
-// torn down by the parent page, so they stay out of this either way.
-if (!autoLaunch) {
+// torn down by the parent page, so they stay out of this either way - and a
+// view-only mirror never ends anything it watches.
+if (!autoLaunch && !shareView) {
   window.addEventListener('beforeunload', (e) => {
     if (!panes.some((p) => p.sessionActive() && p.graceMs === 0)) return;
     e.preventDefault();
@@ -822,6 +869,17 @@ function boot(): void {
   const params = launchParams;
   const sysId = Number.parseInt(params.get('system') ?? '', 10);
   const attachToken = params.get('attach');
+
+  if (shareViewToken) {
+    // ?view=<share token>: a chrome-light read-only mirror of one running
+    // session (see copyShareLink). It reconnects on reload with the same
+    // token and ends quietly when the shared session does.
+    const pane = createPane({ connectNow: false });
+    renderLayout();
+    setActive(pane);
+    pane.connect({ view: shareViewToken });
+    return;
+  }
 
   if (urlGridPanes !== null) {
     // ?split=h|v only picks the deep link's root direction (legacy param).
@@ -1034,9 +1092,11 @@ const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
 const mobileInput = $<HTMLInputElement>('mobile-input');
 
 function focusTerminal(): void {
-  if (coarsePointer) mobileInput.focus({ preventScroll: true });
+  if (coarsePointer && !shareView) mobileInput.focus({ preventScroll: true });
   // With a mouse there is nothing to focus: key events are captured at
-  // window level and routed to the focused pane.
+  // window level and routed to the focused pane. A mirror drops them in the
+  // pane, and focusing the hidden input would only raise a keyboard that
+  // cannot type anywhere.
 }
 
 // While a UI surface covers the terminal (system menu, keyboard-mapping
@@ -1139,9 +1199,15 @@ void loadMeta().then((meta) => {
 });
 
 const keypad = $('keypad');
-if (coarsePointer) {
+if (coarsePointer && !shareView) {
   keypad.classList.remove('hidden');
   $('btn-kbd').classList.remove('hidden');
+}
+// A view-only mirror cannot type: the key-mapping help and the on-screen /
+// soft keyboard toggles would only describe input that goes nowhere.
+if (shareView) {
+  $('btn-keys').classList.add('hidden');
+  $('btn-keypad').classList.add('hidden');
 }
 // These toggles must not steal focus from the typing input - the focus
 // loss would close the soft keyboard on a touch device.

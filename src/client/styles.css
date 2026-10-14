@@ -233,6 +233,8 @@ html, body {
 .pane-bar button:hover { color: var(--green); }
 .pane-bar button:disabled { opacity: 0.35; cursor: default; }
 .pane-bar button:disabled:hover { color: var(--text); }
+/* The share glyph is an inline SVG, not a text glyph like its neighbours. */
+.pane-sharebtn svg { display: block; }
 
 /* The terminal screen area fills the pane; the canvas is centered inside. */
 .pane-screen {

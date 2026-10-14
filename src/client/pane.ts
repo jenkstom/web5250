@@ -14,6 +14,8 @@ export interface SessionTarget {
   system?: MenuSystem;
   /** Re-attach token for a live gateway-side session (?attach=). */
   attach?: string;
+  /** Share token for a read-only mirror (?view=). */
+  view?: string;
 }
 
 /** Services the pane borrows from the shell (single instances up there). */
@@ -28,6 +30,8 @@ export interface PaneServices {
   onSplitPane(pane: SessionPane, dir: 'h' | 'v'): void;
   /** Pop this pane's session out into its own browser window. */
   onPopOut(pane: SessionPane): void;
+  /** Copy a view-only share link for this pane's session to the clipboard. */
+  onShare(pane: SessionPane): void;
   /** Close (remove) this pane; its session detaches into the grace. */
   onClose(pane: SessionPane): void;
   /** A drag of this pane's header (or tab) started / ended. */
@@ -69,6 +73,13 @@ interface HostPopup {
 
 type OverlayAction = 'menu' | 'reconnect';
 
+/** Small share glyph (three linked nodes) for the pane header button. */
+const SHARE_ICON =
+  '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" ' +
+  'stroke-width="2.6" stroke-linecap="round" aria-hidden="true">' +
+  '<circle cx="18" cy="5" r="2.7"/><circle cx="6" cy="12" r="2.7"/><circle cx="18" cy="19" r="2.7"/>' +
+  '<line x1="8.5" y1="10.7" x2="15.5" y2="6.6"/><line x1="8.5" y1="13.3" x2="15.5" y2="17.4"/></svg>';
+
 export const SESSION_KEY = 'web5250.session';
 
 export class SessionPane {
@@ -78,8 +89,12 @@ export class SessionPane {
   readonly term: Terminal;
   target: SessionTarget = {};
   token: string | null = null;
+  /** Share token: builds the ?view= mirror link anyone can open read-only. */
+  shareToken: string | null = null;
   systemId: number | null = null;
   graceMs = 0;
+  /** A read-only mirror (?view=): renders the stream, never sends input. */
+  viewOnly = false;
   /** Last connection state, mirrored into the top bar while focused. */
   connState = 'idle';
   /** A session beyond the sign-on screen: leaving it would cost something. */
@@ -88,6 +103,7 @@ export class SessionPane {
   private readonly labelEl: HTMLElement;
   private readonly barEl: HTMLDivElement;
   private readonly popBtn: HTMLButtonElement;
+  private readonly shareBtn: HTMLButtonElement;
   private readonly hostMenuEl: HTMLDivElement;
   private readonly overlayEl: HTMLDivElement;
   private readonly lockEl: HTMLElement;
@@ -142,6 +158,11 @@ export class SessionPane {
       services.onPopOut(this)
     );
     this.popBtn.disabled = true;
+    this.shareBtn = btn('pane-sharebtn', '', 'Copy a link that mirrors this session in a view-only window (anyone with it can watch, not type)', () =>
+      services.onShare(this)
+    );
+    this.shareBtn.innerHTML = SHARE_ICON;
+    this.shareBtn.disabled = true;
     this.barEl.append(
       this.labelEl,
       btn('pane-splitbtn-h', '↔', 'Split this pane side by side (left and right)', () =>
@@ -151,6 +172,7 @@ export class SessionPane {
         services.onSplitPane(this, 'v')
       ),
       btn('pane-menubtn', '☰', 'Pick a system for this pane', () => services.openSystemMenu(this)),
+      this.shareBtn,
       this.popBtn,
       btn('pane-closebtn', '×', 'Close this pane (an active session is asked for and then ended)', () =>
         services.onClose(this)
@@ -264,10 +286,10 @@ export class SessionPane {
    * screen - the pane's token dies with it, so even with a gateway grace
    * period the session is gone for good. The sign-on screen (and anything
    * before/after a live session: connecting, ended, never assigned) is free
-   * to leave.
+   * to leave. A view-only mirror never ends anything, so it is always free.
    */
   confirmLeave(): boolean {
-    return !this.sessionActive() || window.confirm('End the current session?');
+    return this.viewOnly || !this.sessionActive() || window.confirm('End the current session?');
   }
 
   // -------------------------------------------------------------- connect
@@ -280,6 +302,10 @@ export class SessionPane {
     this.ended = false;
     this.endedByHost = false;
     this.target = target;
+    this.viewOnly = !!target.view;
+    // A mirror window is chrome-free: the pane header's split/pick/pop/close
+    // controls make no sense for a session this page cannot drive.
+    this.barEl.classList.toggle('hidden', this.viewOnly);
 
     const sock = new WebSocket(this.wsUrl());
     this.ws = sock;
@@ -318,6 +344,11 @@ export class SessionPane {
 
   /** End the host session outright ({t:'end'} skips the detach grace). */
   end(): void {
+    // A mirror never owns the session: leaving it just drops the socket.
+    if (this.viewOnly) {
+      this.detach();
+      return;
+    }
     this.ended = true;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send('{"t":"end"}');
     this.ws?.close();
@@ -336,11 +367,15 @@ export class SessionPane {
     this.target = {}; // the pane is unassigned again (menu target etc.)
     this.ws = null;
     this.onSignonScreen = true;
+    this.viewOnly = false;
+    this.shareToken = null;
+    this.barEl.classList.remove('hidden');
     this.hostPopup = null;
     this.renderHostMenu();
     this.term.resizeGrid(24, 80);
     this.setConnState('idle');
     this.token = null;
+    this.shareBtn.disabled = true;
     this.systemId = null; // the pane is unassigned again (menu target etc.)
     this.setLabel(`Session ${this.index + 1}`);
     this.popBtn.disabled = true;
@@ -351,6 +386,7 @@ export class SessionPane {
   }
 
   sendKey(k: string, ch?: string): void {
+    if (this.viewOnly) return; // a mirror's keyboard is decorative
     this.term.clearSelection(); // typing abandons a marked region
     if (k === 'char' && ch !== undefined) {
       this.send({ t: 'key', k: 'char', ch });
@@ -369,6 +405,8 @@ export class SessionPane {
     else params.delete('system');
     if (this.target.attach) params.set('attach', this.target.attach);
     else params.delete('attach');
+    if (this.target.view) params.set('view', this.target.view);
+    else params.delete('view');
     // The browser's saved display name rides along; the gateway appends a
     // numeric suffix automatically when another live session already has it.
     const dev = displayName();
@@ -395,11 +433,17 @@ export class SessionPane {
         break;
       }
       case 'hello': {
+        if (msg.viewOnly === true) this.viewOnly = true;
         const parts = [msg.systemName, msg.devName, msg.host, msg.termType].map((v) => String(v ?? ''));
+        if (this.viewOnly) parts.push('view-only');
         this.setLabel(parts.filter(Boolean).join(' · '));
         this.setConnState('connecting');
         this.graceMs = typeof msg.graceMs === 'number' ? msg.graceMs : 0;
         if (typeof msg.systemId === 'number') this.systemId = msg.systemId;
+        if (typeof msg.shareToken === 'string' && msg.shareToken) {
+          this.shareToken = msg.shareToken;
+          this.shareBtn.disabled = false;
+        }
         if (typeof msg.sessionToken === 'string' && msg.sessionToken) {
           this.token = msg.sessionToken;
           this.popBtn.disabled = false;
@@ -610,7 +654,7 @@ export class SessionPane {
         });
         item.addEventListener('click', (e) => {
           e.stopPropagation();
-          if (state === 0x80) return;
+          if (state === 0x80 || this.viewOnly) return;
           this.send({ t: 'pick', choice: i + 1 });
         });
         return item;
@@ -622,7 +666,9 @@ export class SessionPane {
   // ------------------------------------------------------------- overlay
   /** Pane-scoped status overlay (connecting / ended / failed). */
   showOverlay(title: string, detail: string, actions: OverlayAction[]): void {
-    const acts = this.services.autoLaunch ? actions.filter((a) => a !== 'menu') : actions;
+    // Embedded launches have no Systems button to return to; a view-only
+    // mirror additionally has no session of its own - Reconnect re-views.
+    const acts = this.services.autoLaunch || this.viewOnly ? actions.filter((a) => a !== 'menu') : actions;
     this.overlayEl.replaceChildren();
     const card = document.createElement('div');
     card.className = 'pane-overlay-card';
@@ -694,7 +740,8 @@ export class SessionPane {
       e.preventDefault();
       if (e.button === 0) {
         if (this.hostPopupOpen()) {
-          this.send({ t: 'pick', choice: 0 }); // click dismisses the host pull-down
+          // click dismisses the host pull-down (a mirror keeps watching it)
+          if (!this.viewOnly) this.send({ t: 'pick', choice: 0 });
         } else {
           // Start a possible mark; the previous one (if any) goes away. The
           // click itself is deferred to mouseup, where click-vs-drag is
@@ -729,8 +776,9 @@ export class SessionPane {
         return;
       }
       // Plain click: place the host cursor at the clicked cell (the gateway
-      // applies the same freedom as arrow movement).
-      if (anchor) this.send({ t: 'key', k: 'click', r: anchor.r, c: anchor.c });
+      // applies the same freedom as arrow movement). A mirror keeps the
+      // click local - its screen is driven by the session's owner.
+      if (anchor && !this.viewOnly) this.send({ t: 'key', k: 'click', r: anchor.r, c: anchor.c });
     });
     // A drag that ends outside the window never sees the mouseup.
     window.addEventListener('blur', () => {
@@ -740,11 +788,12 @@ export class SessionPane {
 
     // Host-programmed double click (e.g. the app's zoom function) fires the
     // programmed AID; otherwise the double click marks the word (and copies
-    // it, like any completed mark).
+    // it, like any completed mark). A mirror never fires host events, so its
+    // double click is always the local word mark.
     this.screenEl.addEventListener('dblclick', (e) => {
       const clicked = hit(e);
       if (!clicked) return;
-      if (this.hostMouse.leftdouble === undefined) {
+      if (this.viewOnly || this.hostMouse.leftdouble === undefined) {
         this.term.selectWord(clicked.r, clicked.c);
         this.services.onSelectionCopied(this);
         return;
@@ -772,7 +821,7 @@ export class SessionPane {
         }
         return;
       }
-      if (this.hostMouse.rightdown !== undefined && !e.shiftKey) {
+      if (this.hostMouse.rightdown !== undefined && !e.shiftKey && !this.viewOnly) {
         const clicked = hit(e);
         if (clicked) this.send({ t: 'mouseevent', ev: 'rightdown', r: clicked.r, c: clicked.c });
         return;

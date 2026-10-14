@@ -68,11 +68,17 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   [Mouse selection and clipboard](#mouse-selection-and-clipboard).
 - **Split view — several sessions on one page, one chrome**: every pane
   carries **↔ / ↕ split buttons** (side by side / top and bottom), a **☰
-  system picker**, **↗ pop-out into a real browser window** and **× close**
-  — single-session view included. Splitting divides that pane in two,
-  nesting into any layout (up to 6 panes), and every divider line is
-  **draggable to resize** (double-click resets); see
+  system picker**, a **share button** (view-only mirror link), **↗ pop-out
+  into a real browser window** and **× close** — single-session view
+  included. Splitting divides that pane in two, nesting into any layout (up
+  to 6 panes), and every divider line is **draggable to resize**
+  (double-click resets); see
   [Multiple sessions on one page](#multiple-sessions-on-one-page).
+- **Share a session as a live view-only mirror**: the pane-header share
+  button copies a URL; anyone who opens it — on another window, another
+  machine, anywhere that can reach the gateway — watches the session's
+  screen update in real time but cannot type. Any number of viewers at
+  once; see [Sharing a session (view-only mirror)](#sharing-a-session-view-only-mirror).
 - **Sessions outlive their window**: every session carries an unguessable
   re-attach token; a closed tab, a reload, a dropped connection or a split
   pop-out leaves the host session running for `SESSION_GRACE_MS` and a
@@ -267,6 +273,41 @@ header opens a popup window that takes over the pane's running session — same
 5250 device, same screen, mid-typing — and the pane disappears from the
 layout. This works because sessions live in the gateway, not in the page (see
 [Sessions outlive their window](#sessions-outlive-their-window)).
+
+## Sharing a session (view-only mirror)
+
+Every session carries a second unguessable **share token** (independent of
+the re-attach token — one can never be used as the other). The **share
+button** on a pane header (between ☰ and ↗) copies a link like
+
+```
+https://as400.yourdomain.com/?view=<share token>
+```
+
+Opening that URL — in another window, on a remote computer, in any browser
+that can reach the gateway through your edge — shows a **live, view-only
+mirror** of that session:
+
+- The mirror receives the same screen stream as the owner: cells, cursor,
+  OIA indicators, even host-drawn windows and pull-downs, in real time.
+- **Nothing a viewer does reaches the host.** Keystrokes, clicks, paste and
+  the on-screen keypad are all dropped client- and server-side; the mirror
+  has no keyboard at all. Local text selection and copy still work.
+- **Any number of viewers** can watch at once; they neither evict the owner
+  nor each other, and the owner is never told they connected.
+- Non-display (password) fields are blanked server-side before anything is
+  sent, exactly as for the owning browser — the mirror never sees a
+  password.
+- The mirror follows the session's life: it ends (with a notice) when the
+  owner ends or the session expires after its grace period, and it
+  reconnects on reload. Viewers do **not** keep an abandoned session alive
+  — a mirror nobody can type into must not hold a 5250 device hostage.
+
+The share link is a bearer credential for *watching* the session, with the
+same trust model as the rest of the app: Pangolin (or whatever fronts the
+gateway) authenticates who may open the URL at all. Treat the link like a
+live window into that terminal — it shows everything the signed-on user
+sees; revoke it by ending the session.
 
 **Close (×) ends the session.** After its confirmation (skipped on the
 sign-on screen and for never-assigned panes), closing a pane ends the host
@@ -487,6 +528,8 @@ PORT=8080 IBM_I_HOST=127.0.0.1 IBM_I_PORT=8023 ADMIN_PIN=1234 npm start &
 npm run visual          # screenshots land in artifacts/
 npm run test:zoomgrid   # zoom buttons + split view: fit/½/¼ sizing, ?grid=2|4
                         #   panes, per-pane device-name dedupe, exit flow
+npm run test:share      # share button + ?view= mirror: link copy, live
+                        #   updates, read-only enforcement, session end
 npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
                         #   keypad, keyboard open/close shrink+expand
 ```
@@ -494,7 +537,9 @@ npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
 The smoke test covers: sign-on rendering, cursor placement, X II error +
 Reset, typing, Tab, Field Exit, password non-display over the wire, Enter →
 MAIN menu, F1/F3, option entry and sign-off — plus the menu API (list, PIN
-auth, system CRUD, `?system=` sessions, rate limiting).
+auth, system CRUD, `?system=` sessions, rate limiting), session
+attach/takeover/grace, and the `?view=` share mirrors (token separation,
+live updates, input rejection, teardown).
 
 `test:real` replays a QDSIGNON-shaped stream the way a live IBM i emits it
 (field length counts data cells only, attribute-only SF orders, keyboard-lock
@@ -509,7 +554,8 @@ buffer address (CPF1296 on valid input).
   field table, OIA, local key semantics), `client.ts` (session + AID
   transmission), `ebcdic*.ts` (bidirectional code page tables).
 - `src/server/gateway.ts` — one WebSocket ⇄ one 5250 session; browsers send
-  logical key events, receive batched cell diffs + OIA updates.
+  logical key events, receive batched cell diffs + OIA updates. `?view=`
+  sockets attach as read-only mirrors that receive the same broadcast.
 - `src/server/systems.ts` + `src/server/api.ts` — SQLite-backed system
   catalog (node:sqlite) and the JSON API feeding the connection menu and its
   PIN-gated admin editor.

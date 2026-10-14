@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { loadConfig } from './config.ts';
 import { HostSession, type SessionQuery, type AutoQuery } from './gateway.ts';
-import { getSession, allSessions } from './sessions.ts';
+import { getSession, getSessionByShare, allSessions } from './sessions.ts';
 import { Systems } from './systems.ts';
 import { createApiHandler } from './api.ts';
 
@@ -136,6 +136,33 @@ server.on('upgrade', (req, socket, head) => {
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim();
 
+    // ?view=<share token>: attach this socket as a read-only mirror of a
+    // running session. Any number of viewers may watch at once (locally or
+    // remotely - the link is just a URL to this origin); none of them can
+    // type, evict the controlling front-end or keep the session alive past
+    // its grace.
+    if (query.view) {
+      const core = getSessionByShare(query.view);
+      if (!core || core.isDestroyed) {
+        console.log(`[ws] view refused: unknown or expired share token`);
+        ws.send(
+          JSON.stringify({
+            t: 'status',
+            status: 'error',
+            detail: 'This shared session is no longer available (it ended or the server restarted).'
+          })
+        );
+        ws.close(1000, 'unknown session');
+        return;
+      }
+      console.log(
+        `[ws] viewer${clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
+          `${core.devName ?? 'no device'} (mirror of ${core.sessionInfo.host}:${core.sessionInfo.port})`
+      );
+      wireSocket(ws, core.attachViewer(ws));
+      return;
+    }
+
     // ?attach=<token>: bind this socket to an already-running host session
     // (pop-out window, reload re-attach). A second attach takes the session
     // over from the first front-end, which is told with status 'detached'.
@@ -203,6 +230,7 @@ function parseSessionQuery(url: URL): SessionQuery {
     devName: sanitizeDevName(q.get('devname')),
     systemId: int(q.get('system')),
     attach: sanitize(q.get('attach'), 64),
+    view: sanitize(q.get('view'), 64),
     auto: parseAuto(q)
   };
 }
