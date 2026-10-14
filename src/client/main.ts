@@ -1,11 +1,12 @@
 // Browser entry point: one app shell managing 1..N session panes.
 //
-// The app is a single chrome - top bar, system menu, keypad - over any number
-// of session panes (pane.ts). A lone pane looks exactly like the classic
-// single-session terminal; adding panes (Split from the menu, + Pane) lays
-// them out as tiles/tabs of the same page. Sessions live server-side, so a
-// pane can be popped out into a real browser window (?) and a reloaded page
-// reattaches to its running sessions.
+// The app is a single chrome - top bar, system menu, keypad - over a layout
+// tree of session panes (pane.ts). Every pane carries its own controls
+// (split side-by-side / stacked, pick a system, pop out, close), so splitting
+// is always one click away: it divides the focused pane in two, nesting
+// splits into a binary tree whose divider lines are draggable. Sessions live
+// server-side, so a pane can be popped out into a real browser window and a
+// reloaded page reattaches to its running sessions.
 import './styles.css';
 import { SessionPane, SESSION_KEY, type SessionTarget, type PaneServices } from './pane.ts';
 import { attachKeyboard, mapEvent, type SendKey } from './keyboard.ts';
@@ -34,27 +35,240 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
 const launchParams = new URLSearchParams(window.location.search);
 const autoLaunch = ['1', 'true'].includes(launchParams.get('auto') ?? '');
 
-// Split mode (?grid=1..6, optionally &systems=<id>,<id> preassigning panes):
-// the page lays out that many session panes. Deep links preassign; the same
-// layout is reachable interactively (Split on the menu, + Pane up top).
+// Deep link (?grid=1..6, optionally &systems=<id>,<id> preassigning panes):
+// the page boots that many session panes in a balanced default tree. The
+// same layout is reachable interactively (splitting panes, + Pane).
 const urlGridPanes = (() => {
   const n = Number.parseInt(launchParams.get('grid') ?? '', 10);
   return n >= 1 && n <= 6 ? n : null;
 })();
 
-// ------------------------------------------------------------------ panes
-const panes: SessionPane[] = [];
+// ------------------------------------------------------------------ layout
+// The pane layout is a binary tree: a leaf is a SessionPane, an inner node
+// splits its box between two children side by side ('h') or stacked ('v'),
+// with a draggable divider. Splitting a pane replaces the leaf with a node;
+// closing one collapses its parent onto the sibling.
+const panes: SessionPane[] = []; // tree-traversal order (data-pane order)
 let activePane: SessionPane | null = null;
-let gridMode = urlGridPanes !== null;
-/** Split orientation: 'h' = panes side by side, 'v' = stacked. */
-let splitDir: 'h' | 'v' = 'h';
 let tabsMode = false;
 let menuTarget: SessionPane | null = null; // pane the shared system menu fills
 
+interface SplitNode {
+  dir: 'h' | 'v';
+  a: LayoutNode;
+  b: LayoutNode;
+  /** a's share of the box (b gets the rest). */
+  frac: number;
+}
+type LayoutNode = SplitNode | SessionPane;
+
+let layout: LayoutNode | null = null;
+
 const GRID_STATE_KEY = 'web5250.gridstate';
 const GRID_VIEW_KEY = 'web5250.gridview';
-const GRID_TAB_KEY = 'web5250.gridtab';
+const TREE_KEY = 'web5250.tree';
 const MAX_PANES = 6;
+const MIN_FRAC = 0.12; // a dragged divider can never starve a pane
+
+const isSplitNode = (n: LayoutNode): n is SplitNode => !(n instanceof SessionPane);
+
+function leavesOf(n: LayoutNode | null): SessionPane[] {
+  if (!n) return [];
+  if (n instanceof SessionPane) return [n];
+  return [...leavesOf(n.a), ...leavesOf(n.b)];
+}
+
+/** Structural edit: the leaf holding `target` becomes `repl`. */
+function replaceLeaf(n: LayoutNode, target: SessionPane, repl: LayoutNode): LayoutNode {
+  if (n === target) return repl;
+  if (n instanceof SessionPane) return n;
+  return { ...n, a: replaceLeaf(n.a, target, repl), b: replaceLeaf(n.b, target, repl) };
+}
+
+/** Structural edit: drop the leaf; a one-child node collapses to the child. */
+function removeLeaf(n: LayoutNode, target: SessionPane): LayoutNode | null {
+  if (n === target) return null;
+  if (n instanceof SessionPane) return n;
+  const a = removeLeaf(n.a, target);
+  const b = removeLeaf(n.b, target);
+  if (a && b) return { ...n, a, b };
+  return a ?? b;
+}
+
+/** The panes list and data-pane indexes follow the tree's traversal order. */
+function syncPanesFromLayout(): void {
+  panes.length = 0;
+  panes.push(...leavesOf(layout));
+  panes.forEach((p, idx) => {
+    p.el.dataset.pane = String(idx);
+  });
+  if (activePane && !panes.includes(activePane)) {
+    activePane = null; // let setActive run its full path
+    setActive(panes[0] ?? null);
+  }
+}
+
+// -- tree persistence (reload keeps the arrangement and divider positions) --
+interface TreeSave {
+  d: 'h' | 'v';
+  f: number;
+  a: TreeSave | null; // null = leaf (a pane, in traversal order)
+  b: TreeSave | null;
+}
+function saveTreeState(): void {
+  const ser = (n: LayoutNode): TreeSave | null =>
+    n instanceof SessionPane ? null : { d: n.dir, f: n.frac, a: ser(n.a), b: ser(n.b) };
+  if (!layout || layout instanceof SessionPane) localStorage.removeItem(TREE_KEY);
+  else localStorage.setItem(TREE_KEY, JSON.stringify(ser(layout)));
+}
+function loadTreeState(count: number): LayoutNode | null {
+  let raw: TreeSave | null = null;
+  try {
+    raw = JSON.parse(localStorage.getItem(TREE_KEY) ?? 'null') as TreeSave | null;
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  let leaf = 0;
+  const deser = (s: TreeSave | null): LayoutNode | null => {
+    if (!s) return panes[leaf++] ?? null;
+    const a = deser(s.a);
+    const b = deser(s.b);
+    if (!a || !b) return null;
+    const f = Number.isFinite(s.f) ? Math.min(1 - MIN_FRAC, Math.max(MIN_FRAC, s.f)) : 0.5;
+    return { dir: s.d === 'v' ? 'v' : 'h', a, b, frac: f };
+  };
+  const tree = deser(raw);
+  // The saved tree must account for exactly the live panes, else discard it.
+  return leaf === count && tree ? tree : null;
+}
+/** Balanced default tree for a deep link's N panes (2: pair, 4: quad...). */
+function defaultTree(rootDir: 'h' | 'v'): LayoutNode | null {
+  const build = (lo: number, hi: number, dir: 'h' | 'v'): LayoutNode | null => {
+    if (lo >= hi) return null;
+    if (hi - lo === 1) return panes[lo];
+    const inner: 'h' | 'v' = dir === 'h' ? 'v' : 'h';
+    const mid = lo + Math.ceil((hi - lo) / 2);
+    const a = build(lo, mid, inner);
+    const b = build(mid, hi, inner);
+    if (!a || !b) return a ?? b;
+    return { dir, a, b, frac: (mid - lo) / (hi - lo) };
+  };
+  return build(0, panes.length, rootDir);
+}
+
+/**
+ * Rebuild #panes' DOM from the layout tree. Panes are plain elements that
+ * are re-parented, never recreated - sessions and canvases survive. In Tabs
+ * mode (or with a single pane) only the focused pane is on stage; the rest
+ * stay detached but connected.
+ */
+function renderLayout(): void {
+  const wrap = $('panes');
+  const solo = layout === null || layout instanceof SessionPane || (tabsMode && panes.length > 1);
+  const shown = solo ? (activePane ?? panes[0]) : null;
+  wrap.replaceChildren();
+  if (shown) wrap.append(shown.el);
+  else if (layout) wrap.append(buildNode(layout));
+  wrap.dataset.panes = String(panes.length);
+  // split controls exist only while there is something to manage
+  $('split-group').classList.toggle('hidden', panes.length < 2);
+  $<HTMLButtonElement>('btn-addpane').disabled = panes.length >= MAX_PANES;
+  $('grid-view-tiles').classList.toggle('active', !tabsMode);
+  $('grid-view-tabs').classList.toggle('active', tabsMode);
+  renderTabbar();
+  fitPanes();
+  syncGridUrl();
+  saveTreeState();
+  // Re-parenting the element that held focus (a picker input) can blur it.
+  if (!coarsePointer && document.activeElement === document.body) {
+    (activePane?.screenEl.querySelector('.sys-menu input') as HTMLElement | null)?.focus();
+  }
+}
+
+function applyFlex(el: HTMLElement, frac: number): void {
+  el.style.flexGrow = String(frac);
+  el.style.flexShrink = '0';
+  el.style.flexBasis = '0';
+}
+
+function buildNode(n: LayoutNode): HTMLElement {
+  if (n instanceof SessionPane) return n.el;
+  const el = document.createElement('div');
+  el.className = `split split-${n.dir}`;
+  const a = buildNode(n.a);
+  const b = buildNode(n.b);
+  applyFlex(a, n.frac);
+  applyFlex(b, 1 - n.frac);
+  el.append(a, makeSplitter(n, el), b);
+  return el;
+}
+
+/** The draggable divider of one split node (double-click resets it). */
+function makeSplitter(node: SplitNode, containerEl: HTMLElement): HTMLElement {
+  const sp = document.createElement('div');
+  sp.className = 'splitter';
+  sp.title = 'Drag to resize - double-click to reset';
+  let raf = 0;
+  const setFrac = (f: number): void => {
+    node.frac = f;
+    const first = containerEl.firstElementChild as HTMLElement | null;
+    const last = containerEl.lastElementChild as HTMLElement | null;
+    if (first && last) {
+      applyFlex(first, f);
+      applyFlex(last, 1 - f);
+    }
+    if (!raf) {
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        fitPanes();
+      });
+    }
+  };
+  let dragging = false;
+  sp.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    sp.setPointerCapture(e.pointerId);
+    sp.classList.add('dragging');
+    e.preventDefault();
+  });
+  sp.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const r = containerEl.getBoundingClientRect();
+    const f =
+      node.dir === 'h' ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height;
+    setFrac(Math.min(1 - MIN_FRAC, Math.max(MIN_FRAC, f)));
+  });
+  const end = (e: PointerEvent): void => {
+    if (!dragging) return;
+    dragging = false;
+    sp.classList.remove('dragging');
+    sp.releasePointerCapture(e.pointerId);
+    setFrac(node.frac); // settle the final fit
+    saveTreeState();
+  };
+  sp.addEventListener('pointerup', end);
+  sp.addEventListener('pointercancel', end);
+  sp.addEventListener('dblclick', () => setFrac(0.5));
+  return sp;
+}
+
+/** ?grid= tracks the live pane count for reloads; single-pane clears it. */
+function syncGridUrl(): void {
+  const u = new URL(window.location.href);
+  if (panes.length > 1) {
+    // Split supersedes the single-session deep links (?system=/?attach=).
+    u.searchParams.delete('system');
+    u.searchParams.delete('attach');
+    u.searchParams.set('grid', String(panes.length));
+  } else {
+    u.searchParams.delete('grid');
+    u.searchParams.delete('systems');
+  }
+  u.searchParams.delete('split');
+  history.replaceState(null, '', u.href);
+}
 
 function saveGridState(): void {
   localStorage.setItem(
@@ -102,11 +316,11 @@ const paneServices: PaneServices = {
   openSystemMenu(pane) {
     openMenuFor(pane);
   },
+  onSplitPane(pane, dir) {
+    splitPane(pane, dir);
+  },
   onPopOut(pane) {
     popOut(pane);
-  },
-  onMove(pane, dir) {
-    movePane(pane, dir);
   },
   onClose(pane) {
     if (!pane.confirmLeave()) return;
@@ -144,13 +358,38 @@ const paneServices: PaneServices = {
   }
 };
 
+/**
+ * Split one pane in two: the pane keeps its session in its half, a fresh
+ * pane takes the other and picks its system.
+ */
+function splitPane(target: SessionPane, dir: 'h' | 'v'): void {
+  if (panes.length >= MAX_PANES) return;
+  hideMenu();
+  const pane = createPane();
+  layout = replaceLeaf(layout ?? target, target, { dir, a: target, b: pane, frac: 0.5 });
+  syncPanesFromLayout();
+  renderLayout();
+  saveGridState();
+  // A target that never picked a system needs its picker in the new half.
+  if (target.systemId === null && !target.target.attach) {
+    openPanePicker(
+      target.screenEl,
+      (s) => {
+        target.connect({ system: s });
+        focusTerminal();
+      },
+      { focus: false }
+    );
+  }
+  openMenuFor(pane);
+}
+
 function createPane(init: { system?: number | null; attach?: string; connectNow?: boolean } = {}): SessionPane {
   const pane = new SessionPane(panes.length, paneServices);
-  pane.setShowBar(gridMode);
   pane.setZoom(zoom ?? 1);
   pane.systemId = init.system ?? null; // hello confirms/matches it later
-  $('panes').appendChild(pane.el);
   panes.push(pane);
+  layout ??= pane; // the tree grows by splitting this leaf later
 
   // ?attach= reattaches to the previous session after a reload; ?system= is
   // the fallback (and the deep-link assignment) when it no longer exists.
@@ -161,60 +400,39 @@ function createPane(init: { system?: number | null; attach?: string; connectNow?
       .then((rows) => {
         target.system = rows.find((r) => r.id === init.system);
         if (init.connectNow !== false) pane.connect(target);
-        layoutPanes();
       })
       .catch(() => {
         if (init.connectNow !== false) pane.connect(target);
-        layoutPanes();
       });
   } else if (init.connectNow !== false && (init.attach || init.connectNow)) {
     pane.connect(target);
   }
-  layoutPanes();
   return pane;
 }
 
-function removePaneEl(pane: SessionPane): void {
-  const i = panes.indexOf(pane);
-  if (i >= 0) panes.splice(i, 1);
+/** Drop a pane from the tree (its element goes with it). */
+function removeFromTree(pane: SessionPane): void {
+  layout = layout ? removeLeaf(layout, pane) : null;
   pane.el.remove();
-  if (activePane === pane) {
-    setActive(panes[Math.max(0, i - 1)] ?? panes[0] ?? null);
-  }
-  // Keep data-pane indexes equal to list positions (tests aim at them).
-  panes.forEach((p, idx) => {
-    p.el.dataset.pane = String(idx);
-  });
-}
-
-/** Move a pane one slot left/right (plain DOM order - nothing reloads). */
-function movePane(pane: SessionPane, dir: -1 | 1): void {
-  const wrap = $('panes');
-  const el = pane.el;
-  if (dir < 0 && el.previousElementSibling) {
-    wrap.insertBefore(el, el.previousElementSibling);
-  } else if (dir > 0 && el.nextElementSibling) {
-    wrap.insertBefore(el.nextElementSibling, el);
-  } else return;
-  if (gridMode && tabsMode) layoutPanes();
-  fitPanes();
+  syncPanesFromLayout();
 }
 
 /** Close a pane; its session detaches and stays re-attachable in grace. */
 function closePane(pane: SessionPane): void {
-  const wasGrid = gridMode;
+  const wasMulti = panes.length > 1;
   pane.detach();
-  removePaneEl(pane);
+  removeFromTree(pane);
   if (panes.length === 0) {
     exitSplit(false);
     createPane();
+    renderLayout();
     void showMenuFor();
     return;
   }
-  if (wasGrid && panes.length === 1) exitSplit(true);
+  if (wasMulti && panes.length === 1) exitSplit(true);
   else {
     saveGridState();
-    layoutPanes();
+    renderLayout();
   }
 }
 
@@ -256,43 +474,15 @@ function setActive(pane: SessionPane | null): void {
     // keyboard stays with the picker (its input handles arrows/Enter/Esc).
     if (!coarsePointer) {
       (activePane.screenEl.querySelector('.sys-menu input') as HTMLElement | null)?.focus();
-    }  }
-  if (gridMode && tabsMode) layoutPanes();
-}
-
-// ----------------------------------------------------------------- layout
-/** Lay the panes out (single / tiles / tabs) and refit every terminal. */
-function layoutPanes(): void {
-  const wrap = $('panes');
-  const count = panes.length;
-  gridMode = gridMode && count > 0;
-  wrap.classList.toggle('split', gridMode && count > 1);
-  wrap.classList.toggle('h', gridMode && count > 1 && splitDir === 'h');
-  wrap.classList.toggle('v', gridMode && count > 1 && splitDir === 'v');
-  wrap.classList.toggle('tabs', gridMode && count > 1 && tabsMode);
-  wrap.dataset.panes = String(count);
-  for (const p of panes) p.setShowBar(gridMode && count > 1);
-  // split controls exist only while there is something to manage
-  $('split-group').classList.toggle('hidden', !gridMode && count < 2);
-  $<HTMLButtonElement>('btn-addpane').disabled = count >= MAX_PANES;
-  $('grid-view-tiles').classList.toggle('active', !tabsMode);
-  $('grid-view-tabs').classList.toggle('active', tabsMode);
-  if (gridMode && count > 1 && tabsMode && activePane) {
-    for (const p of panes) p.el.style.display = p === activePane ? '' : 'none';
-  } else {
-    for (const p of panes) p.el.style.display = '';
+    }
   }
-  renderTabbar();
-  fitPanes();
-  $('btn-splith').classList.toggle('active', splitDir === 'h');
-  $('btn-splitv').classList.toggle('active', splitDir === 'v');
-  syncGridUrl(); // ?grid= tracks the live pane count for reloads
+  if (tabsMode && panes.length > 1) renderLayout();
 }
 
 /** The tab strip for tabs mode: one button per pane, click to focus. */
 function renderTabbar(): void {
   const bar = $('tabbar');
-  const show = gridMode && panes.length > 1 && tabsMode;
+  const show = panes.length > 1 && tabsMode;
   bar.classList.toggle('hidden', !show);
   if (!show) return;
   bar.replaceChildren(
@@ -304,7 +494,6 @@ function renderTabbar(): void {
       b.title = 'Show this session';
       b.addEventListener('click', () => {
         setActive(p);
-        layoutPanes();
         focusTerminal();
       });
       return b;
@@ -316,77 +505,31 @@ function setTabsMode(tabs: boolean): void {
   tabsMode = tabs;
   if (tabs) localStorage.setItem(GRID_VIEW_KEY, 'tabs');
   else localStorage.removeItem(GRID_VIEW_KEY);
-  layoutPanes();
+  renderLayout();
 }
 
-/** Leave split mode; extra panes end (deliberate exit skips the grace). */
+/** Leave split view; extra panes end (deliberate exit skips the grace). */
 function exitSplit(keepFirst: boolean): void {
-  gridMode = false;
   tabsMode = false;
   localStorage.removeItem(GRID_VIEW_KEY);
   localStorage.removeItem(GRID_STATE_KEY);
-  while (panes.length > (keepFirst ? 1 : 0)) {
-    const p = panes[panes.length - 1];
-    p.end();
-    removePaneEl(p);
+  localStorage.removeItem(TREE_KEY);
+  const keep = keepFirst ? panes[0] : null;
+  for (const p of panes) if (p !== keep) p.end();
+  panes.length = 0;
+  layout = keep;
+  if (keep) panes.push(keep);
+  if (activePane && activePane !== keep) {
+    activePane = null;
+    setActive(keep);
   }
-  syncGridUrl();
-  layoutPanes();
-}
-
-/** Split orientation into the URL (?split=h|v), keeping ?grid= for reloads. */
-function syncGridUrl(): void {
-  const u = new URL(window.location.href);
-  if (gridMode) {
-    // Split supersedes the single-session deep links (?system=/?attach=).
-    u.searchParams.delete('system');
-    u.searchParams.delete('attach');
-    u.searchParams.set('grid', String(panes.length));
-    u.searchParams.set('split', splitDir);
-  } else {
-    u.searchParams.delete('grid');
-    u.searchParams.delete('split');
-    u.searchParams.delete('systems');
-  }
-  history.replaceState(null, '', u.href);
+  renderLayout();
 }
 
 /**
- * Enter or steer split view. From a single pane: two panes in the chosen
- * direction. Already split the same way: one more pane. Split the other way:
- * the whole grid re-orients (sessions are untouched - it is the same panes).
- */
-function splitView(dir: 'h' | 'v'): void {
-  const entering = !gridMode || panes.length < 2;
-  const sameDir = gridMode && splitDir === dir;
-  splitDir = dir;
-  gridMode = true;
-  hideMenu();
-  if (entering) while (panes.length < 2) createPane();
-  else if (sameDir && panes.length < MAX_PANES) createPane(); // split further
-  saveGridState();
-  layoutPanes();
-  syncGridUrl();
-  // Every pane without a target offers its own in-pane system picker.
-  const empties = panes.filter((p) => p.systemId === null && !p.target.attach);
-  const first = empties[0] ?? panes[0];
-  if (first) setActive(first);
-  for (const p of empties) {
-    openPanePicker(
-      p.screenEl,
-      (s) => {
-        p.connect({ system: s });
-        focusTerminal();
-      },
-      { focus: p === first }
-    );
-  }
-}
-
-/**
- * Open system selection for a pane: an in-pane picker while the split view
- * is on stage (the full-window menu would cover the other live panes), the
- * classic full-screen menu for the single-pane / landing states.
+ * Open system selection for a pane: an in-pane picker while other panes are
+ * on stage (the full-window menu would cover them), the classic full-screen
+ * menu for the single-pane / landing states.
  */
 function openMenuFor(pane: SessionPane): void {
   menuTarget = pane;
@@ -395,7 +538,7 @@ function openMenuFor(pane: SessionPane): void {
     menuTarget?.connect({ system: s });
     menuTarget = null;
   };
-  if (gridMode && panes.length > 1) {
+  if (panes.length > 1) {
     hideMenu();
     openPanePicker(pane.screenEl, (s) => {
       pick(s);
@@ -560,7 +703,8 @@ function boot(): void {
   const attachToken = params.get('attach');
 
   if (urlGridPanes !== null) {
-    splitDir = params.get('split') === 'v' ? 'v' : 'h';
+    // ?split=h|v only picks the deep link's root direction (legacy param).
+    const rootDir = params.get('split') === 'v' ? 'v' : 'h';
     const preassigned = params
       .get('systems')
       ?.split(',')
@@ -577,6 +721,11 @@ function boot(): void {
         connectNow: system !== null || !!saved[i]?.token
       });
     }
+    // The saved tree (with divider positions) matches only the same pane
+    // count; anything else gets the balanced default.
+    layout = loadTreeState(panes.length) ?? defaultTree(rootDir);
+    syncPanesFromLayout();
+    renderLayout();
     setActive(panes[0] ?? null);
     // Panes with no target at all each offer their own in-pane picker (a
     // pane reattaching via its saved token is mid-connect here, not empty).
@@ -600,6 +749,7 @@ function boot(): void {
     // status-error handler falls back once to a fresh session on the system.
     const begin = (system?: MenuSystem): void => {
       const pane = createPane({ connectNow: false });
+      renderLayout();
       setActive(pane);
       pane.connect({ system, attach: attachToken });
     };
@@ -616,12 +766,14 @@ function boot(): void {
       .then((rows) => {
         const row = rows.find((r) => r.id === sysId);
         const pane = createPane({ connectNow: false });
+        renderLayout();
         setActive(pane);
         if (row) pane.connect({ system: row });
         else void showMenuFor();
       })
       .catch(() => {
         createPane();
+        renderLayout();
         void showMenuFor();
       });
     return;
@@ -632,6 +784,7 @@ function boot(): void {
     // or an automated launch (?auto=1) without a ?system= selection: connect
     // straight to the environment-default host - a menu has no role embedded.
     const pane = createPane({ connectNow: false });
+    renderLayout();
     setActive(pane);
     pane.connect({});
     return;
@@ -647,6 +800,7 @@ function boot(): void {
     if (saved?.token) {
       const begin = (system?: MenuSystem): void => {
         const pane = createPane({ connectNow: false });
+        renderLayout();
         setActive(pane);
         pane.connect({ system, attach: saved.token });
       };
@@ -661,6 +815,7 @@ function boot(): void {
     sessionStorage.removeItem(SESSION_KEY);
   }
   createPane();
+  renderLayout();
   void showMenuFor();
 }
 
@@ -720,37 +875,15 @@ window.addEventListener('resize', applyViewport);
 window.addEventListener('orientationchange', applyViewport);
 applyViewport();
 
-/** Refit every pane's terminal into its box (grid cells / stage change). */
+/**
+ * Refit every on-stage pane's terminal into its box (a layout slot whose
+ * size the splitter drag or a stage resize just changed).
+ */
 function fitPanes(): void {
-  const stage = $('stage');
-  const s = getComputedStyle(stage);
   for (const p of panes) {
-    if (p.el.style.display === 'none') continue;
-    let availW: number;
-    let availH: number;
-    if (gridMode && panes.length > 1) {
-      // Grid cell: the pane element is cell-sized; subtract its chrome.
-      availW = p.el.clientWidth - 2; // pane-screen borders
-      availH = p.el.clientHeight - 2 - barHeight(p) - oiaHeight(p);
-    } else {
-      // Single pane: the classic stage-derived fit (the pane shrink-wraps
-      // its canvas, so the stage is the only stable measure).
-      const t = getComputedStyle(panes[0].screenEl);
-      availW =
-        stage.clientWidth -
-        parseFloat(s.paddingLeft) -
-        parseFloat(s.paddingRight) -
-        parseFloat(t.borderLeftWidth) -
-        parseFloat(t.borderRightWidth);
-      availH =
-        stage.clientHeight -
-        parseFloat(s.paddingTop) -
-        parseFloat(s.paddingBottom) -
-        parseFloat(s.rowGap) -
-        oiaHeight(p) -
-        parseFloat(t.borderTopWidth) -
-        parseFloat(t.borderBottomWidth);
-    }
+    if (!p.el.isConnected) continue;
+    const availW = p.el.clientWidth - 2; // safety against rounding overflow
+    const availH = p.el.clientHeight - 2 - barHeight(p) - oiaHeight(p);
     if (availW > 0 && availH > 0) {
       p.setZoom(zoom ?? 1);
       p.fitInto(availW, availH);
@@ -758,7 +891,7 @@ function fitPanes(): void {
   }
 }
 function barHeight(p: SessionPane): number {
-  return gridMode && panes.length > 1 ? (p.el.querySelector('.pane-bar') as HTMLElement)?.offsetHeight ?? 0 : 0;
+  return (p.el.querySelector('.pane-bar') as HTMLElement)?.offsetHeight ?? 0;
 }
 function oiaHeight(p: SessionPane): number {
   return (p.el.querySelector('.oia') as HTMLElement)?.offsetHeight ?? 0;
@@ -814,7 +947,9 @@ window.addEventListener(
 attachKeyboard(sendKey, () => !uiSurfaceOpen());
 buildKeypad(sendKey);
 initMenu();
-setSplitHandler((dir) => splitView(dir));
+// The landing menu's split buttons split the focused pane like the per-pane
+// ones do (at the landing state that is the single pane).
+setSplitHandler((dir) => splitPane(activePane ?? panes[0], dir));
 
 $('btn-systems').addEventListener('click', () => {
   const pane = activePane ?? panes[0];
@@ -824,24 +959,20 @@ $('btn-systems').addEventListener('click', () => {
     openMenuFor(pane);
   }
 });
-$('btn-splith').addEventListener('click', () => steerSplit('h'));
-$('btn-splitv').addEventListener('click', () => steerSplit('v'));
-/** Top-bar split buttons re-orient the live grid (they never add panes). */
-function steerSplit(dir: 'h' | 'v'): void {
-  if (!gridMode || panes.length < 2) {
-    splitView(dir);
-    return;
-  }
-  if (splitDir === dir) return;
-  splitDir = dir;
-  layoutPanes();
-}
 $('btn-addpane').addEventListener('click', () => {
-  if (panes.length < MAX_PANES) {
-    const pane = createPane();
-    // The new pane has no target yet - offer its picker right away.
-    openMenuFor(pane);
+  // + Pane splits the roomiest pane (a wide one side by side, a tall one
+  // stacked) - it is the same operation as a pane's own split buttons.
+  if (panes.length >= MAX_PANES) return;
+  let target = panes[0];
+  let best = -1;
+  for (const p of panes) {
+    const area = (p.el.clientWidth || 0) * (p.el.clientHeight || 0);
+    if (area > best) {
+      best = area;
+      target = p;
+    }
   }
+  splitPane(target, (target.el.clientWidth || 1) >= (target.el.clientHeight || 1) ? 'h' : 'v');
 });
 $('grid-view-tiles').addEventListener('click', () => setTabsMode(false));
 $('grid-view-tabs').addEventListener('click', () => setTabsMode(true));
@@ -895,7 +1026,7 @@ for (const id of ['btn-keypad', 'btn-kbd']) {
 $('btn-keypad').addEventListener('click', () => {
   delete keypad.dataset.autoHidden; // a manual toggle always wins
   keypad.classList.toggle('hidden');
-  layoutPanes();
+  fitPanes();
 });
 $('btn-kbd').addEventListener('click', () => {
   if (document.activeElement === mobileInput) mobileInput.blur();
@@ -908,14 +1039,14 @@ mobileInput.addEventListener('focusin', () => {
   if (!keypad.classList.contains('hidden')) {
     keypad.dataset.autoHidden = '1';
     keypad.classList.add('hidden');
-    layoutPanes();
+    fitPanes();
   }
 });
 mobileInput.addEventListener('focusout', () => {
   if (keypad.dataset.autoHidden === '1') {
     delete keypad.dataset.autoHidden;
     keypad.classList.remove('hidden');
-    layoutPanes();
+    fitPanes();
   }
 });
 

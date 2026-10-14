@@ -101,34 +101,21 @@ html, body {
 #panes {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   width: 100%;
   height: 100%;
   min-height: 0;
-  gap: 0.35rem;
 }
-/* Split mode: the panes become grid cells in one row (h) or one column (v)
-   - any count lays out uniformly, so odd counts need no special cases. */
-#panes.split {
-  display: grid;
-  gap: 2px;
-  align-items: stretch;
-  justify-items: stretch;
+/* The split tree: an inner node is a flex row ('h', children side by side)
+   or column ('v', stacked); a leaf is a pane. Every node carries a
+   draggable divider between its two children. */
+.split {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
 }
-#panes.split.h {
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  grid-template-rows: 1fr;
-}
-#panes.split.v {
-  grid-auto-flow: row;
-  grid-auto-rows: 1fr;
-  grid-template-columns: 1fr;
-}
-/* Tabs mode: one pane on stage, the rest hidden but still connected; the
-   strip above the panes switches between them. */
-#panes.split.tabs { grid-auto-flow: row; grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: 1fr; }
+.split-h { flex-direction: row; }
+.split-v { flex-direction: column; }
 #tabbar {
   flex: 0 0 auto;
   display: flex;
@@ -152,27 +139,50 @@ html, body {
 }
 .tab.active { color: var(--green); border-color: var(--green); background: #000; }
 
+/* The draggable divider between a split's children (double-click resets). */
+.splitter {
+  flex: 0 0 7px;
+  position: relative;
+  z-index: 5;
+  touch-action: none;
+  user-select: none;
+}
+.split-h > .splitter { cursor: col-resize; }
+.split-v > .splitter { cursor: row-resize; }
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--line);
+  transition: background 0.1s;
+}
+.split-h > .splitter::after {
+  left: 3px;
+  right: 3px;
+}
+.split-v > .splitter::after {
+  top: 3px;
+  bottom: 3px;
+}
+.splitter:hover::after,
+.splitter.dragging::after { background: var(--green); }
+
 .pane {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   max-width: 100%;
-  flex: 0 1 auto;
-}
-#panes.split .pane {
-  width: 100%;
-  height: 100%;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--panel);
   overflow: hidden;
 }
-#panes.split .pane:has(.pane-screen:focus-within),
-#panes.split .pane.active-pane { border-color: #3a5a48; }
+.pane.active-pane { border-color: #3a5a48; }
 
-/* Pane header - only shown in split mode. */
+/* Pane header - always present: every pane carries its own split / system /
+ * pop-out / close controls, single-pane view included. */
 .pane-bar {
   display: flex;
   align-items: center;
@@ -186,7 +196,6 @@ html, body {
   cursor: default;
   user-select: none;
 }
-.pane-bar.hidden { display: none; }
 .pane-label {
   flex: 1;
   min-width: 0;
@@ -204,30 +213,20 @@ html, body {
 .pane-bar button:disabled { opacity: 0.35; cursor: default; }
 .pane-bar button:disabled:hover { color: var(--text); }
 
-/* The terminal screen area hugs the canvas in single-pane mode and fills
-   the pane in split mode; the canvas is centered inside either way. */
+/* The terminal screen area fills the pane; the canvas is centered inside. */
 .pane-screen {
   position: relative;
-  flex: 0 1 auto;
-  min-height: 0;
-  max-width: 100%;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: #000;
-  line-height: 0;
-  outline: none;
-}
-#panes.split .pane-screen {
   flex: 1 1 auto;
   width: 100%;
-  border: none;
-  border-radius: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
   display: flex;
   align-items: center;
   justify-content: center;
+  line-height: 0;
+  outline: none;
 }
-.pane-screen:focus-within { border-color: #3a5a48; }
 .screen-canvas { display: block; }
 
 /* Pane-scoped status overlay (connecting / ended / failed). */
@@ -256,19 +255,16 @@ html, body {
 /* Pane-scoped OIA strip (matches the terminal width). */
 .pane .oia {
   width: 100%;
-  max-width: var(--termw, 960px);
   display: flex;
   gap: 1rem;
   align-items: baseline;
   font-size: 0.78rem;
   color: var(--dim);
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border-top: 1px solid var(--line);
   padding: 0.25rem 0.7rem;
   white-space: pre;
 }
-#panes.split .pane .oia { max-width: 100%; border: none; border-top: 1px solid var(--line); border-radius: 0; }
 .oia-left { display: flex; gap: 0.9rem; color: var(--green); }
 .oia-lock.busy { color: var(--warn); }
 .oia-msg { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; }
@@ -857,9 +853,6 @@ button.primary { border-color: var(--green); color: var(--green); }
   .admin-fields { grid-template-columns: 1fr; }
   .admin-fields label { text-align: left; }
 
-  /* Split view stacks vertically on phones (it is a large-page feature,
-     but the layout should not break if someone opens it there). */
-  #panes.split { grid-template-columns: 1fr; }
-  #panes.split[data-panes='3'] .pane:nth-child(3),
-  #panes.split[data-panes='5'] .pane:nth-child(5) { grid-column: auto; }
+  /* The roomiest-pane heuristic stacks tall layouts on phones. */
+  .split .splitter { flex-basis: 5px; }
 }

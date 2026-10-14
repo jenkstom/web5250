@@ -1,8 +1,8 @@
 // Zoom + split-view E2E: drives the real UI in headless Chromium against the
 // gateway + mock host. Covers the zoom buttons (Fit / ½ / ¼), the in-place
-// split view (one shell, N terminal panes), per-pane sessions with display
-// name dedupe, keyboard focus routing, tiles/tabs modes, reload reattach,
-// pane add/close and pop-out.
+// split tree (splitting a pane nests; dividers drag to resize), per-pane
+// sessions with display name dedupe, keyboard focus routing, tiles/tabs
+// modes, reload reattach, pane add/close and pop-out.
 //
 // Usage: node scripts/zoom-grid-test.mjs [port]
 import { chromium } from 'playwright-core';
@@ -131,10 +131,10 @@ await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
 check('zoom group hidden again on menu', !(await page.isVisible('#zoom-group')));
 await page.fill('#menu-devname', 'MULTI');
 await page.click('#menu-splith');
-await page.waitForSelector('#panes.split.h', { timeout: 5000 });
+await page.waitForSelector('#panes > .split.split-h', { timeout: 5000 });
 check('split layout with 2 panes', (await page.locator('#panes .pane').count()) === 2);
 check('still one app shell (no iframes)', (await page.locator('#panes iframe').count()) === 0);
-check('URL kept ?grid=2&split=h', page.url().includes('grid=2') && page.url().includes('split=h'));
+check('URL kept ?grid=2', page.url().includes('grid=2'));
 check('top bar still present', await page.isVisible('#topbar'));
 // Each pane without a session shows its own in-pane picker; the full-window
 // menu is gone.
@@ -168,33 +168,80 @@ async function signOnActivePane(paneIdx = 0) {
   );
   await page.waitForTimeout(600);
 }
-// Pane 0: its picker holds focus (first empty pane) - Enter picks the row.
+// Pane 2 (the fresh half) holds focus after a split - Enter picks its row.
 await page.keyboard.press('Enter');
-await signOnActivePane(0);
-const name0 = await page.textContent('#dev-info');
-check('pane 1 signed on (MULTI)', name0.includes('MULTI'), name0);
-
-// Pane 2: its picker is already open in the pane - one click on the (already
-// selected) row connects it and focuses the pane.
-await page.click(`${paneSel(1)} .sys-menu .menu-row`);
 await signOnActivePane(1);
 const name1 = await page.textContent('#dev-info');
-check('pane 2 signed on (deduped name)', name1.includes('MULTI') && name1 !== name0, `${name0} | ${name1}`);
+check('pane 2 signed on (MULTI)', name1.includes('MULTI'), name1);
+
+// Pane 1: its picker is already open in the other half - one click on the
+// (already selected) row connects it and focuses the pane.
+await page.click(`${paneSel(0)} .sys-menu .menu-row`);
+await signOnActivePane(0);
+const name0 = await page.textContent('#dev-info');
+check('pane 1 signed on (deduped name)', name0.includes('MULTI') && name0 !== name1, `${name1} | ${name0}`);
 await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
 
-// ---- 6b. re-orient the live grid: sessions keep running either way
+// ---- 6b. split a pane in place: the focused pane halves, the rest is
+// untouched; the divider between the halves is draggable.
 {
-  await page.click('#btn-splitv');
-  await page.waitForSelector('#panes.split.v', { timeout: 5000 });
-  check('Split ↕ stacks the panes', (await page.locator('#panes .pane').count()) === 2);
-  check('stacked: panes in one column', await page.evaluate(() => {
-    const els = [...document.querySelectorAll('#panes .pane')];
-    return els[0].getBoundingClientRect().left === els[1].getBoundingClientRect().left;
-  }));
-  await page.click('#btn-splith');
-  await page.waitForSelector('#panes.split.h', { timeout: 5000 });
-  check('sessions survive re-orienting',
+  const paneBox = (i) => page.evaluate((i) => {
+    const r = document.querySelector(`.pane[data-pane="${i}"]`).getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }, i);
+
+  // Split pane 2 (bottom of the pair) top-and-bottom: pane 2 keeps its
+  // session in the upper half, a fresh pane 3 lands below it.
+  await page.click(`${paneSel(1)} .pane-screen`);
+  const fullH = await page.evaluate(() =>
+    Math.round(document.querySelector('.pane[data-pane="1"]').getBoundingClientRect().height));
+  await page.click(`${paneSel(1)} .pane-splitbtn-v`);
+  await page.waitForTimeout(400);
+  check('splitting a pane adds one', (await page.locator('#panes .pane').count()) === 3);
+  check('the new pane gets a picker', (await page.locator('.sys-menu').count()) === 1);
+  const [b0, b1, b2] = [await paneBox(0), await paneBox(1), await paneBox(2)];
+  check('pane 1 untouched (left half)', Math.round(b0.right) <= Math.round(b1.left) + 1,
+    `${JSON.stringify(b0)} | ${JSON.stringify(b1)}`);
+  check('new pane stacks under pane 2', Math.abs(b1.left - b2.left) < 2 && b2.top > b1.bottom - 2,
+    `${JSON.stringify(b1)} | ${JSON.stringify(b2)}`);
+  // The new pane became the focused one (it needs the system pick); put the
+  // focus back on pane 2 to see its session survived the split.
+  await page.click(`${paneSel(1)} .pane-screen`);
+  check('session survives being split',
     (await page.evaluate(() => document.getElementById('conn-state')?.dataset.state)) === 'connected');
+
+  // Drag the divider between panes 2 and 3 down: pane 2 grows, 3 shrinks
+  // (a ↕ split's divider moves vertically).
+  const heights = () => page.evaluate(() =>
+    [1, 2].map((i) => Math.round(document.querySelector(`.pane[data-pane="${i}"]`).getBoundingClientRect().height)));
+  const hBefore = await heights();
+  const sp = await page.evaluate(() => {
+    const pane = document.querySelector('.pane[data-pane="2"]');
+    const splitter = pane.parentElement.querySelector('.splitter');
+    const r = splitter.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(sp.x, sp.y);
+  await page.mouse.down();
+  await page.mouse.move(sp.x, sp.y + 70, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const hAfter = await heights();
+  check('divider drag resizes both sides',
+    hAfter[0] > hBefore[0] + 50 && hAfter[1] < hBefore[1] - 50,
+    `${hBefore} -> ${hAfter}`);
+  check('sessions survive a resize',
+    (await page.evaluate(() => document.getElementById('conn-state')?.dataset.state)) === 'connected');
+  void fullH;
+  await page.screenshot({ path: `${OUT}/03b-nested-split.png` });
+
+  // Closing the empty pane collapses the layout back onto pane 2.
+  await page.click(`${paneSel(2)} .pane-closebtn`);
+  await page.waitForTimeout(400);
+  check('closing a pane collapses the split', (await page.locator('#panes .pane').count()) === 2);
+  const hBack = await page.evaluate(() =>
+    Math.round(document.querySelector('.pane[data-pane="1"]').getBoundingClientRect().height));
+  check('pane 2 reclaims the space', Math.abs(hBack - fullH) < 12, `${hAfter[0]} -> ${hBack} (was ${fullH})`);
 }
 
 // ---- 7. typing goes only to the focused pane
@@ -203,6 +250,7 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
   const { x, y } = await cellXY(10, 20);
   await page.mouse.click(x, y);
   const before = await panePos(0);
+  const otherBefore = await panePos(1);
   await page.keyboard.type('X');
   await page.waitForFunction(
     (prev) => document.querySelector('.pane[data-pane="0"] .oia-pos')?.textContent !== prev,
@@ -211,29 +259,16 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
   ).catch(() => {});
   const moved = await panePos(0);
   const other = await panePos(1);
-  check('keystroke moved only pane 1 cursor', moved !== before && other === '6,26', `${before} → ${moved}, pane2 at ${other}`);
+  check('keystroke moved only pane 1 cursor', moved !== before && other === otherBefore,
+    `${before} → ${moved}, pane2 at ${other} (was ${otherBefore})`);
 }
 
-// ---- 7b. rearrange tiles + tabs view - sessions must survive
+// ---- 7b. tabs view - sessions must survive
 {
-  // track the same pane by its stable data-pane index (DOM order changes)
-  const paneLefts = () => page.evaluate(() =>
-    [0, 1].map((i) => document.querySelector(`.pane[data-pane="${i}"]`).getBoundingClientRect().left));
-  const before = await paneLefts();
-  await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('.pane[data-pane="0"] .pane-bar button')]
-      .find((b) => b.title === 'Move this session right');
-    btn.click();
-  });
-  const after = await paneLefts();
-  check('▶ moves the first pane right', after[0] > before[0] && after[1] < before[1],
-    `${before.map(Math.round)} -> ${after.map(Math.round)}`);
-
   await page.click('#grid-view-tabs');
   check('tab strip visible in tabs mode', await page.isVisible('#tabbar'));
-  const visible = await page.evaluate(() =>
-    [...document.querySelectorAll('#panes .pane')].map((w) => w.style.display !== 'none'));
-  check('only the active pane is on stage', visible.filter(Boolean).length === 1, JSON.stringify(visible));
+  const onStage = await page.locator('#panes .pane').count();
+  check('only the active pane is on stage', onStage === 1, String(onStage));
 
   // Switch panes through the tab strip; the hidden ones stay connected.
   const tabs = page.locator('#tabbar .tab');
@@ -256,7 +291,7 @@ await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
 // their running sessions (grid state carries their tokens).
 await page.click('#grid-view-tabs');
 await page.reload({ waitUntil: 'domcontentloaded' });
-await page.waitForSelector('#panes.split.tabs', { timeout: 5000 });
+await page.waitForSelector('#tabbar:not(.hidden)', { timeout: 5000 });
 await page.waitForTimeout(800); // panes boot + reattach
 check('tabs mode persists across reload', await page.isVisible('#tabbar'));
 const tabs = page.locator('#tabbar .tab');
@@ -302,15 +337,16 @@ await page.waitForTimeout(400);
 check('pane removed after pop-out', (await page.locator('#panes .pane').count()) === 2);
 await popup.close();
 
-// Close the empty pane: its session detaches (grace) and the layout
-// shrinks to the still-connected pane - which is the classic single-session
-// view again (the split controls go away with it).
-const closeBtn = page.locator('.pane[data-pane="1"] .pane-closebtn');
-await closeBtn.click();
+// Close the empty pane (wherever the tree put it - find it by its picker):
+// its session detaches (grace) and the layout shrinks to the still-connected
+// pane - which is the classic single-session view again.
+const emptyIdx = await page.evaluate(
+  () => document.querySelector('#panes .pane .sys-menu')?.closest('.pane')?.dataset.pane);
+await page.locator(`${paneSel(emptyIdx)} .pane-closebtn`).click();
 await page.waitForTimeout(400);
 check('× closes a pane', (await page.locator('#panes .pane').count()) === 1);
 check('closing the last extra pane leaves the classic view',
-  !(await page.locator('#panes.split').count()));
+  !(await page.locator('#panes .split').count()));
 check('surviving pane still connected',
   await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');
 
@@ -318,7 +354,7 @@ check('surviving pane still connected',
 await page.click('#btn-systems');
 await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
 await page.click('#menu-splith');
-await page.waitForSelector('#panes.split', { timeout: 5000 });
+await page.waitForSelector('#panes > .split.split-h', { timeout: 5000 });
 check('split re-entered from the menu', (await page.locator('#panes .pane').count()) === 2);
 await page.click('#btn-addpane');
 await page.waitForTimeout(600);
@@ -326,7 +362,7 @@ check('+ re-enabled and adds again', (await page.locator('#panes .pane').count()
 
 // ---- 8. preassigned deep link ?grid=2&systems=1,1 connects both panes
 await page.goto(`${BASE}/?grid=2&systems=1,1`, { waitUntil: 'domcontentloaded' });
-await page.waitForSelector('#panes.split', { timeout: 5000 });
+await page.waitForSelector('#panes > .split.split-h', { timeout: 5000 });
 check('deep link spawns two panes', (await page.locator('#panes .pane').count()) === 2);
 for (let i = 0; i < 2; i++) {
   await page.click(`${paneSel(i)} .pane-screen`);
@@ -345,7 +381,7 @@ await page.screenshot({ path: `${OUT}/04-grid-deeplink.png` });
 await page.click('#btn-exitsplit');
 await page.waitForTimeout(500);
 check('back to single pane', (await page.locator('#panes .pane').count()) === 1);
-check('split layout gone', !(await page.locator('#panes.split').count()));
+check('split layout gone', !(await page.locator('#panes .split').count()));
 check('exit cleared grid param', !page.url().includes('grid='));
 check('remaining session still connected',
   await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');

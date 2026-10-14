@@ -24,10 +24,10 @@ export interface PaneServices {
   openContextMenu(pane: SessionPane, e: MouseEvent): void;
   /** Open the shared system-selection menu targeting this pane. */
   openSystemMenu(pane: SessionPane): void;
+  /** Split this pane in two ('h': side by side, 'v': top and bottom). */
+  onSplitPane(pane: SessionPane, dir: 'h' | 'v'): void;
   /** Pop this pane's session out into its own browser window. */
   onPopOut(pane: SessionPane): void;
-  /** Move this pane one slot left/right in the layout. */
-  onMove(pane: SessionPane, dir: -1 | 1): void;
   /** Close (remove) this pane; its session detaches into the grace. */
   onClose(pane: SessionPane): void;
   /** A completed mark (drag release / double-click) - shell copies it. */
@@ -111,7 +111,7 @@ export class SessionPane {
     this.el.dataset.pane = String(index);
 
     this.barEl = document.createElement('div');
-    this.barEl.className = 'pane-bar hidden';
+    this.barEl.className = 'pane-bar';
     const btn = (cls: string, label: string, tip: string, fn: () => void): HTMLButtonElement => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -135,8 +135,12 @@ export class SessionPane {
     this.popBtn.disabled = true;
     this.barEl.append(
       this.labelEl,
-      btn('pane-movebtn', '◀', 'Move this session left', () => services.onMove(this, -1)),
-      btn('pane-movebtn', '▶', 'Move this session right', () => services.onMove(this, 1)),
+      btn('pane-splitbtn-h', '↔', 'Split this pane side by side (left and right)', () =>
+        services.onSplitPane(this, 'h')
+      ),
+      btn('pane-splitbtn-v', '↕', 'Split this pane into top and bottom', () =>
+        services.onSplitPane(this, 'v')
+      ),
       btn('pane-menubtn', '☰', 'Pick a system for this pane', () => services.openSystemMenu(this)),
       this.popBtn,
       btn('pane-closebtn', '×', 'Close this pane (the session stays available for a while)', () =>
@@ -192,11 +196,6 @@ export class SessionPane {
 
   setLabel(label: string): void {
     this.labelEl.textContent = label;
-  }
-
-  /** Pane header (and its per-session buttons) only exists in split mode. */
-  setShowBar(show: boolean): void {
-    this.barEl.classList.toggle('hidden', !show);
   }
 
   /** Apply the shell's zoom factor (the next fit uses it). */

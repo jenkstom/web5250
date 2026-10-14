@@ -66,11 +66,12 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   double-click a word, Ctrl+C re-copies) — with hidden-field contents always
   copying as blanks; see
   [Mouse selection and clipboard](#mouse-selection-and-clipboard).
-- **Split view — several sessions on one page, one chrome**: the system
-  menu's **Split ↔ / Split ↕** buttons (or `?grid=` deep links) arrange the
-  page into independent terminal panes side by side or stacked under the
-  same top bar; **+ Pane** adds more (up to 6) and **↗ pops a session out
-  into a real browser window** without losing it; see
+- **Split view — several sessions on one page, one chrome**: every pane
+  carries **↔ / ↕ split buttons** (side by side / top and bottom), a **☰
+  system picker**, **↗ pop-out into a real browser window** and **× close**
+  — single-session view included. Splitting divides that pane in two,
+  nesting into any layout (up to 6 panes), and every divider line is
+  **draggable to resize** (double-click resets); see
   [Multiple sessions on one page](#multiple-sessions-on-one-page).
 - **Sessions outlive their window**: every session carries an unguessable
   re-attach token; a closed tab, a reload, a dropped connection or a split
@@ -232,31 +233,31 @@ attempts lock administration for 60 s after 5 tries.
 ## Multiple sessions on one page
 
 The gateway gives **every WebSocket its own 5250 device**, so one browser can
-hold several concurrent sessions. Split view is a layout mode of the app
-itself — **no nested views, no iframes**: on the system menu, **Split ↔**
-lays the page out as terminal panes side by side and **Split ↕** stacks
-them, each press adding one more pane (any count works). The top bar's
-**Split ↔ / Split ↕** buttons re-orient the live grid without touching the
-sessions, **+ Pane** adds another (up to 6) and a pane's **×** button
-closes it. Each pane is an independent session with its own screen,
-OIA strip and keyboard focus — click a pane (or its tab in Tabs mode) to type
-into it; the top bar always describes the focused session. A pane that has
-no system yet shows its own **system picker inside the pane** (the full-page
-menu stays the landing state of the single-session view).
+hold several concurrent sessions. The layout is a **split tree** grown in
+place — **no nested views, no iframes**: a pane's **↔** button divides it
+into left and right halves, **↕** into top and bottom, and the same buttons
+live on every pane (single-session view included, alongside **☰** pick a
+system, **↗** pop out and **×** close). Splitting keeps the session running
+in its half; the fresh half shows its own **system picker inside the pane**
+(the full-page menu stays the landing state of the single-session view).
+Splits nest freely — split the bottom half of a ↔/↕ pair side by side and
+you get one large pane over two smaller ones — up to 6 panes. Every
+**divider line is draggable** to resize the two sides it separates
+(double-click resets a divider to halves), and the arrangement plus divider
+positions survive a reload. **+ Pane** splits the roomiest pane, and
+clicking a pane (or its tab in Tabs mode) hands it the keyboard; the top bar
+always describes the focused session.
 
 Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
-connect straight to system 1 and system 3 (ids from the menu's admin editor;
-add `&split=v` for a stacked layout). Without `systems=`, every pane boots
-into its in-pane picker for a per-pane pick. If a **Display** name is set,
-the gateway dedupes it across panes (`TOM` → `TOM1`), exactly as it does
-across browsers.
+connect straight to system 1 and system 3 (ids from the menu's admin
+editor). Without `systems=`, every pane boots into its in-pane picker for a
+per-pane pick. If a **Display** name is set, the gateway dedupes it across
+panes (`TOM` → `TOM1`), exactly as it does across browsers.
 
-**Rearranging and tabs.** Each pane carries a slim header (system · device
-name) with ◀ / ▶ buttons that move it within the layout. The **Tabs** button
-switches to one session at a time with a tab strip up top; the hidden
-sessions keep running, and clicking a tab brings that session back and hands
-it the keyboard. Nothing ever reloads — panes are plain DOM, so rearranging
-just moves them. The Tiles/Tabs choice and the active tab are remembered.
+**Tabs.** The **Tabs** button switches to one session at a time with a tab
+strip up top; the hidden sessions keep running, and clicking a tab brings
+that session back and hands it the keyboard. Nothing ever reloads — panes
+are plain DOM. The Tiles/Tabs choice and the active tab are remembered.
 
 **Pop-out: a pane becomes a real browser window.** The ↗ button on a pane
 header opens a popup window that takes over the pane's running session — same
