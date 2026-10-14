@@ -81,6 +81,14 @@ Until the message arrives, the iframe is live — treat it as an input
 surface owned by the user. Do not remove or re-create it on route
 changes unless you intend to end the session.
 
+> **Contract note:** `?auto=1` launches always use strict session lifetime —
+> removing the iframe (or the user closing the browser tab) tears the host
+> session down, and the `session-end` reasons above are unchanged. The
+> detach/grace behaviour described in the README's *Sessions outlive their
+> window* section applies to interactive sessions only, so this contract is
+> unaffected. (One new reason can appear in theory: `detached`, if another
+> window attaches to the session's token — treat it like `closed`.)
+
 Minimal listener:
 
 ```ts

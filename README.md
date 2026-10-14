@@ -67,9 +67,17 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   copying as blanks; see
   [Mouse selection and clipboard](#mouse-selection-and-clipboard).
 - **Split view — several sessions on one page**: the system menu's
-  **Split ×2 / Split ×4** buttons (or `?grid=2|4` deep links) lay out two or
-  four independent sessions side by side; see
+  **Split ×2 / Split ×4** buttons (or `?grid=2|4` deep links) lay out
+  independent sessions side by side; **+ Pane** adds more (up to 6), each
+  pane's bar drags to rearrange, and **⧉ pops a session out into a real
+  browser window** without losing it; see
   [Multiple sessions on one page](#multiple-sessions-on-one-page).
+- **Sessions outlive their window**: every session carries an unguessable
+  re-attach token; a closed tab, a reload, a dropped connection or a split
+  pop-out leaves the host session running for `SESSION_GRACE_MS` and a
+  browser can re-bind to it (`?attach=`, automatic on reload, via the
+  Reconnect button) — see
+  [Sessions outlive their window](#sessions-outlive-their-window).
 - **Automated data-entry launches**: open the app in an iframe with `?auto=1`
   and it signs on with a server-held identity (`AUTO_SIGNON_*`), types a
   caller-supplied string into the user profile's initial-program screen, and
@@ -167,8 +175,9 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
 | `WEB5250_DB` | SQLite file for the system catalog (compose mounts the `web5250-data` volume at `/data`) | `/data/web5250.db` in the container, `data/web5250.db` locally |
 | `IBM_I_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for host TLS (IBM i certs are usually self-signed) | `false` |
-| `WS_PING_INTERVAL_MS` | Browser-liveness ping cadence; a vanished front-end is terminated (freeing its iSeries session) after `WS_PING_MAX_MISSES` missed pongs — grace ≈ interval × misses | `30000` |
-| `WS_PING_MAX_MISSES` | Consecutive missed pongs tolerated before a dead browser session is torn down | `2` |
+| `WS_PING_INTERVAL_MS` | Browser-liveness ping cadence; a vanished front-end's socket is dropped after `WS_PING_MAX_MISSES` missed pongs — grace ≈ interval × misses | `30000` |
+| `WS_PING_MAX_MISSES` | Consecutive missed pongs tolerated before a dead browser socket is dropped | `4` |
+| `SESSION_GRACE_MS` | How long a session with no attached browser stays alive and re-attachable (`?attach=<token>`, reload resume, pop-out); `0` = strict legacy teardown on socket close | `300000` |
 | `AUTO_SIGNON_USER` | User profile for `?auto=1` automated data-entry launches (server-held; required together with `AUTO_SIGNON_PASSWORD`, otherwise auto upgrades are refused) | – |
 | `AUTO_SIGNON_PASSWORD` | Its password — never leaves the server or crosses the WebSocket | – |
 | `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
@@ -226,9 +235,9 @@ The gateway gives **every WebSocket its own 5250 device**, so one browser can
 hold several concurrent sessions. The client exposes that as a split view:
 on the system menu, **Split ×2 / Split ×4** reload the page as two side-by-side
 or four (2 × 2) panes. Each pane is an independent session with its own menu,
-top bar, zoom and keyboard focus — click a pane to type into it. **Exit split
-view** closes it (each pane's active session asks before being torn down, as
-usual).
+top bar, zoom and keyboard focus — click a pane to type into it. **+ Pane**
+adds more (up to 6; the layout re-flows, a lone trailing pane spans the full
+width) and a pane's **×** button closes it.
 
 Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
 connect straight to system 1 and system 3 (ids from the menu's admin editor).
@@ -246,12 +255,49 @@ rearranging nor switching views reloads a pane — panes are never moved in the
 DOM, only repositioned — so a session opened as a tile can continue as a tab.
 The Tiles/Tabs choice and the active tab are remembered.
 
+**Pop-out: a pane becomes a real browser window.** The ⧉ button on a pane bar
+opens a popup window that takes over the pane's running session — same 5250
+device, same screen, mid-typing — and the pane disappears from the grid. This
+works because sessions live in the gateway, not in the page (see
+[Sessions outlive their window](#sessions-outlive-their-window)). Closing a
+pane (×) detaches its session the same way: it stays re-attachable for the
+grace period rather than dying.
+
 Two deployment notes:
 
 - `FRAME_ANCESTORS` keeps working for external embedders; the app's own
   origin is always allowed to frame itself so the panes load.
-- A browser tab holds one 5250 device per pane — closing the tab ends all of
-  that page's host sessions.
+- A browser tab holds one 5250 device per pane. With the default grace
+  period the sessions survive the tab closing for a while and are then
+  cleaned up host-side; use **Exit split view** to end them immediately.
+
+## Sessions outlive their window
+
+Every session gets an unguessable token (sent to the browser in the `hello`
+handshake). The browser holds the session with a WebSocket; when the socket
+drops — tab closed, page reloaded, network blip, split-view pane popped out —
+the **host session keeps running** for `SESSION_GRACE_MS` (default 5 minutes)
+and can be re-bound to a new connection:
+
+- **Reload** (F5) of a session page resumes it: the browser remembers the
+  token in `sessionStorage` and reattaches instead of dropping you at the
+  menu.
+- **Pop-out** uses the same mechanism to move a pane's session into a real
+  browser window (`?attach=<token>` deep link).
+- The **Reconnect** button first tries to reattach, so a dropped Wi-Fi link
+  no longer costs you your sign-on or your half-filled screen.
+- After the grace expires with nobody reattached, the session is torn down
+  and its device name freed, exactly as a closing socket did before.
+
+`?attach=<token>` without a live session (expired, or the gateway restarted —
+the registry is in-memory) reports the failure and, if the URL also carries
+`?system=<id>`, falls back to a fresh session on that system. The token is a
+bearer credential for the session within your origin — the same trust model
+as the rest of the app (Pangolin enforces identity at the edge) — and
+`SESSION_GRACE_MS=0` restores the strict socket-closed-equals-session-ended
+behaviour everywhere. `?auto=1` embedded launches always keep that strict
+contract, so embedders' "removing the iframe ends the session" assumption
+holds unchanged.
 
 ## Automated data-entry launches
 

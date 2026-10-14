@@ -114,6 +114,7 @@ async function main() {
         IBM_I_CODEPAGE: 'cp037',
         ADMIN_PIN,
         ALLOW_CUSTOM_HOST: '1', // lets section 10 aim a session at a dead port
+        SESSION_GRACE_MS: '0', // legacy close-equals-teardown for the sections below
         WEB5250_DB: join(mkdtempSync(join(tmpdir(), 'web5250-smoke-')), 'menu.db')
       }
     })
@@ -337,8 +338,100 @@ async function main() {
   }
   check('6th bad PIN is locked out (429)', lastStatus === 429, `status=${lastStatus}`);
 
-  // ------------------------------------- 10. host failure reaps the session
-  console.log('\n10. Host failure tears down the session');
+  // ------------------------- 10. attach / takeover / grace (SESSION_GRACE_MS)
+  // A second gateway with a short grace period: a detached session stays
+  // alive and re-attachable via its hello token, a second attach takes it
+  // over, and {t:'end'} or grace expiry destroys it for real.
+  console.log('\n10. Session attach, takeover and grace');
+  {
+    const GRACE_PORT = HTTP_PORT + 1;
+    procs.push(
+      spawn(process.execPath, ['dist/server.js'], {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          PORT: String(GRACE_PORT),
+          IBM_I_HOST: '127.0.0.1',
+          IBM_I_PORT: String(MOCK_PORT),
+          IBM_I_DEV_PREFIX: 'GRACE_',
+          IBM_I_TERM_TYPE: 'IBM-3477-FC',
+          IBM_I_CODEPAGE: 'cp037',
+          ALLOW_CUSTOM_HOST: '1',
+          SESSION_GRACE_MS: '2500',
+          WEB5250_DB: join(mkdtempSync(join(tmpdir(), 'web5250-smoke-')), 'menu.db')
+        }
+      })
+    );
+    const graceHttp = `http://127.0.0.1:${GRACE_PORT}`;
+    let healthy = false;
+    for (let i = 0; i < 50 && !healthy; i++) {
+      try {
+        healthy = (await fetch(`${graceHttp}/healthz`)).ok;
+      } catch {
+        await sleep(200);
+      }
+    }
+    check('grace gateway became healthy', healthy);
+    const openOn = async (qs) => {
+      const sock = new WebSocket(`ws://127.0.0.1:${GRACE_PORT}/ws${qs}`);
+      const term = new Term();
+      let hello = null;
+      let detachedDetail = '';
+      sock.addEventListener('message', (ev) => {
+        const msg = JSON.parse(String(ev.data));
+        term.apply(msg);
+        if (msg.t === 'hello') hello = msg;
+        if (msg.t === 'status' && msg.status === 'detached') detachedDetail = msg.detail ?? '';
+      });
+      const closed = new Promise((resolve) => sock.addEventListener('close', () => resolve(true)));
+      await new Promise((resolve, reject) => {
+        sock.addEventListener('open', resolve);
+        sock.addEventListener('error', reject);
+      });
+      for (let i = 0; i < 60 && !hello; i++) await sleep(50);
+      // detachedDetail via getter: it is assigned after this object is returned.
+      return { sock, term, hello, closed, get detachedDetail() { return detachedDetail; } };
+    };
+
+    const first = await openOn(`?devname=ATTACHDEV`);
+    check('hello carries a session token', typeof first.hello?.sessionToken === 'string' && first.hello.sessionToken.length >= 16, JSON.stringify(first.hello?.sessionToken));
+    check('hello carries the grace period', first.hello?.graceMs === 2500, JSON.stringify(first.hello?.graceMs));
+    check('session reached the sign-on screen', await waitFor(first, () => first.term.text().includes('Sign On'), 8000));
+    const beforeText = first.term.text();
+
+    // Detach: closing the socket must NOT tear the session down.
+    first.sock.close();
+    await sleep(400);
+    const second = await openOn(`?attach=${first.hello.sessionToken}`);
+    check('attach replays the same device name', second.hello?.devName === 'ATTACHDEV', JSON.stringify(second.hello?.devName));
+    check('attach replays the screen', await waitFor(second, () => second.term.text() === beforeText, 5000));
+
+    // Takeover: a third attach evicts the second front-end.
+    const third = await openOn(`?attach=${first.hello.sessionToken}`);
+    check('takeover attaches the new front-end', third.hello?.devName === 'ATTACHDEV', JSON.stringify(third.hello?.devName));
+    check('evicted front-end is told it was detached', await waitFor(second, () => second.detachedDetail !== '', 5000), JSON.stringify(second.detachedDetail));
+    check('evicted socket closes', await Promise.race([second.closed, sleep(3000).then(() => false)]));
+    third.sock.send(JSON.stringify({ t: 'end' }));
+    check('explicit end closes the socket', await Promise.race([third.closed, sleep(3000).then(() => false)]));
+    await sleep(300);
+    const fresh = await openOn(`?devname=ATTACHDEV`);
+    check('device name released after explicit end', fresh.hello?.devName === 'ATTACHDEV', JSON.stringify(fresh.hello?.devName));
+
+    // Grace expiry: a detached session that is not re-attached disappears.
+    fresh.sock.close();
+    await sleep(3400);
+    const late = await openOn(`?attach=${fresh.hello.sessionToken}`);
+    check(
+      'expired token refused with a status error',
+      await waitFor(late, () => late.term.rawLog.some((m) => m.includes('no longer available')), 5000),
+      JSON.stringify(late.term.rawLog.filter((m) => m.includes('status')).slice(-2))
+    );
+    late.sock.close();
+    await sleep(200);
+  }
+
+  // ------------------------------------- 11. host failure reaps the session
+  console.log('\n11. Host failure tears down the session');
   const openSession = async (url) => {
     const sock = new WebSocket(url);
     const msgs = [];

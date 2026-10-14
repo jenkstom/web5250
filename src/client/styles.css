@@ -116,9 +116,13 @@ html, body {
   display: grid;
   gap: 2px;
   background: var(--line);
+  /* Two columns for any pane count; a lone trailing pane spans the width. */
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 1fr;
 }
-#grid-panes[data-panes='2'] { grid-template-columns: 1fr 1fr; }
-#grid-panes[data-panes='4'] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+#grid-panes[data-panes='1'] { grid-template-columns: 1fr; }
+#grid-panes[data-panes='3'] .grid-pane:nth-child(3),
+#grid-panes[data-panes='5'] .grid-pane:nth-child(5) { grid-column: 1 / -1; }
 
 /* Panes: fixed DOM nodes - moving an iframe in the DOM reloads it (and its
    session), so rearranging swaps CSS order / visibility instead. */
@@ -723,5 +727,7 @@ button.primary { border-color: var(--green); color: var(--green); }
 
   /* Split view stacks vertically on phones (it is a large-page feature,
      but the layout should not break if someone opens it there). */
-  #grid-panes[data-panes='2'] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  #grid-panes { grid-template-columns: 1fr; }
+  #grid-panes[data-panes='3'] .grid-pane:nth-child(3),
+  #grid-panes[data-panes='5'] .grid-pane:nth-child(5) { grid-column: auto; }
 }

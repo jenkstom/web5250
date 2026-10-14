@@ -4,7 +4,8 @@
 //       Pangolin under any sub-path) plus /healthz for uptime checks and the
 //       /api/* JSON surface (connection menu + PIN-gated admin editor).
 // WS:    upgrades any path ending in /ws to a terminal session, optionally
-//       targeting a menu-selected system (?system=<id> in the SQLite store).
+//       targeting a menu-selected system (?system=<id> in the SQLite store)
+//       or re-attaching to a running one (?attach=<session token>).
 //
 // Authentication is intentionally absent: Pangolin enforces identity at the
 // edge (this service should never be exposed directly to the internet).
@@ -14,7 +15,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { loadConfig } from './config.ts';
-import { GatewaySession, type SessionQuery, type AutoQuery } from './gateway.ts';
+import { HostSession, type SessionQuery, type AutoQuery } from './gateway.ts';
+import { getSession, allSessions } from './sessions.ts';
 import { Systems } from './systems.ts';
 import { createApiHandler } from './api.ts';
 
@@ -133,18 +135,54 @@ server.on('upgrade', (req, socket, head) => {
     // logged so operators can correlate browser users with 5250 devices.
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim();
+
+    // ?attach=<token>: bind this socket to an already-running host session
+    // (pop-out window, reload re-attach). A second attach takes the session
+    // over from the first front-end, which is told with status 'detached'.
+    if (query.attach) {
+      const core = getSession(query.attach);
+      if (!core || core.isDestroyed) {
+        console.log(`[ws] attach refused: unknown or expired session token`);
+        // Upgrade anyway and say why - the browser shows a real message
+        // instead of a bare close.
+        ws.send(
+          JSON.stringify({
+            t: 'status',
+            status: 'error',
+            detail: 'This session is no longer available (it ended or the grace period expired).'
+          })
+        );
+        ws.close(1000, 'unknown session');
+        return;
+      }
+      const target = { host: core.sessionInfo.host, port: core.sessionInfo.port };
+      console.log(
+        `[ws] attach${clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
+          `${target.host}:${target.port} (${core.devName ?? 'no device'})`
+      );
+      wireSocket(ws, core.attach(ws));
+      return;
+    }
+
     const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
     console.log(
       `[ws] session open${clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
         `${target.host}:${target.port}`
     );
-    const session = new GatewaySession(ws, cfg, query, system);
-    ws.on('message', (data) => session.handleMessage(data.toString()));
-    ws.on('close', () => session.destroy());
-    ws.on('error', () => session.destroy());
-    session.start();
+    wireSocket(ws, new HostSession(cfg, query, system).attach(ws));
   });
 });
+
+/** Shared per-socket wiring: messages in, detach (not destroy) on close. */
+function wireSocket(ws: import('ws').WebSocket, session: import('./gateway.ts').GatewaySession): void {
+  ws.on('message', (data) => session.handleMessage(data.toString()));
+  // Closing the socket detaches the front-end; the host session itself lives
+  // on for SESSION_GRACE_MS unless this was an ?auto=1 launch (strict) or an
+  // explicit {t:'end'} arrived.
+  ws.on('close', () => session.socketClosed());
+  ws.on('error', () => session.socketClosed());
+  session.start();
+}
 
 function parseSessionQuery(url: URL): SessionQuery {
   const q = url.searchParams;
@@ -164,6 +202,7 @@ function parseSessionQuery(url: URL): SessionQuery {
     codePage: sanitize(q.get('cp'), 10),
     devName: sanitizeDevName(q.get('devname')),
     systemId: int(q.get('system')),
+    attach: sanitize(q.get('attach'), 64),
     auto: parseAuto(q)
   };
 }
@@ -242,6 +281,9 @@ server.listen(cfg.port, cfg.host, () => {
 
 function shutdown(): void {
   clearInterval(pingInterval);
+  // Tear every host session down (releases the devices on the IBM i side)
+  // before the sockets go away.
+  for (const core of allSessions()) core.destroy();
   for (const ws of wss.clients) ws.terminate();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();

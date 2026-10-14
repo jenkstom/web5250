@@ -34,22 +34,31 @@ const mouseProbeAid = (() => {
   return Number.isInteger(v) && v >= 0x01 && v <= 0xff ? v : null;
 })();
 
-// Split-view mode (?grid=2|4, optionally &systems=<id>,<id> preassigning
+// Split-view mode (?grid=1..6, optionally &systems=<id>,<id> preassigning
 // panes): the page lays out that many independent session panes - same-origin
 // iframes of this very app. The gateway gives every WebSocket its own 5250
 // device (display names deduped server-side), so each pane is a full session
 // with its own menu, zoom and keyboard focus.
 const gridPanes = (() => {
   const n = Number.parseInt(launchParams.get('grid') ?? '', 10);
-  return n === 2 || n === 4 ? n : null;
+  return n >= 1 && n <= 6 ? n : null;
 })();
 
 // ---------------------------------------------------------------- transport
 interface SessionTarget {
   system?: MenuSystem;
+  /** Re-attach token for a live gateway-side session (?attach= / reloads). */
+  attach?: string;
 }
 let target: SessionTarget = {};
 let endingSession = false;
+
+// The gateway hands every session an unguessable token (hello.sessionToken):
+// ?attach=<token> re-binds a browser to the running host session. The single
+// page keeps the last one in sessionStorage so a reload resumes instead of
+// re-signing-on; the split-view parent collects them for its panes.
+const SESSION_KEY = 'web5250.session';
+let sessionGraceMs = 0;
 
 function wsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -59,6 +68,8 @@ function wsUrl(): string {
   const params = new URLSearchParams(window.location.search);
   if (target.system) params.set('system', String(target.system.id));
   else params.delete('system');
+  if (target.attach) params.set('attach', target.attach);
+  else params.delete('attach');
   // The browser's saved display name rides along; the gateway appends a
   // numeric suffix automatically when another live session already has it.
   const dev = displayName();
@@ -87,6 +98,17 @@ function signalSessionEnd(reason: string, detail: string): void {
   signalledEnd = true;
   window.parent.postMessage({ source: 'web5250', type: 'session-end', reason, detail }, parentOrigin);
 }
+
+// The split-view parent ends its panes' host sessions explicitly when the
+// grid exits (a plain socket close would leave them in re-attach grace).
+window.addEventListener('message', (e) => {
+  const d = e.data as { source?: string; type?: string };
+  if (d?.source !== 'web5250' || d?.type !== 'end-session') return;
+  endingSession = true;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('{"t":"end"}');
+  ws?.close();
+  sessionStorage.removeItem(SESSION_KEY);
+});
 
 function sendKey(k: string, ch?: string): void {
   term.clearSelection(); // typing abandons a marked region
@@ -177,6 +199,33 @@ function handleMessage(data: string): void {
       const parts = [msg.systemName, msg.devName, msg.host, msg.termType].map((v) => String(v ?? ''));
       $('dev-info').textContent = parts.filter(Boolean).join(' · ');
       setConnState('connecting');
+      // The re-attach token identifies this host session gateway-side: kept
+      // for reloads (single page) and reported to a split-view parent so its
+      // pane bar can pop the session out into a real browser window.
+      sessionGraceMs = typeof msg.graceMs === 'number' ? msg.graceMs : 0;
+      if (typeof msg.sessionToken === 'string' && msg.sessionToken) {
+        sessionStorage.setItem(
+          SESSION_KEY,
+          JSON.stringify({ token: msg.sessionToken, systemId: msg.systemId ?? null })
+        );
+        if (window.parent !== window) {
+          const label = [msg.systemName, msg.devName].map((v) => String(v ?? '')).filter(Boolean).join(' · ');
+          window.parent.postMessage(
+            {
+              source: 'web5250',
+              type: 'session-token',
+              token: msg.sessionToken,
+              systemId: typeof msg.systemId === 'number' ? msg.systemId : null,
+              label
+            },
+            parentOrigin
+          );
+        }
+      }
+      // Name the window after the session: taskbars/docks then tell
+      // split-view panes apart.
+      const title = [msg.systemName, msg.devName].map((v) => String(v ?? '')).filter(Boolean).join(' · ');
+      if (title) document.title = `${title} · web5250`;
       // Tell a split-view parent who this pane is, so its tab / pane bar can
       // show the system and device name instead of "Session N".
       if (window.parent !== window) {
@@ -187,17 +236,34 @@ function handleMessage(data: string): void {
     }
     case 'status': {
       const status = String(msg.status);
+      const detail = typeof msg.detail === 'string' ? msg.detail : '';
       setConnState(status);
       if (status === 'connected') {
         hideOverlay();
+      } else if (status === 'detached') {
+        // Exclusive takeover: another window (typically a popped-out pane)
+        // now owns the session. The follow-up close must not overwrite this.
+        sessionEndedByHost = true;
+        sessionStorage.removeItem(SESSION_KEY);
+        signalSessionEnd('detached', detail);
+        showOverlay('Session opened elsewhere', detail, ['menu']);
       } else if (status === 'error' || status === 'closed') {
         sessionEndedByHost = true;
-        signalSessionEnd(status, typeof msg.detail === 'string' ? msg.detail : '');
-        showOverlay(
-          status === 'error' ? 'Connection failed' : 'Session ended',
-          typeof msg.detail === 'string' ? msg.detail : '',
-          ['menu', 'reconnect']
-        );
+        sessionStorage.removeItem(SESSION_KEY);
+        signalSessionEnd(status, detail);
+        // A re-attach whose token has expired (grace ran out, session ended
+        // elsewhere) falls back once to a fresh session on the same system.
+        // Without a system to fall back to, show the failure honestly rather
+        // than connecting to whatever the environment default is.
+        if (status === 'error' && target.attach) {
+          const system = target.system;
+          target = { system };
+          if (system) {
+            connect();
+            return;
+          }
+        }
+        showOverlay(status === 'error' ? 'Connection failed' : 'Session ended', detail, ['menu', 'reconnect']);
       } else {
         showOverlay(status === 'negotiating' ? 'Negotiating with host…' : 'Connecting…', '', []);
       }
@@ -512,11 +578,13 @@ function confirmLeave(): boolean {
 
 // Closing the tab or navigating away drops the host session with no sign-off;
 // the browser renders the prevented unload as its own leave/stay prompt.
-// Embedded launches (?auto=1) are torn down by the parent page, so they stay
-// out of this.
+// With a gateway grace period the session survives the drop and is offered
+// again on reload, so leaving costs nothing and must not nag. Embedded
+// launches (?auto=1) are torn down by the parent page, so they stay out of
+// this either way.
 if (!autoLaunch) {
   window.addEventListener('beforeunload', (e) => {
-    if (!sessionActive()) return;
+    if (!sessionActive() || sessionGraceMs > 0) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -538,8 +606,12 @@ function startSession(system: MenuSystem): void {
 /** Close the current session (if any) and go back to the system menu. */
 function endSession(): void {
   endingSession = true;
+  // Deliberate exit ends the host session outright - {t:'end'} skips the
+  // re-attach grace the socket close alone would get.
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('{"t":"end"}');
   ws?.close();
   mobileInput.blur(); // put the soft keyboard away before the menu shows
+  sessionStorage.removeItem(SESSION_KEY);
   hideOverlay();
   setConnState('idle');
   $('dev-info').textContent = '';
@@ -559,6 +631,34 @@ function boot(): void {
   }
   const params = new URLSearchParams(window.location.search);
   const sysId = Number.parseInt(params.get('system') ?? '', 10);
+  const attachToken = params.get('attach');
+  if (attachToken) {
+    // ?attach=<token>[&system=<id>]: re-bind to the running gateway-side
+    // session (pop-out window, reloaded page). If the token has expired the
+    // status-error handler falls back once to a fresh session on the system.
+    const begin = (): void => {
+      if (!autoLaunch) $('btn-systems').classList.remove('hidden');
+      setZoomButtonsVisible(!autoLaunch);
+      showOverlay('Reconnecting…', '', []);
+      connect();
+    };
+    if (Number.isInteger(sysId) && sysId > 0) {
+      fetchSystems()
+        .then((rows) => {
+          const row = rows.find((r) => r.id === sysId);
+          target = { system: row, attach: attachToken };
+          begin();
+        })
+        .catch(() => {
+          target = { attach: attachToken };
+          begin();
+        });
+    } else {
+      target = { attach: attachToken };
+      begin();
+    }
+    return;
+  }
   if (Number.isInteger(sysId) && sysId > 0) {
     fetchSystems()
       .then((rows) => {
@@ -580,6 +680,31 @@ function boot(): void {
     connect();
     return;
   }
+  // No deep link: a page reload of a plain session resumes the previous one
+  // (sessionStorage token) instead of dropping the user at the menu.
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? 'null') as {
+      token?: string;
+      systemId?: number | null;
+    } | null;
+    if (saved?.token) {
+      const begin = (system?: MenuSystem): void => {
+        target = { system, attach: saved.token };
+        if (!autoLaunch) $('btn-systems').classList.remove('hidden');
+        setZoomButtonsVisible(!autoLaunch);
+        showOverlay('Reconnecting…', '', []);
+        connect();
+      };
+      if (saved.systemId) {
+        fetchSystems()
+          .then((rows) => begin(rows.find((r) => r.id === saved.systemId)))
+          .catch(() => begin());
+      } else begin();
+      return;
+    }
+  } catch {
+    sessionStorage.removeItem(SESSION_KEY);
+  }
   void showMenu(startSession);
 }
 
@@ -599,130 +724,211 @@ interface GridPane {
   title: HTMLElement;
   tab: HTMLButtonElement;
   frame: HTMLIFrameElement;
+  /** Gateway re-attach token, reported by the pane once its session is up. */
+  token: string | null;
+  /** Menu system the pane was (re)assigned to, for pop-out URLs / grid state. */
+  systemId: number | null;
+  popBtn: HTMLButtonElement;
 }
 /** Built once per split-view page; empty outside ?grid= mode. */
 const gridPaneList: GridPane[] = [];
 /**
- * Visual sequence of pane indexes. The panes themselves never move in the
- * DOM - re-inserting an iframe reloads it and kills its session - so
- * rearranging rewrites CSS `order` on the fixed wrappers (tiles layout) and
- * re-appends the tab buttons (tab strip), and tabs view merely toggles
- * `display`, which pauses an iframe's painting but not its WebSocket.
+ * Visual sequence of panes. The panes themselves never move in the DOM -
+ * re-inserting an iframe reloads it and kills its session - so rearranging
+ * rewrites CSS `order` on the fixed wrappers (tiles layout) and re-appends
+ * the tab buttons (tab strip), and tabs view merely toggles `display`, which
+ * pauses an iframe's painting but not its WebSocket.
  */
-let gridOrder: number[] = [];
+let gridOrder: GridPane[] = [];
 let gridTabsMode = false;
-let gridActiveTab = 0;
-let dragPane: number | null = null;
+let gridActivePane: GridPane | null = null;
+let dragPane: GridPane | null = null;
 
 const GRID_VIEW_KEY = 'web5250.gridview';
 const GRID_TAB_KEY = 'web5250.gridtab';
+/**
+ * Pane layout + live session tokens, so a reload of the grid page reattaches
+ * every pane to its still-running gateway-side session instead of starting
+ * over (and the pop-out buttons have their tokens right after a reload).
+ */
+const GRID_STATE_KEY = 'web5250.gridstate';
+const MAX_PANES = 6;
+
+function saveGridState(): void {
+  localStorage.setItem(
+    GRID_STATE_KEY,
+    JSON.stringify(gridPaneList.map((p) => ({ system: p.systemId, token: p.token })))
+  );
+}
+
+function loadGridState(): { system: number | null; token: string | null }[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GRID_STATE_KEY) ?? '[]') as {
+      system?: number | null;
+      token?: string | null;
+    }[];
+    if (!Array.isArray(raw)) return [];
+    return raw.map((p) => ({
+      system: typeof p.system === 'number' ? p.system : null,
+      token: typeof p.token === 'string' && p.token ? p.token : null
+    }));
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Replace the single-session UI with N independent panes. Each pane is this
  * same app in an iframe (without the split params - a pane must never spawn
- * its own grid): `?systems=<id>,<id>` deep links the matching pane, the rest
- * boot into the system menu for a per-pane pick. One WebSocket and one 5250
- * device per pane; the gateway dedupes the shared display name (TOM → TOM1).
+ * its own grid): `?systems=<id>,<id>` deep links the matching pane, a saved
+ * grid state reattaches them to their old sessions, the rest boot into the
+ * system menu for a per-pane pick. One WebSocket and one 5250 device per
+ * pane; the gateway dedupes the shared display name (TOM → TOM1).
  */
 function bootGrid(n: number): void {
   $('app').classList.add('hidden');
   $('grid').classList.remove('hidden');
-  const panes = $('grid-panes');
-  const tabbar = $('grid-tabbar');
-  panes.dataset.panes = String(n);
   const preassigned = launchParams
     .get('systems')
     ?.split(',')
     .map((s) => Number.parseInt(s.trim(), 10))
     .filter((v) => Number.isInteger(v) && v > 0);
+  const saved = loadGridState();
   for (let i = 0; i < n; i++) {
-    const wrap = document.createElement('div');
-    wrap.className = 'grid-pane';
-    const bar = document.createElement('div');
-    bar.className = 'grid-pane-bar';
-    bar.title = 'Drag to move this session';
-    bar.draggable = true;
-    const title = document.createElement('span');
-    title.className = 'gp-title';
-    title.textContent = `Session ${i + 1}`;
-    const paneBtn = (label: string, tip: string, fn: () => void): HTMLButtonElement => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = label;
-      b.title = tip;
-      b.addEventListener('click', fn);
-      return b;
-    };
-    bar.append(
-      title,
-      paneBtn('◀', 'Move this session left', () => movePane(i, -1)),
-      paneBtn('▶', 'Move this session right', () => movePane(i, 1))
-    );
-    const frame = document.createElement('iframe');
-    frame.src = urlWithoutGrid(preassigned?.[i]);
-    frame.title = `5250 session ${i + 1}`;
-    // Copy screen / Paste inside each pane need the clipboard permission
-    // granted to iframes explicitly.
-    frame.setAttribute('allow', 'clipboard-read; clipboard-write');
-    wrap.append(bar, frame);
-    panes.appendChild(wrap);
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'grid-tab';
-    tab.textContent = title.textContent;
-    tab.title = 'Show this session';
-    tab.draggable = true;
-    tab.addEventListener('click', () => showTab(i));
-    tabbar.appendChild(tab);
-    gridPaneList.push({ wrap, title, tab, frame });
-    wirePaneDrag(wrap, tab, i);
+    // Explicit ?systems= preassignment wins over the saved state (a shared
+    // deep link should not resurrect someone else's panes).
+    const system = preassigned?.[i] ?? saved[i]?.system ?? null;
+    createPane({ system, attach: preassigned ? undefined : saved[i]?.token ?? undefined });
   }
-  gridOrder = gridPaneList.map((_, i) => i);
 
-  // Pane labels arrive from the panes themselves: the hello handler posts
-  // system + device name up to the parent.
+  // Pane labels and session tokens arrive from the panes themselves: the
+  // hello handler posts them up to the parent.
   window.addEventListener('message', (e) => {
-    const d = e.data as { source?: string; type?: string; label?: string };
-    if (d?.source !== 'web5250' || d?.type !== 'session-info' || typeof d.label !== 'string') return;
-    const i = gridPaneList.findIndex((p) => p.frame.contentWindow === e.source);
-    if (i >= 0) setPaneLabel(i, d.label);
+    const d = e.data as { source?: string; type?: string; label?: string; token?: unknown; systemId?: unknown };
+    if (d?.source !== 'web5250') return;
+    const pane = gridPaneList.find((p) => p.frame.contentWindow === e.source);
+    if (!pane) return;
+    if (d.type === 'session-info' && typeof d.label === 'string') {
+      pane.title.textContent = d.label;
+      pane.tab.textContent = d.label;
+    } else if (d.type === 'session-token' && typeof d.token === 'string' && d.token) {
+      pane.token = d.token;
+      if (typeof d.systemId === 'number') pane.systemId = d.systemId;
+      pane.popBtn.disabled = false;
+      saveGridState();
+    }
   });
 
   gridTabsMode = localStorage.getItem(GRID_VIEW_KEY) === 'tabs';
   const savedTab = Number.parseInt(localStorage.getItem(GRID_TAB_KEY) ?? '', 10);
-  gridActiveTab = Number.isInteger(savedTab) && savedTab >= 0 && savedTab < n ? savedTab : 0;
+  gridActivePane = gridPaneList[Number.isInteger(savedTab) && savedTab >= 0 && savedTab < gridPaneList.length ? savedTab : 0] ?? null;
   $('grid-view-tiles').addEventListener('click', () => setGridView(false));
   $('grid-view-tabs').addEventListener('click', () => setGridView(true));
   $('grid-view-tiles').classList.toggle('active', !gridTabsMode);
   $('grid-view-tabs').classList.toggle('active', gridTabsMode);
+  $('grid-add').addEventListener('click', () => {
+    if (gridPaneList.length < MAX_PANES) createPane();
+  });
+  updateAddButton();
   applyGridOrder();
   applyGridView();
 
   $('grid-exit').addEventListener('click', () => {
-    // The per-pane beforeunload guards fire while the panes unload, so an
-    // active session still asks before this tears them all down.
-    window.location.href = urlWithoutGrid();
+    // Exiting split view is deliberate: end every pane's host session now
+    // ({t:'end'} skips the detach grace) instead of leaving them to expire.
+    for (const p of gridPaneList) {
+      p.frame.contentWindow?.postMessage({ source: 'web5250', type: 'end-session' }, '*');
+    }
+    localStorage.removeItem(GRID_STATE_KEY);
+    window.setTimeout(() => {
+      window.location.href = urlWithoutGrid();
+    }, 200);
   });
 }
 
-function setPaneLabel(i: number, label: string): void {
-  const p = gridPaneList[i];
-  p.title.textContent = label;
-  p.tab.textContent = label;
+/** One pane: bar (title, move, pop-out, close) + the session iframe + a tab. */
+function createPane(init: { system?: number | null; attach?: string } = {}): void {
+  const panes = $('grid-panes');
+  const tabbar = $('grid-tabbar');
+  const index = gridPaneList.length;
+  const pane: GridPane = {
+    wrap: document.createElement('div'),
+    title: document.createElement('span'),
+    tab: document.createElement('button'),
+    frame: document.createElement('iframe'),
+    token: null,
+    systemId: init.system ?? null,
+    popBtn: document.createElement('button')
+  };
+  pane.wrap.className = 'grid-pane';
+  const bar = document.createElement('div');
+  bar.className = 'grid-pane-bar';
+  bar.title = 'Drag to move this session';
+  bar.draggable = true;
+  pane.title.className = 'gp-title';
+  pane.title.textContent = `Session ${index + 1}`;
+  const paneBtn = (label: string, tip: string, fn: () => void): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.title = tip;
+    b.addEventListener('click', fn);
+    return b;
+  };
+  pane.popBtn = paneBtn('↗', 'Move this session out to its own window', () => popOut(pane));
+  pane.popBtn.disabled = true; // enabled when the pane reports its token
+  bar.append(
+    pane.title,
+    paneBtn('◀', 'Move this session left', () => movePane(pane, -1)),
+    paneBtn('▶', 'Move this session right', () => movePane(pane, 1)),
+    pane.popBtn,
+    paneBtn('×', 'Close this pane (the session stays available for a while)', () => closePane(pane))
+  );
+  // ?attach= reattaches to the previous session after a reload; ?system=
+  // is the fallback (and the deep-link assignment) when it no longer exists.
+  const url = new URL(urlWithoutGrid(init.system ?? undefined));
+  if (init.attach) url.searchParams.set('attach', init.attach);
+  pane.frame.src = url.href;
+  pane.frame.title = `5250 session ${index + 1}`;
+  // Copy screen / Paste inside each pane need the clipboard permission
+  // granted to iframes explicitly.
+  pane.frame.setAttribute('allow', 'clipboard-read; clipboard-write');
+  pane.wrap.append(bar, pane.frame);
+  panes.appendChild(pane.wrap);
+  pane.tab.type = 'button';
+  pane.tab.className = 'grid-tab';
+  pane.tab.textContent = pane.title.textContent;
+  pane.tab.title = 'Show this session';
+  pane.tab.draggable = true;
+  pane.tab.addEventListener('click', () => showTab(pane));
+  tabbar.appendChild(pane.tab);
+  gridPaneList.push(pane);
+  gridOrder.push(pane);
+  panes.dataset.panes = String(gridPaneList.length);
+  wirePaneDrag(pane);
+  updateAddButton();
+  saveGridState();
+  applyGridOrder();
+}
+
+function updateAddButton(): void {
+  const add = $<HTMLButtonElement>('grid-add');
+  add.disabled = gridPaneList.length >= MAX_PANES;
+  add.title = gridPaneList.length >= MAX_PANES ? `At most ${MAX_PANES} panes` : 'Add a session pane';
 }
 
 /** Move a pane one slot left/right in the visual sequence. */
-function movePane(i: number, dir: -1 | 1): void {
-  const from = gridOrder.indexOf(i);
+function movePane(pane: GridPane, dir: -1 | 1): void {
+  const from = gridOrder.indexOf(pane);
   const to = from + dir;
   if (from < 0 || to < 0 || to >= gridOrder.length) return;
   gridOrder.splice(from, 1);
-  gridOrder.splice(to, 0, i);
+  gridOrder.splice(to, 0, pane);
   applyGridOrder();
 }
 
 /** Drop a dragged pane onto another pane's slot (insert-at-position). */
-function reorderPane(src: number, dst: number): void {
+function reorderPane(src: GridPane, dst: GridPane): void {
   if (src === dst) return;
   const from = gridOrder.indexOf(src);
   const to = gridOrder.indexOf(dst);
@@ -732,20 +938,63 @@ function reorderPane(src: number, dst: number): void {
   applyGridOrder();
 }
 
+/** Move a pane's session out to a real browser window (and drop the pane). */
+function popOut(pane: GridPane): void {
+  if (!pane.token) return;
+  const url = new URL(urlWithoutGrid(pane.systemId ?? undefined));
+  url.searchParams.set('attach', pane.token);
+  // window.open must run inside the click gesture or the popup blocker eats
+  // it; the grid parent (not the pane) opens, so a blocked popup is caught.
+  const win = window.open(url.href, 'web5250', 'popup=yes,width=1000,height=680');
+  if (!win) {
+    window.alert('The browser blocked the pop-up window. Allow pop-ups for this site and try again.');
+    return;
+  }
+  // The session itself is safe: the new window attaches to the same token,
+  // which detaches (and then closes) this pane's front-end server-side.
+  closePane(pane);
+}
+
+/** Remove a pane; its session detaches and stays re-attachable in grace. */
+function closePane(pane: GridPane): void {
+  const i = gridPaneList.indexOf(pane);
+  if (i < 0) return;
+  gridPaneList.splice(i, 1);
+  const o = gridOrder.indexOf(pane);
+  if (o >= 0) gridOrder.splice(o, 1);
+  if (gridActivePane === pane) {
+    gridActivePane = gridPaneList[o] ?? gridPaneList[gridPaneList.length - 1] ?? null;
+    if (gridActivePane) localStorage.setItem(GRID_TAB_KEY, String(gridPaneList.indexOf(gridActivePane)));
+  }
+  pane.frame.src = 'about:blank'; // stops the pane without reloading others
+  pane.wrap.remove();
+  pane.tab.remove();
+  $('grid-panes').dataset.panes = String(gridPaneList.length);
+  if (gridPaneList.length === 0) {
+    localStorage.removeItem(GRID_STATE_KEY);
+    window.location.href = urlWithoutGrid();
+    return;
+  }
+  updateAddButton();
+  saveGridState();
+  applyGridOrder();
+  applyGridView();
+}
+
 function applyGridOrder(): void {
   const tabbar = $('grid-tabbar');
-  gridOrder.forEach((paneIdx, pos) => {
-    gridPaneList[paneIdx].wrap.style.order = String(pos);
-    tabbar.appendChild(gridPaneList[paneIdx].tab); // re-append = strip order
+  gridOrder.forEach((pane, pos) => {
+    pane.wrap.style.order = String(pos);
+    tabbar.appendChild(pane.tab); // re-append = strip order
   });
 }
 
-function showTab(i: number): void {
-  gridActiveTab = i;
-  localStorage.setItem(GRID_TAB_KEY, String(i));
+function showTab(pane: GridPane): void {
+  gridActivePane = pane;
+  localStorage.setItem(GRID_TAB_KEY, String(gridPaneList.indexOf(pane)));
   applyGridView();
   // Hand the keyboard straight to the newly shown session.
-  gridPaneList[i].frame.contentWindow?.focus();
+  pane.frame.contentWindow?.focus();
 }
 
 function setGridView(tabs: boolean): void {
@@ -760,18 +1009,18 @@ function setGridView(tabs: boolean): void {
 function applyGridView(): void {
   $('grid-tabbar').classList.toggle('hidden', !gridTabsMode);
   $('grid-panes').classList.toggle('tabs', gridTabsMode);
-  for (let i = 0; i < gridPaneList.length; i++) {
-    gridPaneList[i].tab.classList.toggle('active', gridTabsMode && i === gridActiveTab);
-    gridPaneList[i].wrap.style.display = gridTabsMode && i !== gridActiveTab ? 'none' : '';
+  for (const p of gridPaneList) {
+    p.tab.classList.toggle('active', gridTabsMode && p === gridActivePane);
+    p.wrap.style.display = gridTabsMode && p !== gridActivePane ? 'none' : '';
   }
 }
 
 /** Drag & drop for both the pane bars (tiles) and the tabs; same swap. */
-function wirePaneDrag(wrap: HTMLDivElement, tab: HTMLButtonElement, i: number): void {
+function wirePaneDrag(pane: GridPane): void {
   const start = (e: DragEvent): void => {
-    dragPane = i;
+    dragPane = pane;
     if (e.dataTransfer) {
-      e.dataTransfer.setData('text/plain', String(i));
+      e.dataTransfer.setData('text/plain', String(gridPaneList.indexOf(pane)));
       e.dataTransfer.effectAllowed = 'move';
     }
     $('grid-panes').classList.add('dragging');
@@ -786,7 +1035,7 @@ function wirePaneDrag(wrap: HTMLDivElement, tab: HTMLButtonElement, i: number): 
   };
   const target = (el: HTMLElement): void => {
     el.addEventListener('dragover', (e) => {
-      if (dragPane === null || dragPane === i) return;
+      if (dragPane === null || dragPane === pane) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
       el.classList.add('drop-target');
@@ -795,15 +1044,15 @@ function wirePaneDrag(wrap: HTMLDivElement, tab: HTMLButtonElement, i: number): 
     el.addEventListener('drop', (e) => {
       e.preventDefault();
       el.classList.remove('drop-target');
-      if (dragPane !== null) reorderPane(dragPane, i);
+      if (dragPane !== null) reorderPane(dragPane, pane);
     });
   };
-  wrap.addEventListener('dragstart', start); // fired by the bar, bubbles
-  tab.addEventListener('dragstart', start);
-  wrap.addEventListener('dragend', end);
-  tab.addEventListener('dragend', end);
-  target(wrap);
-  target(tab);
+  pane.wrap.addEventListener('dragstart', start); // fired by the bar, bubbles
+  pane.tab.addEventListener('dragstart', start);
+  pane.wrap.addEventListener('dragend', end);
+  pane.tab.addEventListener('dragend', end);
+  target(pane.wrap);
+  target(pane.tab);
 }
 
 // ------------------------------------------------------------------- zoom

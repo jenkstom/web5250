@@ -25,6 +25,12 @@ export interface Config {
   wsPingIntervalMs: number;
   /** Missed pongs tolerated before a dead browser's host session is torn down. */
   wsPingMaxMisses: number;
+  /**
+   * How long (ms) a host session with no attached browser stays alive,
+   * re-attachable via its session token. 0 = strict legacy behaviour
+   * (closing the socket tears the session down immediately).
+   */
+  sessionGraceMs: number;
   /** Shared assumed-identity account for ?auto=1 launches (server-held). */
   autoSignOnUser: string | null;
   autoSignOnPassword: string | null;
@@ -91,6 +97,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // whose keepalive timers slipped (throttled tab, slow proxy) survives;
     // a vanished browser still frees its iSeries session promptly.
     wsPingMaxMisses: int(env.WS_PING_MAX_MISSES, 4),
+    // Five minutes covers a refresh, a lost Wi-Fi link or moving a split-view
+    // pane into its own window; 0 restores the strict close-equals-teardown
+    // model (and the E2E suites run that way to keep their assumptions).
+    sessionGraceMs: clampInt(env.SESSION_GRACE_MS, 0, 24 * 60 * 60 * 1000, 300000),
     autoSignOnUser: env.AUTO_SIGNON_USER?.trim() || null,
     autoSignOnPassword: env.AUTO_SIGNON_PASSWORD ?? null,
     frameAncestors: env.FRAME_ANCESTORS?.trim() || null,

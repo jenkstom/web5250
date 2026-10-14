@@ -1,9 +1,17 @@
-// Bridges one browser WebSocket to one TN5250 client session.
+// Bridges browser WebSockets to TN5250 client sessions.
 //
 // The gateway is deliberately thin: the server-side Screen5250 is the single
 // source of truth. Browsers send logical key events ('enter', 'pf3', 'char',
 // 'fieldexit', ...); local field editing happens server-side; screen diffs
 // and OIA state flow back as compact JSON messages.
+//
+// A session is two pieces: the HostSession core owns the tn5250 client, its
+// display-name lease and the launch automation - everything that must
+// outlive a browser. GatewaySession is the per-WebSocket front-end that
+// attaches to a core and streams it. Detaching (tab close, reload, moving a
+// split-view pane into its own window) keeps the core alive for the grace
+// period, re-attachable by its token via ?attach=...; a second attach takes
+// the session over exclusively from the first front-end.
 import type { WebSocket } from 'ws';
 import * as C from './tn5250/constants.ts';
 import { Tn5250Client } from './tn5250/client.ts';
@@ -12,6 +20,7 @@ import { makeDeviceName } from './config.ts';
 import { devices } from './devices.ts';
 import type { SystemRow } from './systems.ts';
 import { Automation } from './automation.ts';
+import { newSessionToken, registerSession, removeSession } from './sessions.ts';
 
 export interface SessionQuery {
   host?: string;
@@ -22,6 +31,8 @@ export interface SessionQuery {
   devName?: string;
   /** Menu selection (?system=<id>) resolved by the HTTP layer. */
   systemId?: number;
+  /** Re-attach token (?attach=<token>) for an existing host session. */
+  attach?: string;
   /** ?auto=1 automated data-entry launch parameters. */
   auto?: AutoQuery;
 }
@@ -43,23 +54,37 @@ for (let i = 1; i <= 24; i++) KEY_TO_AID[`pf${i}`] = C.aidForPF(i);
 // Keys accepted while the keyboard is locked (X SYSTEM / X II).
 const LOCK_SAFE_KEYS = new Set(['reset', 'sysreq', 'attn', 'print']);
 
-export class GatewaySession {
-  private client: Tn5250Client;
-  private automation: Automation | null = null;
-  private flushTimer: NodeJS.Timeout | null = null;
-  private closed = false;
-  private lastSentCursor = -1;
-  private lastSentOia = '';
-  private lastSentMouse = '';
-  private lastSentPopup = '';
-  private beeped = false;
+// ---------------------------------------------------------------- the core
+/**
+ * The host side of a session: one tn5250 client, its device-name lease and
+ * (for ?auto=1 launches) the sign-on automation. Identified by an unguessable
+ * token that ?attach= can re-bind to a fresh browser socket. Zero or one
+ * front-ends are attached at a time (exclusive); with none attached the
+ * session lives for the grace period and is then torn down.
+ */
+export class HostSession {
+  readonly token = newSessionToken();
   readonly devName: string | null;
-  private readonly ws: WebSocket;
-  private readonly sessionInfo: { host: string; port: number; ssl: boolean; termType: string; codePage: string };
-  private readonly systemName: string | undefined;
+  readonly sessionInfo: { host: string; port: number; ssl: boolean; termType: string; codePage: string };
+  readonly systemName: string | undefined;
+  readonly systemId: number | undefined;
+  /**
+   * How long the session survives with no front-end attached. Automated
+   * launches keep the strict close-equals-teardown contract their embedders
+   * rely on, whatever the configured grace.
+   */
+  readonly graceMs: number;
+  readonly client: Tn5250Client;
+  readonly automation: Automation | null = null;
+  /** Last host-facing status, replayed to a re-attaching front-end. */
+  lastStatus = 'connecting';
+  lastStatusDetail: string | undefined;
+  private frontends: GatewaySession[] = [];
+  private started = false; // client.connect() called exactly once
+  private destroyed = false;
+  private graceTimer: NodeJS.Timeout | null = null;
 
-  constructor(ws: WebSocket, cfg: Config, query: SessionQuery, system?: SystemRow) {
-    this.ws = ws;
+  constructor(cfg: Config, query: SessionQuery, system?: SystemRow) {
     // Connection parameters resolve in order: explicit URL overrides
     // (ALLOW_CUSTOM_HOST) > menu-selected system (?system=<id> from the DB)
     // > the IBM_I_* environment defaults.
@@ -70,9 +95,12 @@ export class GatewaySession {
       allowCustom && typeof query.ssl === 'boolean' ? query.ssl : (system?.ssl ?? cfg.ibmSsl);
     const termType = allowCustom && query.termType ? query.termType.toUpperCase() : (system?.termType ?? cfg.termType);
     const codePage = allowCustom && query.codePage ? query.codePage.toLowerCase() : (system?.codePage ?? cfg.codePage);
+    this.graceMs = query.auto ? 0 : cfg.sessionGraceMs;
 
     // Requested display names (and even random ones) are made unique across
-    // live sessions: a taken name gets a numeric suffix (TOM -> TOM1).
+    // live sessions: a taken name gets a numeric suffix (TOM -> TOM1). The
+    // lease is held until the core is destroyed - a detached session keeps
+    // its device so the re-attach lands on the same host device.
     const requested = makeDeviceName(system?.devPrefix ?? cfg.devPrefix, query.devName);
     this.devName = devices.allocate(requested);
     if (requested && this.devName && requested !== this.devName) {
@@ -80,6 +108,7 @@ export class GatewaySession {
     }
     this.sessionInfo = { host, port, ssl, termType, codePage };
     this.systemName = system?.name;
+    this.systemId = system?.id;
 
     this.client = new Tn5250Client({
       host,
@@ -93,12 +122,14 @@ export class GatewaySession {
       codePage
     });
     // Terminal host state (connection failed, host dropped us): tear the
-    // session down right away - release the display name and close the
+    // session down right away - release the display name and close any
     // browser socket after the status message is queued, so the client
     // learns why before the close event. Without this, a dead host session
     // lingers until page unload and leaks its name (TOM -> TOM1 -> ...).
     this.client.onStatus = (s, detail) => {
-      this.sendStatus(s, detail);
+      this.lastStatus = s;
+      this.lastStatusDetail = detail;
+      for (const f of this.frontends) f.sendStatus(s, detail);
       if (s === 'closed' || s === 'error') this.destroy();
     };
     // ?auto=1 launch: sign on with the configured assumed-identity account
@@ -117,33 +148,168 @@ export class GatewaySession {
         },
         {
           onEnd: (reason, detail) => {
-            this.send('auto', { phase: 'ended', reason, detail });
+            for (const f of this.frontends) f.sendAuto('ended', reason, detail);
             this.destroy();
           },
-          onChange: () => this.scheduleFlush()
+          onChange: () => this.onScreenChange()
         }
       );
       console.log(`[ws] auto-launch session (sign-on user ${cfg.autoSignOnUser})`);
     }
-    this.client.onScreenChange = () => {
-      this.automation?.onScreen();
-      this.scheduleFlush();
-    };
+    this.client.onScreenChange = () => this.onScreenChange();
+    registerSession(this);
   }
+
+  get screen(): Tn5250Client['screen'] {
+    return this.client.screen;
+  }
+
+  get isDestroyed(): boolean {
+    return this.destroyed;
+  }
+
+  /** True while the launch automation is signing on / pre-filling. */
+  get suppressKeys(): boolean {
+    return this.automation?.suppressUserKeys ?? false;
+  }
+
+  /** Bind a browser socket to this session (exclusive - evicts the previous). */
+  attach(ws: WebSocket): GatewaySession {
+    this.cancelGrace();
+    const frontend = new GatewaySession(this, ws);
+    this.frontends.push(frontend);
+    for (const other of [...this.frontends]) {
+      if (other !== frontend) other.evict();
+    }
+    return frontend;
+  }
+
+  /** The browser socket went away (close/error): detach, arm the grace. */
+  frontendClosed(frontend: GatewaySession): void {
+    this.removeFrontend(frontend);
+    if (this.frontends.length > 0 || this.destroyed) return;
+    if (this.graceMs === 0) {
+      this.destroy();
+      return;
+    }
+    const secs = Math.round(this.graceMs / 1000);
+    console.log(`[ws] session ${this.devName ?? ''} detached; keeping it for ${secs}s (token ${this.token.slice(0, 8)}…)`);
+    this.graceTimer = setTimeout(() => {
+      console.log(`[ws] session ${this.devName ?? ''} expired: not re-attached within grace`);
+      this.destroy();
+    }, this.graceMs);
+  }
+
+  /** Explicit end ({t:'end'} or shutdown): no grace, tear down now. */
+  end(): void {
+    this.destroy();
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.cancelGrace();
+    removeSession(this.token);
+    this.automation?.destroy();
+    devices.release(this.devName);
+    this.client.destroy();
+    // Server-initiated teardown (host death, expiry, explicit end): close any
+    // attached browser socket too, so no controller-side connection is left
+    // dangling. No-op when the browser or the shutdown path closed it first.
+    for (const f of [...this.frontends]) f.sessionDestroyed();
+    this.frontends = [];
+  }
+
+  /** First attach drives connect(); later ones replay instead. */
+  markStarted(): boolean {
+    const first = !this.started;
+    this.started = true;
+    return first;
+  }
+
+  private onScreenChange(): void {
+    this.automation?.onScreen();
+    for (const f of this.frontends) f.scheduleFlush();
+  }
+
+  private removeFrontend(frontend: GatewaySession): void {
+    this.frontends = this.frontends.filter((f) => f !== frontend);
+  }
+
+  private cancelGrace(): void {
+    if (this.graceTimer) {
+      clearTimeout(this.graceTimer);
+      this.graceTimer = null;
+    }
+  }
+}
+
+// ------------------------------------------------------------- the front-end
+/** One attached browser socket: diff state + the client->session messages. */
+export class GatewaySession {
+  private flushTimer: NodeJS.Timeout | null = null;
+  private closed = false;
+  private lastSentCursor = -1;
+  private lastSentOia = '';
+  private lastSentMouse = '';
+  private lastSentPopup = '';
+  private beeped = false;
+
+  constructor(
+    private readonly core: HostSession,
+    private readonly ws: WebSocket
+  ) {}
 
   start(): void {
     this.send('hello', {
-      ...this.sessionInfo,
-      systemName: this.systemName,
-      devName: this.devName,
-      rows: this.client.screen.rows,
-      cols: this.client.screen.cols
+      ...this.core.sessionInfo,
+      systemName: this.core.systemName,
+      systemId: this.core.systemId,
+      devName: this.core.devName,
+      sessionToken: this.core.token,
+      graceMs: this.core.graceMs,
+      rows: this.core.screen.rows,
+      cols: this.core.screen.cols
     });
-    if (this.automation) {
-      this.send('auto', { phase: 'started' });
-      this.automation.start();
+    if (this.core.markStarted()) {
+      if (this.core.automation) {
+        this.send('auto', { phase: 'started' });
+        this.core.automation.start();
+      }
+      this.core.client.connect();
+    } else {
+      // Re-attach to a live session: replay where the host connection stands
+      // (no status event will fire for an already-connected client) and the
+      // current screen as a full snapshot - diff state is per front-end, so
+      // it starts from scratch.
+      this.sendStatus(this.core.lastStatus, this.core.lastStatusDetail);
+      this.sendSnapshot();
     }
-    this.client.connect();
+  }
+
+  /** Another front-end took the session over: hand it over and hang up. */
+  evict(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.stopFlushTimer();
+    this.send('status', { status: 'detached', detail: 'The session was opened in another window.' });
+    if (this.ws.readyState === 1) this.ws.close(1000, 'detached');
+    this.core.frontendClosed(this); // removes only; attach already re-armed
+  }
+
+  /** The core died (host, expiry, explicit end): follow it down. */
+  sessionDestroyed(): void {
+    this.closed = true;
+    this.stopFlushTimer();
+    if (this.ws.readyState === 1) this.ws.close(1000, 'session ended');
+  }
+
+  /** Socket close/error from the server side: detach from the core. */
+  socketClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.stopFlushTimer();
+    this.core.frontendClosed(this);
   }
 
   /** Client -> gateway message. */
@@ -160,12 +326,18 @@ export class GatewaySession {
     }
     const t = msg.t as string;
 
+    if (t === 'end') {
+      // Deliberate exit (Systems button, split-view teardown): end the host
+      // session now instead of leaving it to the grace period.
+      this.core.end();
+      return;
+    }
     if (t === 'key') {
       this.handleKey(msg.k as string, msg.ch as string | undefined, msg);
       return;
     }
     if (t === 'sysreq') {
-      this.client.sendSystemRequest(typeof msg.text === 'string' ? msg.text : undefined);
+      this.core.client.sendSystemRequest(typeof msg.text === 'string' ? msg.text : undefined);
       return;
     }
     if (t === 'ping') {
@@ -186,13 +358,13 @@ export class GatewaySession {
       };
       const code = EV[String(msg.ev)];
       if (code !== undefined) {
-        const screen = this.client.screen;
+        const screen = this.core.screen;
         const def = screen.mouseButtonFor(code);
         const r = Number(msg.r);
         const c = Number(msg.c);
         if (def && Number.isInteger(r) && Number.isInteger(c)) {
           if (def.moveCursor) screen.clickTo(r, c);
-          if (!this.client.sendMouseAid(def.aid)) this.beeped = true;
+          if (!this.core.client.sendMouseAid(def.aid)) this.beeped = true;
         } else {
           this.beeped = true;
         }
@@ -207,7 +379,7 @@ export class GatewaySession {
       const r = Number(msg.r);
       const c = Number(msg.c);
       if (Number.isInteger(aid) && Number.isInteger(r) && Number.isInteger(c)) {
-        if (!this.client.sendMouseProbe(aid, r, c)) this.beeped = true;
+        if (!this.core.client.sendMouseProbe(aid, r, c)) this.beeped = true;
         this.scheduleFlush();
       }
       return;
@@ -217,26 +389,26 @@ export class GatewaySession {
       // the user dismissed the menu without selecting.
       const choice = Number(msg.choice);
       if (Number.isInteger(choice)) {
-        if (!this.client.sendSelectionPick(choice)) this.beeped = true;
+        if (!this.core.client.sendSelectionPick(choice)) this.beeped = true;
         this.scheduleFlush();
       }
       return;
     }
     if (t === 'diag') {
       // One-click bug reports: raw records + parsed state for this session.
-      this.send('diag', { text: this.client.getDiagnostics() });
+      this.send('diag', { text: this.core.client.getDiagnostics() });
       return;
     }
   }
 
   private handleKey(k: string | undefined, ch: string | undefined, msg: Record<string, unknown>): void {
     if (!k) return;
-    const screen = this.client.screen;
+    const screen = this.core.screen;
 
     // While the launch automation is signing on / pre-filling, browser keys
     // could interleave with injected ones: ignore them (with a beep) until
     // the automation hands over control.
-    if (this.automation?.suppressUserKeys) {
+    if (this.core.suppressKeys) {
       this.beeped = true;
       this.scheduleFlush();
       return;
@@ -257,20 +429,20 @@ export class GatewaySession {
 
     if (LOCK_SAFE_KEYS.has(k)) {
       if (k === 'reset') {
-        this.client.localKey('reset');
+        this.core.client.localKey('reset');
       } else if (k === 'sysreq') {
-        this.client.sendSystemRequest();
+        this.core.client.sendSystemRequest();
       } else if (k === 'attn') {
-        this.client.sendAttention();
+        this.core.client.sendAttention();
       } else if (k === 'print') {
-        this.client.sendPrint();
+        this.core.client.sendPrint();
       }
       this.scheduleFlush();
       return;
     }
 
     if (k === 'help') {
-      if (screen.lock === 'none' && screen.waitingForInput) this.client.sendHelp();
+      if (screen.lock === 'none' && screen.waitingForInput) this.core.client.sendHelp();
       else this.beeped = true;
       this.scheduleFlush();
       return;
@@ -278,13 +450,13 @@ export class GatewaySession {
 
     const aid = KEY_TO_AID[k];
     if (aid !== undefined) {
-      const ok = this.client.sendAid(aid);
+      const ok = this.core.client.sendAid(aid);
       if (!ok) this.beeped = true;
       this.scheduleFlush();
       return;
     }
 
-    const reject = this.client.localKey(k, ch);
+    const reject = this.core.client.localKey(k, ch);
     if (reject) this.beeped = true;
     this.scheduleFlush();
   }
@@ -294,8 +466,13 @@ export class GatewaySession {
     if (this.ws.readyState === 1) this.ws.send(JSON.stringify({ t, ...body }));
   }
 
-  private sendStatus(status: string, detail?: string): void {
+  sendStatus(status: string, detail?: string): void {
     this.send('status', { status, detail });
+  }
+
+  /** Automation lifecycle for the embedding page (?auto=1 contract). */
+  sendAuto(phase: 'ended', reason: string, detail: string): void {
+    this.send('auto', { phase, reason, detail });
   }
 
   /** Compact host mouse bindings for the browser: {rightdown: 132, ...}. */
@@ -325,7 +502,7 @@ export class GatewaySession {
     });
   }
 
-  private scheduleFlush(): void {
+  scheduleFlush(): void {
     if (this.flushTimer || this.closed) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
@@ -333,36 +510,17 @@ export class GatewaySession {
     }, 16);
   }
 
+  private stopFlushTimer(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+  }
+
   private flush(): void {
     if (this.closed) return;
-    const s = this.client.screen;
+    const s = this.core.screen;
 
     if (s.structureDirty) {
-      s.structureDirty = false;
-      s.dirty.clear();
-      this.lastSentCursor = -1;
-      const mouse = this.mouseMap(s);
-      this.lastSentMouse = mouse;
-      const popup = this.popupJson(s);
-      this.lastSentPopup = popup;
-      this.send('screen', {
-        rows: s.rows,
-        cols: s.cols,
-        cursor: [s.rowOf(s.cursorPos), s.colOf(s.cursorPos)],
-        cells: this.encodeCells(0, s.size),
-        // Input-field layout so browsers can underline enterable areas.
-        // [dataStart, dataCellCount, attr]; bypass fields are not enterable.
-        fields: s.fields
-          .filter((f) => !f.isBypass)
-          .map((f) => [f.dataStart, f.length, f.attr]),
-        // Host-programmed mouse events: right-click / double-click bindings
-        // the browser acts on (local menu otherwise).
-        mouse: JSON.parse(mouse),
-        // Host-drawn popup menu (DEFINE SELECTION FIELD), if one is up.
-        popup: popup ? JSON.parse(popup) : null
-      });
-      this.sendOia(true);
-      this.beeped = false;
+      this.sendSnapshot();
       return;
     }
 
@@ -397,8 +555,38 @@ export class GatewaySession {
     }
   }
 
+  /** Full screen + OIA: first contact or a re-attach replay. */
+  private sendSnapshot(): void {
+    const s = this.core.screen;
+    s.structureDirty = false;
+    s.dirty.clear();
+    this.lastSentCursor = -1;
+    const mouse = this.mouseMap(s);
+    this.lastSentMouse = mouse;
+    const popup = this.popupJson(s);
+    this.lastSentPopup = popup;
+    this.send('screen', {
+      rows: s.rows,
+      cols: s.cols,
+      cursor: [s.rowOf(s.cursorPos), s.colOf(s.cursorPos)],
+      cells: this.encodeCells(0, s.size),
+      // Input-field layout so browsers can underline enterable areas.
+      // [dataStart, dataCellCount, attr]; bypass fields are not enterable.
+      fields: s.fields
+        .filter((f) => !f.isBypass)
+        .map((f) => [f.dataStart, f.length, f.attr]),
+      // Host-programmed mouse events: right-click / double-click bindings
+      // the browser acts on (local menu otherwise).
+      mouse: JSON.parse(mouse),
+      // Host-drawn popup menu (DEFINE SELECTION FIELD), if one is up.
+      popup: popup ? JSON.parse(popup) : null
+    });
+    this.sendOia(true);
+    this.beeped = false;
+  }
+
   private sendOia(force: boolean): void {
-    const s = this.client.screen;
+    const s = this.core.screen;
     const oia = s.oia();
     const key = JSON.stringify(oia);
     if (!force && key === this.lastSentOia) return;
@@ -407,7 +595,7 @@ export class GatewaySession {
   }
 
   private encodeDirty(): (number | string)[][] {
-    const s = this.client.screen;
+    const s = this.core.screen;
     const out: (number | string)[][] = [];
     const sorted = [...s.dirty].sort((a, b) => a - b);
     for (const pos of sorted) out.push(...this.encodeCells(pos, pos + 1));
@@ -425,7 +613,7 @@ export class GatewaySession {
    * the cursor.
    */
   private encodeCells(from: number, to: number): (number | string)[][] {
-    const s = this.client.screen;
+    const s = this.core.screen;
     const out: (number | string)[][] = [];
     for (let p = from; p < to && p < s.size; p++) {
       const attr = s.attrPlace[p] ? 0x20 : s.attrs[p];
@@ -433,18 +621,5 @@ export class GatewaySession {
       out.push([p, attr, ch]);
     }
     return out;
-  }
-
-  destroy(): void {
-    if (this.closed) return;
-    this.closed = true;
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.automation?.destroy();
-    devices.release(this.devName);
-    this.client.destroy();
-    // Server-initiated teardown (host death): close the browser socket too,
-    // so no controller-side connection is left dangling. No-op when the
-    // browser or the shutdown path closed it first.
-    if (this.ws.readyState === 1) this.ws.close(1000, 'session ended');
   }
 }
