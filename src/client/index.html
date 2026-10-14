@@ -7,31 +7,24 @@
     <title>IBM i 5250 Terminal</title>
   </head>
   <body>
-    <div id="grid" class="hidden">
-      <div id="grid-bar">
-        <span id="grid-brand">IBM i · 5250</span>
-        <span id="grid-hint">Split view — drag panes to rearrange; ↗ moves a session to its own window; + adds a pane</span>
-        <span class="spacer"></span>
-        <button id="grid-add" type="button" title="Add a session pane">+ Pane</button>
-        <button id="grid-view-tiles" type="button" class="active" title="Show every session at once">Tiles</button>
-        <button id="grid-view-tabs" type="button" title="One session at a time - the hidden ones stay connected">Tabs</button>
-        <button id="grid-exit" type="button" title="Close the split view (ends every pane's session)">Exit split view</button>
-      </div>
-      <div id="grid-tabbar" class="hidden"></div>
-      <div id="grid-panes"></div>
-    </div>
     <div id="app">
       <header id="topbar">
         <span id="brand">IBM i · 5250</span>
-        <span id="conn-state" class="conn-state" title="Connection state"></span>
+        <span id="conn-state" class="conn-state" title="Connection state of the focused session"></span>
         <span class="spacer"></span>
         <span id="dev-info" title="Session info"></span>
+        <span id="split-group" class="hidden">
+          <button id="btn-addpane" class="ghost" type="button" title="Add a session pane">+ Pane</button>
+          <button id="grid-view-tiles" class="ghost active" type="button" title="Show every session at once">Tiles</button>
+          <button id="grid-view-tabs" class="ghost" type="button" title="One session at a time - the hidden ones stay connected">Tabs</button>
+          <button id="btn-exitsplit" class="ghost" type="button" title="Leave split view (ends the extra sessions)">Exit split</button>
+        </span>
         <span id="zoom-group" class="hidden">
           <button id="btn-fit" class="ghost" type="button" title="Fit the terminal to the window">Fit</button>
           <button id="btn-half" class="ghost" type="button" title="Terminal at half the fitted size">½</button>
           <button id="btn-quarter" class="ghost" type="button" title="Terminal at quarter the fitted size">¼</button>
         </span>
-        <button id="btn-systems" class="ghost hidden" type="button" title="End the session and pick another system">Systems</button>
+        <button id="btn-systems" class="ghost hidden" type="button" title="End this session and pick another system">Systems</button>
         <button id="btn-diag" class="ghost hidden" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
         <button id="btn-keypad" class="ghost" type="button" title="Toggle on-screen keypad">Pad</button>
@@ -39,23 +32,10 @@
       </header>
 
       <main id="stage">
-        <div id="terminal" tabindex="0" aria-label="5250 terminal screen">
-          <canvas id="screen-canvas"></canvas>
-          <div id="host-menu" class="hidden" aria-label="Host menu"></div>
-          <input id="mobile-input" autocomplete="off" autocapitalize="off" spellcheck="false"
-                 enterkeyhint="send" aria-hidden="true" />
-        </div>
-        <div id="oia" aria-live="polite">
-          <span id="oia-left">
-            <span id="oia-lock"></span>
-            <span id="oia-insert"></span>
-            <span id="oia-mw"></span>
-          </span>
-          <span id="oia-msg"></span>
-          <span id="oia-right">
-            <span id="oia-pos"></span>
-          </span>
-        </div>
+        <div id="tabbar" class="hidden" role="tablist" aria-label="Sessions"></div>
+        <div id="panes" aria-label="5250 terminal sessions"></div>
+        <input id="mobile-input" autocomplete="off" autocapitalize="off" spellcheck="false"
+               enterkeyhint="send" aria-hidden="true" />
       </main>
 
       <div id="keypad" class="hidden">

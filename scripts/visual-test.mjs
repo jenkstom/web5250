@@ -381,8 +381,7 @@ let winOk = true;
   await page.evaluate(() =>
     Object.defineProperty(Navigator.prototype, 'clipboard', window.__clip)
   );
-  // the Close button kept focus; the blink checks below need the terminal
-  await page.evaluate(() => document.getElementById('terminal').focus());
+  // (the cursor's focus styling is window-level now; nothing to refocus)
 }
 
 // F1 help + F3 back, then verify OIA snapshot state via DOM
@@ -422,7 +421,8 @@ for (let i = 0; i < 12 && !blinked; i++) {
   blinked = JSON.stringify(s.edge) !== JSON.stringify(first.edge);
 }
 if (!blinked) console.log('CURSOR: no blink observed', JSON.stringify(first));
-await page.evaluate(() => document.activeElement?.blur());
+// The pane's cursor holds steady when the window loses focus.
+await page.evaluate(() => window.dispatchEvent(new Event('blur')));
 await page.waitForTimeout(120);
 const steady1 = await cursorPx();
 await page.waitForTimeout(800);

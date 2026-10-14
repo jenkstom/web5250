@@ -1,12 +1,15 @@
-// E2E for the terminal zoom buttons (Fit / ½ / ¼) and the ?grid= split view:
-// drives the real UI in headless Chromium against a running gateway
-// (npm run mock + a gateway on PORT with IBM_I_* pointing at it).
+// Zoom + split-view E2E: drives the real UI in headless Chromium against the
+// gateway + mock host. Covers the zoom buttons (Fit / ½ / ¼), the in-place
+// split view (one shell, N terminal panes), per-pane sessions with display
+// name dedupe, keyboard focus routing, tiles/tabs modes, reload reattach,
+// pane add/close and pop-out.
+//
 // Usage: node scripts/zoom-grid-test.mjs [port]
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 
-const PORT = process.argv[2] ?? '18094';
+const PORT = process.argv[2] ?? '18092';
 const BASE = `http://127.0.0.1:${PORT}`;
 const OUT = 'artifacts/zoom-grid';
 mkdirSync(OUT, { recursive: true });
@@ -20,43 +23,60 @@ const executablePath = exeCandidates.find((p) => p && existsSync(p));
 if (!executablePath) throw new Error('no chromium binary found');
 
 const browser = await chromium.launch({ executablePath, args: ['--no-sandbox'] });
-const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+const context = await browser.newContext({
+  viewport: { width: 1280, height: 900 },
+  permissions: ['clipboard-read', 'clipboard-write']
+});
 const page = await context.newPage();
+
 const errors = [];
 page.on('pageerror', (err) => errors.push('pageerror: ' + err.message));
 page.on('console', (msg) => {
   if (msg.type() === 'error') errors.push('console: ' + msg.text());
 });
-page.on('dialog', (d) => d.accept()); // leave guards (beforeunload/confirm)
 
-const check = (name, cond, detail = '') => {
-  const ok = Boolean(cond);
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
-  if (!ok) process.exitCode = 1;
-};
-const canvasW = (frame = page) =>
-  frame.evaluate(() => document.getElementById('screen-canvas').getBoundingClientRect().width);
+let failed = 0;
+function check(name, cond, detail = '') {
+  if (!cond) failed++;
+  console.log(`${cond ? 'PASS' : 'FAIL'} ${name}${cond || !detail ? '' : ' — ' + detail}`);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Click a cell on a pane's canvas (1-based r/c) through the frame locator so
-// Playwright translates iframe coordinates; the click focuses the pane.
-const clickCell = async (frame, r, c) => {
-  const box = await frame.locator('#screen-canvas').boundingBox();
-  await frame.locator('#screen-canvas').click({
-    position: { x: ((c - 0.5) * box.width) / 80, y: ((r - 0.5) * box.height) / 24 }
-  });
-};
+// Viewport coordinates of the centre of a 1-based cell of pane 0's canvas
+// (the zoom checks run single-pane; the split sections aim clicks per pane).
+const cellXY = (r, c, sel = '#screen-canvas') =>
+  page.evaluate(
+    ([r, c, sel]) => {
+      const b = document.querySelector(sel).getBoundingClientRect();
+      const cols = Number(sel === '#screen-canvas' ? 80 : 80);
+      const rows = 24;
+      return { x: b.left + (c - 0.5) * (b.width / cols), y: b.top + (r - 0.5) * (b.height / rows) };
+    },
+    [r, c, sel]
+  );
+const canvasW = () => page.evaluate(() => document.getElementById('screen-canvas').getBoundingClientRect().width);
+const paneSel = (i) => `.pane[data-pane="${i}"]`;
+const panePos = (i) => page.evaluate((i) => document.querySelector(`.pane[data-pane="${i}"] .oia-pos`)?.textContent, i);
+const waitForPos = (i, want, timeout = 5000) =>
+  page.waitForFunction(
+    ([i, w]) => document.querySelector(`.pane[data-pane="${i}"] .oia-pos`)?.textContent === w,
+    [i, want],
+    { timeout }
+  ).then(() => true, () => false);
 
-// ---- 1. menu shows the Split buttons
 await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+
+// ---- 1. menu state
 await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
+check('zoom group hidden on menu', !(await page.isVisible('#zoom-group')));
 check('menu has Split ×2 button', await page.isVisible('#menu-split2'));
 check('menu has Split ×4 button', await page.isVisible('#menu-split4'));
-check('zoom group hidden on menu', !(await page.isVisible('#zoom-group')));
 
-// ---- 2. sign on; zoom buttons appear; Fit is active
+// ---- 2. connect: zoom group appears, Fit is active
 await page.click('#menu .menu-row');
 await page.waitForFunction(
   () => document.getElementById('conn-state')?.dataset.state === 'connected',
+  undefined,
   { timeout: 10000 }
 );
 await page.waitForTimeout(400);
@@ -99,236 +119,192 @@ await page.waitForFunction(
   { timeout: 10000 }
 );
 check('½ active after reload (persisted)', await page.evaluate(() => document.getElementById('btn-half').classList.contains('active')));
+await page.waitForTimeout(500); // fit settles after the reattached screen lands
 check('canvas at half after reload', Math.abs((await canvasW()) - wFit / 2) <= 2);
 check('reload reattached the same session', (await page.textContent('#dev-info')) === devBefore,
   `${JSON.stringify(await page.textContent('#dev-info'))} vs ${JSON.stringify(devBefore)}`);
 await page.click('#btn-fit');
 
-// ---- 5. Systems → menu → Split ×2 (with a display name to prove dedupe)
+// ---- 5. Systems → menu → Split ×2 (in place - no navigation, one shell)
 await page.click('#btn-systems');
 await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
 check('zoom group hidden again on menu', !(await page.isVisible('#zoom-group')));
 await page.fill('#menu-devname', 'MULTI');
 await page.click('#menu-split2');
-await page.waitForSelector('#grid:not(.hidden)', { timeout: 5000 });
-check('grid visible with 2 panes', (await page.locator('#grid-panes iframe').count()) === 2);
-check('single-session UI hidden', await page.evaluate(() => document.getElementById('app').classList.contains('hidden')));
-check('grid URL has ?grid=2', page.url().includes('grid=2'));
-await page.waitForTimeout(1200); // panes boot to their menus
-
-const panes = page.frames().filter((f) => f !== page.mainFrame());
-check('two pane frames loaded', panes.length === 2, panes.map((f) => f.url()).join(' | '));
-for (const f of panes) {
-  await f.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
-}
-check('both panes show the system menu', true);
+await page.waitForSelector('#panes.split', { timeout: 5000 });
+check('split layout with 2 panes', (await page.locator('#panes .pane').count()) === 2);
+check('still one app shell (no iframes)', (await page.locator('#panes iframe').count()) === 0);
+check('URL kept ?grid=2', page.url().includes('grid=2'));
+check('top bar still present', await page.isVisible('#topbar'));
+// The shared menu reopens for the first pane without a session.
+await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
+check('menu reopened for the empty pane', true);
+await page.waitForTimeout(400);
 await page.screenshot({ path: `${OUT}/02-grid-menus.png` });
 
 // ---- 6. sign on in both panes → two independent sessions
-for (const f of panes) {
-  await f.click('#menu .menu-row');
-  await f.waitForFunction(
+// Pane 0: the reopened menu is already targeting it.
+async function signOnActivePane(paneIdx = 0) {
+  await page.keyboard.press('Enter'); // picks the selected system row
+  await page.waitForFunction(
     () => document.getElementById('conn-state')?.dataset.state === 'connected',
-    null,
+    undefined,
     { timeout: 10000 }
   );
-  await clickCell(f, 9, 45); // User field on the sign-on display
+  const { x, y } = await cellXY(9, 45, `${paneSel(paneIdx)} canvas`);
+  await page.mouse.click(x, y);
   await page.keyboard.type('MOCKUSER');
   await page.keyboard.press('Tab');
   await page.keyboard.type('SECRETPW');
   await page.keyboard.press('Enter');
-  await f.waitForFunction(
-    () => {
-      const msg = document.getElementById('oia-msg')?.textContent ?? '';
-      return !msg.includes('error');
-    },
-    null,
+  await page.waitForFunction(
+    () => !(document.querySelector('.pane.active-pane .oia-msg')?.textContent ?? '').includes('error'),
+    undefined,
     { timeout: 8000 }
   );
+  await page.waitForTimeout(600);
 }
-await page.waitForTimeout(800);
-const names = [];
-for (const f of panes) {
-  names.push(await f.evaluate(() => document.getElementById('dev-info')?.textContent));
-}
-check('panes dedupe the display name (MULTI / MULTI1)',
-  names[0]?.includes('MULTI') && names[1]?.includes('MULTI') && names[0] !== names[1],
-  names.join(' | '));
+await signOnActivePane(0);
+const name0 = await page.textContent('#dev-info');
+check('pane 1 signed on (MULTI)', name0.includes('MULTI'), name0);
+
+// Pane 2: click it (focus), open its menu via the pane header, sign on.
+await page.click(`${paneSel(1)} .pane-screen`);
+await page.click(`${paneSel(1)} .pane-menubtn`);
+await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
+await signOnActivePane(1);
+const name1 = await page.textContent('#dev-info');
+check('pane 2 signed on (deduped name)', name1.includes('MULTI') && name1 !== name0, `${name0} | ${name1}`);
 await page.screenshot({ path: `${OUT}/03-grid-signedon.png` });
 
 // ---- 7. typing goes only to the focused pane
 {
-  const f = panes[0];
-  await clickCell(f, 10, 20);
-  const before = await f.evaluate(() => document.getElementById('oia-pos')?.textContent);
+  await page.click(`${paneSel(0)} .pane-screen`);
+  const { x, y } = await cellXY(10, 20);
+  await page.mouse.click(x, y);
+  const before = await panePos(0);
   await page.keyboard.type('X');
-  await f.waitForFunction(
-    (prev) => document.getElementById('oia-pos')?.textContent !== prev,
+  await page.waitForFunction(
+    (prev) => document.querySelector('.pane[data-pane="0"] .oia-pos')?.textContent !== prev,
     before,
     { timeout: 5000 }
-  );
-  const moved = await f.evaluate(() => document.getElementById('oia-pos')?.textContent);
-  const otherBefore = await panes[1].evaluate(() => document.getElementById('oia-pos')?.textContent);
-  check('keystroke moved only pane 1 cursor', moved !== before, `${before} → ${moved}, pane2 at ${otherBefore}`);
+  ).catch(() => {});
+  const moved = await panePos(0);
+  const other = await panePos(1);
+  check('keystroke moved only pane 1 cursor', moved !== before && other === '6,26', `${before} → ${moved}, pane2 at ${other}`);
 }
 
-// ---- 7b. rearrange tiles + tabs view - sessions must never reload
+// ---- 7b. rearrange tiles + tabs view - sessions must survive
 {
-  // A sentinel that only survives as long as the iframe document does: a
-  // DOM move of an iframe would reload it and wipe the value.
-  for (const f of panes) await f.evaluate(() => { window.__sentinel = 42; });
-
-  const wrapLefts = () => page.evaluate(() =>
-    [...document.querySelectorAll('.grid-pane')].map((w) => w.getBoundingClientRect().left));
-  const before = await wrapLefts();
+  // track the same pane by its stable data-pane index (DOM order changes)
+  const paneLefts = () => page.evaluate(() =>
+    [0, 1].map((i) => document.querySelector(`.pane[data-pane="${i}"]`).getBoundingClientRect().left));
+  const before = await paneLefts();
   await page.evaluate(() => {
-    // (the bar ends with the pop-out/close buttons; pick ▶ by title)
-    const btn = [...document.querySelectorAll('.grid-pane .grid-pane-bar button')]
+    const btn = [...document.querySelectorAll('.pane[data-pane="0"] .pane-bar button')]
       .find((b) => b.title === 'Move this session right');
     btn.click();
   });
-  const after = await wrapLefts();
-  check('▶ moves the first tile right', after[0] > before[0] && after[1] < before[1],
+  const after = await paneLefts();
+  check('▶ moves the first pane right', after[0] > before[0] && after[1] < before[1],
     `${before.map(Math.round)} -> ${after.map(Math.round)}`);
 
-  // Synthetic drag: drop the first pane's bar onto the second pane.
-  await page.evaluate(() => {
-    const dt = new DataTransfer();
-    const bar = document.querySelector('.grid-pane-bar');
-    bar.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true }));
-    const target = document.querySelectorAll('.grid-pane')[1];
-    target.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
-    target.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
-    bar.dispatchEvent(new DragEvent('dragend', { dataTransfer: dt, bubbles: true }));
-  });
-  const dragged = await wrapLefts();
-  check('drag onto a tile reorders back', Math.abs(dragged[0] - before[0]) <= 1,
-    `${dragged.map(Math.round)}`);
-  const sent = [];
-  for (const f of panes) sent.push(await f.evaluate(() => window.__sentinel));
-  check('rearranging did not reload the panes', sent.every((s) => s === 42), JSON.stringify(sent));
-
-  // Tabs view: one pane on stage, the other hidden but still connected.
   await page.click('#grid-view-tabs');
-  check('tab bar visible in tabs mode', await page.isVisible('#grid-tabbar'));
+  check('tab strip visible in tabs mode', await page.isVisible('#tabbar'));
   const visible = await page.evaluate(() =>
-    [...document.querySelectorAll('.grid-pane')].map((w) => w.style.display !== 'none'));
+    [...document.querySelectorAll('#panes .pane')].map((w) => w.style.display !== 'none'));
   check('only the active pane is on stage', visible.filter(Boolean).length === 1, JSON.stringify(visible));
-  const hiddenState = await panes[1].evaluate(() => document.getElementById('conn-state')?.dataset.state);
-  check('hidden pane stays connected', hiddenState === 'connected', String(hiddenState));
 
-  const tabTexts = await page.evaluate(() =>
-    [...document.querySelectorAll('.grid-tab')].map((t) => t.textContent));
-  check('tabs show system · device names',
-    // (names are relative: earlier runs' sessions may still hold MULTI/MULTI1
-    // in re-attach grace, so this run legitimately gets suffixed names)
-    tabTexts[0]?.includes('MULTI') && tabTexts[1]?.includes('MULTI') && tabTexts[0] !== tabTexts[1],
-    tabTexts.join(' | '));
-
-  // Switch to the second tab via the tab strip.
-  await page.evaluate(() => document.querySelectorAll('.grid-tab')[1].click());
-  await page.waitForTimeout(200);
-  const vis2 = await page.evaluate(() =>
-    [...document.querySelectorAll('.grid-pane')].map((w) => w.style.display !== 'none'));
-  check('tab switch moves the stage', vis2[0] === false && vis2[1] === true, JSON.stringify(vis2));
-  const fills = await page.evaluate(() => {
-    const w = document.querySelector('.grid-pane:not([style*="none"])').getBoundingClientRect();
-    const g = document.getElementById('grid-panes').getBoundingClientRect();
-    return { paneW: w.width, gridW: g.width, paneH: w.height, gridH: g.height };
-  });
-  check('tabbed pane fills the whole area',
-    fills.paneW > fills.gridW * 0.95 && fills.paneH > fills.gridH * 0.95, JSON.stringify(fills));
-  await page.screenshot({ path: `${OUT}/05-tabs.png` });
-
-  // Back to tiles: everything on stage again and still alive.
-  await page.click('#grid-view-tiles');
-  const vis3 = await page.evaluate(() =>
-    [...document.querySelectorAll('.grid-pane')].map((w) => w.style.display !== 'none'));
-  check('tiles view shows every pane again', vis3.every(Boolean), JSON.stringify(vis3));
+  // Switch panes through the tab strip; the hidden ones stay connected.
+  const tabs = page.locator('#tabbar .tab');
+  check('one tab per pane', (await tabs.count()) === 2);
   const states = [];
-  for (const f of panes) {
-    states.push(await f.evaluate(() => document.getElementById('conn-state')?.dataset.state));
+  for (let i = 0; i < 2; i++) {
+    await tabs.nth(i).click();
+    states.push(await page.textContent('#conn-state'));
   }
   check('both sessions still connected after switching', states.every((s) => s === 'connected'), states.join(' | '));
-  const sent2 = [];
-  for (const f of panes) sent2.push(await f.evaluate(() => window.__sentinel));
-  check('view switches did not reload the panes', sent2.every((s) => s === 42), JSON.stringify(sent2));
-
-  // The view choice persists across a reload - and the panes reattach to
-  // their running sessions (grid state carries their tokens).
-  await page.click('#grid-view-tabs');
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#grid:not(.hidden)', { timeout: 5000 });
-  await page.waitForTimeout(800); // panes boot
-  check('tabs mode persists across reload', await page.isVisible('#grid-tabbar'));
-  const reframes = page.frames().filter((f) => f !== page.mainFrame());
-  check('reloaded grid has both panes', reframes.length === 2, String(reframes.length));
-  for (const f of reframes) {
-    await f.waitForFunction(
-      () => document.getElementById('conn-state')?.dataset.state === 'connected',
-      null,
-      { timeout: 12000 }
-    );
-  }
   const devnames = [];
-  for (const f of reframes) devnames.push(await f.evaluate(() => document.getElementById('dev-info')?.textContent ?? ''));
-  check(
-    'panes reattached to their sessions (same devices)',
-    devnames.length === 2 && devnames.every((d) => d.includes('MULTI')),
-    JSON.stringify(devnames)
-  );
+  for (let i = 0; i < 2; i++) {
+    await tabs.nth(i).click();
+    devnames.push(await page.textContent('#dev-info'));
+  }
+  check('dev-info follows the focused pane', devnames[0] === name0 && devnames[1] === name1, devnames.join(' | '));
+}
 
-  // ---- 7c. dynamic panes: + adds, × closes, ⧉ pops a session out to a
-  // real browser window (which takes the session over from the pane).
-  await page.click('#grid-view-tiles');
-  await page.waitForTimeout(200);
-
-  await page.click('#grid-add');
-  await page.waitForTimeout(800);
-  check('+ adds a pane', (await page.evaluate(() => document.querySelectorAll('.grid-pane').length)) === 3);
-  check('layout follows the pane count', await page.evaluate(() => document.getElementById('grid-panes').dataset.panes === '3'));
-
-  // Pop out the first pane (MULTI): a popup window opens and reattaches to
-  // the same session while the pane disappears from the grid.
-  const popBtn = page.locator('.grid-pane .grid-pane-bar button[title*="own window"]').first();
-  const [popup] = await Promise.all([page.waitForEvent('popup'), popBtn.click()]);
-  await popup.waitForFunction(
+// The view choice persists across a reload - and the panes reattach to
+// their running sessions (grid state carries their tokens).
+await page.click('#grid-view-tabs');
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('#panes.split.tabs', { timeout: 5000 });
+await page.waitForTimeout(800); // panes boot + reattach
+check('tabs mode persists across reload', await page.isVisible('#tabbar'));
+const tabs = page.locator('#tabbar .tab');
+check('tab strip rebuilt after reload', (await tabs.count()) === 2);
+const devnames = [];
+for (let i = 0; i < 2; i++) {
+  await tabs.nth(i).click();
+  await page.waitForFunction(
     () => document.getElementById('conn-state')?.dataset.state === 'connected',
-    null,
+    undefined,
     { timeout: 12000 }
   );
-  const popDev = await popup.evaluate(() => document.getElementById('dev-info')?.textContent ?? '');
-  check('popped-out window took over the session', popDev.includes('MULTI'), popDev);
-  await page.waitForTimeout(400);
-  check('pane removed after pop-out', (await page.evaluate(() => document.querySelectorAll('.grid-pane').length)) === 2);
-  await popup.close();
-
-  // Close a pane: its session detaches (grace) and the grid shrinks.
-  const closeBtn = page.locator('.grid-pane .grid-pane-bar button[title^="Close this pane"]').first();
-  await closeBtn.click();
-  await page.waitForTimeout(400);
-  check('× closes a pane', (await page.evaluate(() => document.querySelectorAll('.grid-pane').length)) === 1);
-  const lastState = await page
-    .frames()
-    .filter((f) => f !== page.mainFrame())[0]
-    .evaluate(() => document.getElementById('conn-state')?.dataset.state);
-  check('surviving pane still connected', lastState === 'connected', String(lastState));
-
-  // Adding again works after closing (the + button re-enables).
-  await page.click('#grid-add');
-  await page.waitForTimeout(600);
-  check('+ re-enabled and adds again', (await page.evaluate(() => document.querySelectorAll('.grid-pane').length)) === 2);
+  devnames.push(await page.textContent('#dev-info'));
 }
+check(
+  'panes reattached to their sessions (same devices)',
+  devnames.length === 2 && devnames.every((d) => d.includes('MULTI')) && devnames[0] !== devnames[1],
+  JSON.stringify(devnames)
+);
+
+// ---- 7c. dynamic panes: + adds, × closes, ↗ pops a session out to a
+// real browser window (which takes the session over from the pane).
+await page.click('#grid-view-tiles');
+await page.waitForTimeout(200);
+
+await page.click('#btn-addpane');
+await page.waitForTimeout(800);
+check('+ adds a pane', (await page.locator('#panes .pane').count()) === 3);
+check('layout follows the pane count', await page.evaluate(() => document.getElementById('panes').dataset.panes === '3'));
+
+// Pop out the first pane: a popup window opens and reattaches to the same
+// session while the pane disappears from the layout.
+const popBtn = page.locator('.pane[data-pane="0"] .pane-popbtn');
+const [popup] = await Promise.all([page.waitForEvent('popup'), popBtn.click()]);
+await popup.waitForFunction(
+  () => document.getElementById('conn-state')?.dataset.state === 'connected',
+  undefined,
+  { timeout: 12000 }
+);
+const popDev = await popup.evaluate(() => document.getElementById('dev-info')?.textContent ?? '');
+check('popped-out window took over the session', popDev.includes('MULTI'), popDev);
+await page.waitForTimeout(400);
+check('pane removed after pop-out', (await page.locator('#panes .pane').count()) === 2);
+await popup.close();
+
+// Close the empty pane: its session detaches (grace) and the layout
+// shrinks to the still-connected pane.
+const closeBtn = page.locator('.pane[data-pane="1"] .pane-closebtn');
+await closeBtn.click();
+await page.waitForTimeout(400);
+check('× closes a pane', (await page.locator('#panes .pane').count()) === 1);
+check('surviving pane still connected',
+  await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');
+
+// Adding again works after closing (the + button re-enables).
+await page.click('#btn-addpane');
+await page.waitForTimeout(600);
+check('+ re-enabled and adds again', (await page.locator('#panes .pane').count()) === 2);
 
 // ---- 8. preassigned deep link ?grid=2&systems=1,1 connects both panes
 await page.goto(`${BASE}/?grid=2&systems=1,1`, { waitUntil: 'domcontentloaded' });
-await page.waitForSelector('#grid:not(.hidden)', { timeout: 5000 });
-const frames2 = page.frames().filter((f) => f !== page.mainFrame());
-check('deep link spawns two panes', frames2.length === 2);
-for (const f of frames2) {
-  await f.waitForFunction(
+await page.waitForSelector('#panes.split', { timeout: 5000 });
+check('deep link spawns two panes', (await page.locator('#panes .pane').count()) === 2);
+for (let i = 0; i < 2; i++) {
+  await page.click(`${paneSel(i)} .pane-screen`);
+  await page.waitForFunction(
     () => document.getElementById('conn-state')?.dataset.state === 'connected',
-    null,
+    undefined,
     { timeout: 12000 }
   );
 }
@@ -336,11 +312,16 @@ check('preassigned panes both connected without interaction', true);
 await page.waitForTimeout(500);
 await page.screenshot({ path: `${OUT}/04-grid-deeplink.png` });
 
-// ---- 9. Exit split view returns to the normal app
-await page.click('#grid-exit');
-await page.waitForSelector('#menu:not(.hidden)', { timeout: 8000 });
-check('exit returns to system menu', await page.isVisible('#menu-frame'));
+// ---- 9. Exit split returns to the single-pane app (pane 1's session ends,
+// pane 0's keeps running - it is the app's only session again).
+await page.click('#btn-exitsplit');
+await page.waitForTimeout(500);
+check('back to single pane', (await page.locator('#panes .pane').count()) === 1);
+check('split layout gone', !(await page.locator('#panes.split').count()));
 check('exit cleared grid param', !page.url().includes('grid='));
+check('remaining session still connected',
+  await page.evaluate(() => document.getElementById('conn-state')?.dataset.state) === 'connected');
 
 console.log(errors.length ? 'PAGE ERRORS:\n' + errors.join('\n') : 'no page errors');
 await browser.close();
+process.exit(errors.length || failed ? 1 : 0);

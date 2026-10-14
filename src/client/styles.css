@@ -52,7 +52,7 @@ html, body {
 #brand { color: var(--green); font-weight: 700; letter-spacing: 0.06em; }
 /* Panes of the split view are ~half a window wide: without nowrap the
    squeezed flex items wrap their text into two-line stacks. */
-#brand, .conn-state, #topbar button, #grid-bar button { white-space: nowrap; }
+#brand, .conn-state, #topbar button { white-space: nowrap; }
 
 .conn-state::before {
   content: '';
@@ -80,124 +80,10 @@ html, body {
 #topbar button.active, #zoom-group button.active { border-color: var(--green); color: var(--green); }
 
 /* ------------------------------------------------------------ split view ---
-   ?grid=2|4: the page becomes N independent session panes (same-origin
-   iframes of this very app - one WebSocket and one 5250 device per pane,
-   display names deduped by the gateway). */
-#grid {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-}
-#grid.hidden { display: none; }
-#grid-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.35rem 0.9rem;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  font-size: 0.8rem;
-  flex: 0 0 auto;
-}
-#grid-brand { color: var(--green); font-weight: 700; letter-spacing: 0.06em; }
-#grid-hint {
-  color: var(--dim);
-  font-size: 0.72rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-#grid-bar button.active { border-color: var(--green); color: var(--green); }
-#grid-panes {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: grid;
-  gap: 2px;
-  background: var(--line);
-  /* Two columns for any pane count; a lone trailing pane spans the width. */
-  grid-template-columns: 1fr 1fr;
-  grid-auto-rows: 1fr;
-}
-#grid-panes[data-panes='1'] { grid-template-columns: 1fr; }
-#grid-panes[data-panes='3'] .grid-pane:nth-child(3),
-#grid-panes[data-panes='5'] .grid-pane:nth-child(5) { grid-column: 1 / -1; }
-
-/* Panes: fixed DOM nodes - moving an iframe in the DOM reloads it (and its
-   session), so rearranging swaps CSS order / visibility instead. */
-.grid-pane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg);
-}
-.grid-pane.drop-target { outline: 2px dashed var(--green); outline-offset: -2px; }
-/* Tabs mode: one cell instead of the tile layout - the single visible pane
-   fills the whole area (the hidden ones are display:none). */
-#grid-panes.tabs { grid-template-columns: 1fr; grid-template-rows: 1fr; }
-#grid-panes.tabs .grid-pane { grid-area: 1 / 1 / 2 / 2; }
-.grid-pane-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.12rem 0.45rem;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  font-size: 0.7rem;
-  color: var(--dim);
-  cursor: grab;
-  user-select: none;
-}
-.grid-pane-bar:active { cursor: grabbing; }
-.gp-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.grid-pane-bar button { font-size: 0.62rem; padding: 0.02rem 0.38rem; }
-#grid-panes iframe { border: 0; width: 100%; flex: 1 1 auto; min-height: 0; background: #000; }
-/* While dragging, iframes must not swallow the pointer events. */
-#grid-panes.dragging iframe { pointer-events: none; }
-/* Mark the pane that owns the keyboard. */
-#grid-panes iframe:focus-visible, #grid-panes iframe:focus { outline: 2px solid var(--green); outline-offset: -2px; }
-
-/* Tabs view: one pane on stage, the rest hidden but still connected. */
-#grid-tabbar {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 2px;
-  padding: 0.3rem 0.6rem 0;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-}
-#grid-tabbar.hidden { display: none; }
-.grid-tab {
-  border: 1px solid var(--line);
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  background: transparent;
-  color: var(--dim);
-  font-size: 0.72rem;
-  padding: 0.22rem 0.8rem;
-  cursor: pointer;
-  max-width: 15rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.grid-tab.active { color: var(--green); border-color: var(--green); background: #000; }
-.grid-tab.drop-target { border-color: var(--warn); color: var(--warn); }
-
-button {
-  font: inherit;
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.3rem 0.8rem;
-  cursor: pointer;
-}
-button:hover { border-color: var(--green); color: var(--green); }
-button.ghost { background: transparent; font-size: 0.75rem; }
+   Split view is a layout mode of the app itself: the stage holds 1..N session
+   panes under the one top bar. No iframes, no nested views. */
+#split-group { display: inline-flex; gap: 0.25rem; }
+#split-group.hidden { display: none; }
 
 #stage {
   flex: 1 1 auto;
@@ -212,43 +98,158 @@ button.ghost { background: transparent; font-size: 0.75rem; }
   overflow: hidden;
 }
 
-#terminal {
-  position: relative;
-  outline: none;
+#panes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  gap: 0.35rem;
+}
+/* Split mode: the panes become grid cells (odd counts: the lone trailing
+   pane spans the full width). */
+#panes.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 1fr;
+  gap: 2px;
+  align-items: stretch;
+  justify-items: stretch;
+}
+#panes.split[data-panes='1'] { grid-template-columns: 1fr; }
+#panes.split[data-panes='3'] .pane:nth-child(3),
+#panes.split[data-panes='5'] .pane:nth-child(5) { grid-column: 1 / -1; }
+/* Tabs mode: one pane on stage, the rest hidden but still connected; the
+   strip above the panes switches between them. */
+#panes.split.tabs { grid-template-columns: 1fr; grid-auto-rows: 1fr; }
+#tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  width: 100%;
+}
+#tabbar.hidden { display: none; }
+.tab {
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 0.72rem;
+  padding: 0.22rem 0.8rem;
+  cursor: pointer;
+  max-width: 15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab.active { color: var(--green); border-color: var(--green); background: #000; }
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+#panes.split .pane {
+  width: 100%;
+  height: 100%;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: #000;
-  line-height: 0;
-  /* main.ts sizes the canvas to fit; these keep an unfitted flash tame. */
+  background: var(--panel);
+  overflow: hidden;
+}
+#panes.split .pane:has(.pane-screen:focus-within),
+#panes.split .pane.active-pane { border-color: #3a5a48; }
+
+/* Pane header - only shown in split mode. */
+.pane-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.1rem 0.45rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.7rem;
+  color: var(--dim);
+  cursor: default;
+  user-select: none;
+}
+.pane-bar.hidden { display: none; }
+.pane-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-bar button {
+  font-size: 0.62rem;
+  padding: 0.02rem 0.38rem;
+  background: transparent;
+  border: none;
+}
+.pane-bar button:hover { color: var(--green); }
+.pane-bar button:disabled { opacity: 0.35; cursor: default; }
+.pane-bar button:disabled:hover { color: var(--text); }
+
+/* The terminal screen area hugs the canvas in single-pane mode and fills
+   the pane in split mode; the canvas is centered inside either way. */
+.pane-screen {
+  position: relative;
   flex: 0 1 auto;
   min-height: 0;
   max-width: 100%;
   overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #000;
+  line-height: 0;
+  outline: none;
 }
-#terminal:focus-within { border-color: #3a5a48; }
+#panes.split .pane-screen {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pane-screen:focus-within { border-color: #3a5a48; }
+.screen-canvas { display: block; }
 
-/* The CSS box is set from JS (term.fit): scaled proportionally to fill the
-   available space - up on big screens, down on small viewports / open
-   keyboards - with the backing store re-rasterized to stay crisp. */
-#screen-canvas { display: block; }
-
-/* hidden input that pulls up soft keyboards on mobile */
-#mobile-input {
+/* Pane-scoped status overlay (connecting / ended / failed). */
+.pane-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: transparent;
-  /* iOS zooms the page when an input smaller than 16px is focused. */
-  font-size: 16px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 6, 0.82);
+  z-index: 40;
 }
+.pane-overlay.hidden { display: none; }
+.pane-overlay-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.1rem 1.5rem;
+  max-width: min(90%, 26rem);
+  text-align: center;
+}
+.pane-overlay-card h3 { margin: 0 0 0.4rem; font-size: 0.95rem; color: var(--green); }
+.pane-overlay-detail { color: var(--dim); min-height: 1.2em; margin: 0 0 0.8rem; font-size: 0.8rem; }
+.pane-overlay-actions { display: flex; gap: 0.6rem; justify-content: center; }
 
-#oia {
+/* Pane-scoped OIA strip (matches the terminal width). */
+.pane .oia {
   width: 100%;
   max-width: var(--termw, 960px);
   display: flex;
@@ -262,10 +263,40 @@ button.ghost { background: transparent; font-size: 0.75rem; }
   padding: 0.25rem 0.7rem;
   white-space: pre;
 }
-#oia-left { display: flex; gap: 0.9rem; color: var(--green); }
-#oia-lock.busy { color: var(--warn); }
-#oia-msg { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; }
-#oia-pos { color: var(--dim); }
+#panes.split .pane .oia { max-width: 100%; border: none; border-top: 1px solid var(--line); border-radius: 0; }
+.oia-left { display: flex; gap: 0.9rem; color: var(--green); }
+.oia-lock.busy { color: var(--warn); }
+.oia-msg { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+.oia-right { margin-left: auto; }
+.oia-pos { color: var(--dim); }
+
+/* hidden input that pulls up soft keyboards on mobile */
+#mobile-input {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: transparent;
+  /* iOS zooms the page when an input smaller than 16px is focused. */
+  font-size: 16px;
+}
+
+button {
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+button:hover { border-color: var(--green); color: var(--green); }
+button.ghost { background: transparent; font-size: 0.75rem; }
 
 #keypad {
   flex: 0 0 auto;
@@ -727,7 +758,7 @@ button.primary { border-color: var(--green); color: var(--green); }
 
   /* Split view stacks vertically on phones (it is a large-page feature,
      but the layout should not break if someone opens it there). */
-  #grid-panes { grid-template-columns: 1fr; }
-  #grid-panes[data-panes='3'] .grid-pane:nth-child(3),
-  #grid-panes[data-panes='5'] .grid-pane:nth-child(5) { grid-column: auto; }
+  #panes.split { grid-template-columns: 1fr; }
+  #panes.split[data-panes='3'] .pane:nth-child(3),
+  #panes.split[data-panes='5'] .pane:nth-child(5) { grid-column: auto; }
 }

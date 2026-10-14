@@ -107,6 +107,12 @@ export function hideMenu(): void {
   closeAdmin();
 }
 
+/** The shell's in-place split handler (installed at startup). */
+let onSplit: ((n: number) => void) | null = null;
+export function setSplitHandler(fn: (n: number) => void): void {
+  onSplit = fn;
+}
+
 // -------------------------------------------------------------- rendering
 function render(): void {
   const list = $('menu-list');
@@ -193,20 +199,35 @@ export function initMenu(): void {
     if (Number.isInteger(typed) && typed >= 1 && typed <= systems.length) select(typed - 1);
   });
 
+  // Menu-level keys, so Enter/arrows work no matter what inside the menu
+  // holds focus (the option input handles its own keys; showMenu focuses it
+  // only after its fetches settle - a quick Enter must not be lost).
+  $('menu').addEventListener('keydown', (e) => {
+    if (e.target === option) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      connectTo(selected);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      select(selected - 1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      select(selected + 1);
+    } else if (e.key === 'a' || e.key === 'A') {
+      e.preventDefault();
+      openAdmin();
+    } else if (e.key === 'Escape') {
+      hideMenu();
+    }
+  });
+
   $('menu-go').addEventListener('click', () => connectTo(selected));
   $('menu-admin-btn').addEventListener('click', openAdmin);
 
-  // Split view: reload this page with ?grid=N. Each pane is an independent
-  // session (one 5250 device per WebSocket); the stale ?system= of a deep
-  // link is dropped so the panes start at the menu, not mid-session.
-  const splitTo = (n: 2 | 4): void => {
-    const u = new URL(window.location.href);
-    u.searchParams.delete('system');
-    u.searchParams.set('grid', String(n));
-    window.location.href = u.href;
-  };
-  $('menu-split2').addEventListener('click', () => splitTo(2));
-  $('menu-split4').addEventListener('click', () => splitTo(4));
+  // Split view: the shell lays the current page out into n panes in place
+  // (no navigation) and keeps ?grid=n in the URL for reloads/deep links.
+  $('menu-split2').addEventListener('click', () => onSplit?.(2));
+  $('menu-split4').addEventListener('click', () => onSplit?.(4));
 
   // Display name: persisted per-browser; cleaned while typing. Empty means
   // the gateway picks a name from the configured device prefix.

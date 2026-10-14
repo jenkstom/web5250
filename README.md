@@ -66,11 +66,11 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   double-click a word, Ctrl+C re-copies) — with hidden-field contents always
   copying as blanks; see
   [Mouse selection and clipboard](#mouse-selection-and-clipboard).
-- **Split view — several sessions on one page**: the system menu's
-  **Split ×2 / Split ×4** buttons (or `?grid=2|4` deep links) lay out
-  independent sessions side by side; **+ Pane** adds more (up to 6), each
-  pane's bar drags to rearrange, and **⧉ pops a session out into a real
-  browser window** without losing it; see
+- **Split view — several sessions on one page, one chrome**: the system
+  menu's **Split ×2 / Split ×4** buttons (or `?grid=` deep links) arrange the
+  page into independent terminal panes under the same top bar; **+ Pane**
+  adds more (up to 6) and **↗ pops a session out into a real browser window**
+  without losing it; see
   [Multiple sessions on one page](#multiple-sessions-on-one-page).
 - **Sessions outlive their window**: every session carries an unguessable
   re-attach token; a closed tab, a reload, a dropped connection or a split
@@ -232,12 +232,14 @@ attempts lock administration for 60 s after 5 tries.
 ## Multiple sessions on one page
 
 The gateway gives **every WebSocket its own 5250 device**, so one browser can
-hold several concurrent sessions. The client exposes that as a split view:
-on the system menu, **Split ×2 / Split ×4** reload the page as two side-by-side
-or four (2 × 2) panes. Each pane is an independent session with its own menu,
-top bar, zoom and keyboard focus — click a pane to type into it. **+ Pane**
-adds more (up to 6; the layout re-flows, a lone trailing pane spans the full
-width) and a pane's **×** button closes it.
+hold several concurrent sessions. Split view is a layout mode of the app
+itself — **no nested views, no iframes**: on the system menu, **Split ×2 /
+Split ×4** arrange the current page into two side-by-side or four (2 × 2)
+terminal panes under the same top bar. **+ Pane** adds more (up to 6; the
+layout re-flows, a lone trailing pane spans the full width) and a pane's **×**
+button closes it. Each pane is an independent session with its own screen,
+OIA strip and keyboard focus — click a pane (or its tab in Tabs mode) to type
+into it; the top bar always describes the focused session.
 
 Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
 connect straight to system 1 and system 3 (ids from the menu's admin editor).
@@ -245,31 +247,28 @@ Without `systems=`, every pane boots into the system menu for a per-pane pick.
 If a **Display** name is set, the gateway dedupes it across panes (`TOM` →
 `TOM1`), exactly as it does across browsers.
 
-**Rearranging and tabs.** Each pane carries a slim bar (system · device name)
-that doubles as a drag handle: drag it onto another tile — or drag the tabs in
-**Tabs** view — to rearrange; ◀ / ▶ buttons do the same per pane. The
-**Tabs** button switches the page to one session at a time with a tab strip
-up top; the hidden sessions keep running (only their painting pauses), and
-clicking a tab brings that session back and hands it the keyboard. Neither
-rearranging nor switching views reloads a pane — panes are never moved in the
-DOM, only repositioned — so a session opened as a tile can continue as a tab.
-The Tiles/Tabs choice and the active tab are remembered.
+**Rearranging and tabs.** Each pane carries a slim header (system · device
+name) with ◀ / ▶ buttons that move it within the layout. The **Tabs** button
+switches to one session at a time with a tab strip up top; the hidden
+sessions keep running, and clicking a tab brings that session back and hands
+it the keyboard. Nothing ever reloads — panes are plain DOM, so rearranging
+just moves them. The Tiles/Tabs choice and the active tab are remembered.
 
-**Pop-out: a pane becomes a real browser window.** The ⧉ button on a pane bar
-opens a popup window that takes over the pane's running session — same 5250
-device, same screen, mid-typing — and the pane disappears from the grid. This
-works because sessions live in the gateway, not in the page (see
+**Pop-out: a pane becomes a real browser window.** The ↗ button on a pane
+header opens a popup window that takes over the pane's running session — same
+5250 device, same screen, mid-typing — and the pane disappears from the
+layout. This works because sessions live in the gateway, not in the page (see
 [Sessions outlive their window](#sessions-outlive-their-window)). Closing a
 pane (×) detaches its session the same way: it stays re-attachable for the
 grace period rather than dying.
 
 Two deployment notes:
 
-- `FRAME_ANCESTORS` keeps working for external embedders; the app's own
-  origin is always allowed to frame itself so the panes load.
+- `FRAME_ANCESTORS` keeps working for external embedders (the split view no
+  longer frames anything itself).
 - A browser tab holds one 5250 device per pane. With the default grace
   period the sessions survive the tab closing for a while and are then
-  cleaned up host-side; use **Exit split view** to end them immediately.
+  cleaned up host-side; use **Exit split** to end them immediately.
 
 ## Sessions outlive their window
 
