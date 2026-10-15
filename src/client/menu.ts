@@ -201,9 +201,14 @@ export function initMenu(): void {
 
   // Menu-level keys, so Enter/arrows work no matter what inside the menu
   // holds focus (the option input handles its own keys; showMenu focuses it
-  // only after its fetches settle - a quick Enter must not be lost).
+  // only after its fetches settle - a quick Enter must not be lost). Keys
+  // typed into the menu's own widgets belong to those widgets: Enter
+  // submitting the admin PIN must not also connect to the selected system,
+  // 'a' in the display-name field must not open admin, and Enter on a
+  // focused button must click the button.
   $('menu').addEventListener('keydown', (e) => {
     if (e.target === option) return;
+    if ((e.target as HTMLElement).closest('#admin-modal, input, select, textarea, button')) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       connectTo(selected);
