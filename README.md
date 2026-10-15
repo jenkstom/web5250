@@ -58,9 +58,8 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   click-to-position, and reconnect handling. Screen state is edited
   server-side; only diffs travel over the WebSocket, and non-display field
   contents are blanked server-side so **passwords never reach the browser**.
-- **Terminal zoom**: on large pages the top bar offers **Fit / ½ / ¼** — the
-  fitted terminal at full, half or quarter size, centred in the window. The
-  choice is remembered per browser (also inside split-view panes).
+  The terminal always **fits its window** (and its split pane), re-fitting
+  as the layout changes.
 - **Select & copy**: drag with the left button to mark a screen region and it
   is on the clipboard when you release (Alt+drag marks a column rectangle,
   double-click a word, Ctrl+C re-copies) — with hidden-field contents always
@@ -290,10 +289,10 @@ mirror** of that session:
 
 - The mirror receives the same screen stream as the owner: cells, cursor,
   OIA indicators, even host-drawn windows and pull-downs, in real time.
-- **The owner's special keys are named on screen.** Keys that don't echo as
-  text — Enter, F1–F24, Tab, Field Exit, SysReq, Reset, Roll, arrows … —
-  appear as a small badge in the mirror's corner for two seconds (or until
-  the next one), so a viewer can keep up with what is driving the screen.
+- **The owner's special keys are named in the mirror's status bar.** Keys
+  that don't echo as text — Enter, F1–F24, Tab, Field Exit, SysReq, Reset,
+  Roll, arrows … — appear in the OIA strip for two seconds (or until the
+  next one), so a viewer can keep up with what is driving the screen.
   Printable characters are not announced; they echo on the screen anyway.
 - **Nothing a viewer does reaches the host.** Keystrokes, clicks, paste and
   the on-screen keypad are all dropped client- and server-side; the mirror
@@ -531,10 +530,13 @@ npm run test:real       # regression: real-IBM-i SF-order dialect (no FFW bytes,
 node scripts/mock-host.mjs &   # visual/mobile tests drive real Chromium
 PORT=8080 IBM_I_HOST=127.0.0.1 IBM_I_PORT=8023 ADMIN_PIN=1234 npm start &
 npm run visual          # screenshots land in artifacts/
-npm run test:zoomgrid   # zoom buttons + split view: fit/½/¼ sizing, ?grid=2|4
-                        #   panes, per-pane device-name dedupe, exit flow
+npm run test:zoomgrid   # split view: fit-to-window sizing, ?grid=2|4 panes,
+                        #   per-pane device-name dedupe, exit flow
 npm run test:share      # share button + ?view= mirror: link copy, live
                         #   updates, read-only enforcement, session end
+npm run test:admin      # admin PIN/editor keyboard: Enter in the PIN form
+                        #   opens the editor (not a connection), menu keys
+                        #   intact (gateway needs ADMIN_PIN=1234)
 npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
                         #   keypad, keyboard open/close shrink+expand
 ```

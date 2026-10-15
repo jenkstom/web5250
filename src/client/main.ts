@@ -494,7 +494,6 @@ function splitPane(target: SessionPane, dir: 'h' | 'v'): void {
 
 function createPane(init: { system?: number | null; attach?: string; connectNow?: boolean } = {}): SessionPane {
   const pane = new SessionPane(panes.length, paneServices);
-  pane.setZoom(zoom ?? 1);
   pane.systemId = init.system ?? null; // hello confirms/matches it later
   panes.push(pane);
   layout ??= pane; // the tree grows by splitting this leaf later
@@ -702,12 +701,9 @@ function setConnState(state: string): void {
               ? ''
               : 'error';
   // Systems makes sense only while a session is up (the menu itself is the
-  // landing state); embedded launches never get it, and a view-only mirror
-  // has no system of its own to switch. Zoom is pure client-side sizing, so
-  // the mirror keeps it.
+  // landing state); embedded launches and view-only mirrors never get it.
   const anySocket = panes.some((p) => p.hasSocket());
   $('btn-systems').classList.toggle('hidden', autoLaunch || shareView || !anySocket);
-  $('zoom-group').classList.toggle('hidden', autoLaunch || (!shareView && !anySocket));
 }
 
 /** Automated-launch lifecycle: exactly one postMessage per ended launch. */
@@ -1005,34 +1001,6 @@ function showMenuFor(): void {
   else void showMenu(() => {});
 }
 
-// ------------------------------------------------------------------- zoom
-// Terminal zoom: Fit fills the pane, ½ / ¼ show it at half / quarter linear
-// size. The choice persists and applies to every pane (the focused one is
-// the reference).
-const ZOOM_KEY = 'web5250.zoom';
-const ZOOM_STEPS = [
-  { id: 'btn-fit', v: null },
-  { id: 'btn-half', v: 0.5 },
-  { id: 'btn-quarter', v: 0.25 }
-] as const;
-let zoom: number | null = (() => {
-  const v = Number.parseFloat(localStorage.getItem(ZOOM_KEY) ?? '');
-  return v === 0.5 || v === 0.25 ? v : null;
-})();
-function setZoom(v: number | null): void {
-  zoom = v;
-  if (v === null) localStorage.removeItem(ZOOM_KEY);
-  else localStorage.setItem(ZOOM_KEY, String(v));
-  renderZoomButtons();
-  for (const p of panes) p.setZoom(v ?? 1);
-  fitPanes();
-}
-function renderZoomButtons(): void {
-  for (const step of ZOOM_STEPS) $(step.id).classList.toggle('active', zoom === step.v);
-}
-for (const step of ZOOM_STEPS) $(step.id).addEventListener('click', () => setZoom(step.v));
-renderZoomButtons();
-
 // ------------------------------------------------------------------ viewport
 // The app's height tracks the *visual* viewport: when a mobile soft keyboard
 // opens, iOS (and others) shrink the visual viewport without resizing the
@@ -1064,7 +1032,6 @@ function fitPanes(): void {
     const availW = p.el.clientWidth - 2; // safety against rounding overflow
     const availH = p.el.clientHeight - 2 - barHeight(p) - oiaHeight(p);
     if (availW > 0 && availH > 0) {
-      p.setZoom(zoom ?? 1);
       p.fitInto(availW, availH);
     }
   }

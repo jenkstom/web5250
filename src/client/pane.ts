@@ -142,7 +142,7 @@ export class SessionPane {
   private readonly shareBtn: HTMLButtonElement;
   private readonly hostMenuEl: HTMLDivElement;
   private readonly overlayEl: HTMLDivElement;
-  private readonly keyToastEl: HTMLDivElement;
+  private readonly keyEl: HTMLElement;
   private readonly lockEl: HTMLElement;
   private readonly insertEl: HTMLElement;
   private readonly mwEl: HTMLElement;
@@ -155,9 +155,8 @@ export class SessionPane {
   private signalledEnd = false;
   private hostMouse: Record<string, number> = {};
   private hostPopup: HostPopup | null = null;
-  private zoom = 1;
   private flashTimer: number | undefined;
-  private keyToastTimer: number | undefined;
+  private keyTimer: number | undefined;
 
   // drag-selection state
   private selPressing = false;
@@ -228,12 +227,7 @@ export class SessionPane {
     this.hostMenuEl.setAttribute('aria-label', 'Host menu');
     this.overlayEl = document.createElement('div');
     this.overlayEl.className = 'pane-overlay hidden';
-    // Names the owner's non-printing key presses for a couple of seconds -
-    // only mirrors ever receive the events that feed it.
-    this.keyToastEl = document.createElement('div');
-    this.keyToastEl.className = 'viewer-key';
-    this.keyToastEl.setAttribute('aria-live', 'polite');
-    this.screenEl.append(this.canvas, this.hostMenuEl, this.overlayEl, this.keyToastEl);
+    this.screenEl.append(this.canvas, this.hostMenuEl, this.overlayEl);
 
     const oia = document.createElement('div');
     oia.className = 'oia';
@@ -252,10 +246,12 @@ export class SessionPane {
     if (index === 0) this.msgEl.id = 'oia-msg';
     const right = document.createElement('span');
     right.className = 'oia-right';
+    this.keyEl = document.createElement('span');
+    this.keyEl.className = 'oia-key';
     this.posEl = document.createElement('span');
     this.posEl.className = 'oia-pos';
     if (index === 0) this.posEl.id = 'oia-pos';
-    right.append(this.posEl);
+    right.append(this.keyEl, this.posEl);
     oia.append(left, this.msgEl, right);
 
     this.el.append(this.barEl, this.screenEl, oia);
@@ -302,14 +298,9 @@ export class SessionPane {
     this.labelEl.textContent = label;
   }
 
-  /** Apply the shell's zoom factor (the next fit uses it). */
-  setZoom(zoom: number): void {
-    this.zoom = zoom;
-  }
-
   /** Fit the terminal into a shell-measured box (stage or grid cell). */
   fitInto(w: number, h: number): void {
-    this.term.fit(w * this.zoom, h * this.zoom);
+    this.term.fit(w, h);
   }
 
   setFocused(focused: boolean): void {
@@ -413,9 +404,9 @@ export class SessionPane {
     this.viewOnly = false;
     this.shareToken = null;
     this.barEl.classList.remove('hidden');
-    window.clearTimeout(this.keyToastTimer);
-    this.keyToastTimer = undefined;
-    this.keyToastEl.classList.remove('show');
+    window.clearTimeout(this.keyTimer);
+    this.keyTimer = undefined;
+    this.keyEl.textContent = '';
     this.hostPopup = null;
     this.renderHostMenu();
     this.term.resizeGrid(24, 80);
@@ -604,16 +595,15 @@ export class SessionPane {
     }
   }
 
-  // ------------------------------------------------------ viewer key toast
-  /** Show the named key for 2 s - or until the next one replaces it. */
+  // ------------------------------------------------------ viewer key readout
+  /** Name the key in the status bar for 2 s - or until the next one. */
   private showKeyPressed(label: string): void {
     if (!label) return;
-    this.keyToastEl.textContent = label;
-    this.keyToastEl.classList.add('show');
-    window.clearTimeout(this.keyToastTimer);
-    this.keyToastTimer = window.setTimeout(() => {
-      this.keyToastTimer = undefined;
-      this.keyToastEl.classList.remove('show');
+    this.keyEl.textContent = label;
+    window.clearTimeout(this.keyTimer);
+    this.keyTimer = window.setTimeout(() => {
+      this.keyTimer = undefined;
+      this.keyEl.textContent = '';
     }, 2000);
   }
 

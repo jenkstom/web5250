@@ -1,8 +1,9 @@
-// Zoom + split-view E2E: drives the real UI in headless Chromium against the
-// gateway + mock host. Covers the zoom buttons (Fit / ½ / ¼), the in-place
-// split tree (splitting a pane nests; dividers drag to resize), per-pane
-// sessions with display name dedupe, keyboard focus routing, tiles/tabs
-// modes, reload reattach, pane add/close and pop-out.
+// Split-view E2E: drives the real UI in headless Chromium against the
+// gateway + mock host. Covers the fit-to-window terminal sizing (the
+// terminal always fills its box - splitter drags and window resizes refit
+// it), the in-place split tree (splitting a pane nests; dividers drag to
+// resize), per-pane sessions with display name dedupe, keyboard focus
+// routing, tiles/tabs modes, reload reattach, pane add/close and pop-out.
 //
 // Usage: node scripts/zoom-grid-test.mjs [port]
 import { chromium } from 'playwright-core';
@@ -43,7 +44,7 @@ function check(name, cond, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Viewport coordinates of the centre of a 1-based cell of pane 0's canvas
-// (the zoom checks run single-pane; the split sections aim clicks per pane).
+// (the fit checks run single-pane; the split sections aim clicks per pane).
 const cellXY = (r, c, sel = '#screen-canvas') =>
   page.evaluate(
     ([r, c, sel]) => {
@@ -54,7 +55,6 @@ const cellXY = (r, c, sel = '#screen-canvas') =>
     },
     [r, c, sel]
   );
-const canvasW = () => page.evaluate(() => document.getElementById('screen-canvas').getBoundingClientRect().width);
 const paneSel = (i) => `.pane[data-pane="${i}"]`;
 const panePos = (i) => page.evaluate((i) => document.querySelector(`.pane[data-pane="${i}"] .oia-pos`)?.textContent, i);
 const waitForPos = (i, want, timeout = 5000) =>
@@ -68,11 +68,10 @@ await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
 
 // ---- 1. menu state
 await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
-check('zoom group hidden on menu', !(await page.isVisible('#zoom-group')));
 check('menu has Split ↔ button', await page.isVisible('#menu-splith'));
 check('menu has Split ↕ button', await page.isVisible('#menu-splitv'));
 
-// ---- 2. connect: zoom group appears, Fit is active
+// ---- 2. connect: the terminal fits the window (no zoom buttons anymore)
 await page.click('#menu .menu-row');
 await page.waitForFunction(
   () => document.getElementById('conn-state')?.dataset.state === 'connected',
@@ -80,37 +79,38 @@ await page.waitForFunction(
   { timeout: 10000 }
 );
 await page.waitForTimeout(400);
-check('zoom group visible in session', await page.isVisible('#zoom-group'));
-check('Fit active by default', await page.evaluate(() => document.getElementById('btn-fit').classList.contains('active')));
-const wFit = await canvasW();
+const canvasBox = () =>
+  page.evaluate(() => {
+    const c = document.getElementById('screen-canvas').getBoundingClientRect();
+    // The pane's screen area is the terminal's actual box (the stage adds
+    // padding, the pane its header and OIA strip - fit fills those inner
+    // edges, not the stage's).
+    const s = document.querySelector('.pane[data-pane="0"] .pane-screen').getBoundingClientRect();
+    return {
+      cw: c.width,
+      ch: c.height,
+      sw: s.width,
+      sh: s.height,
+      inside: c.left >= s.left - 1 && c.right <= s.right + 1 && c.top >= s.top - 1 && c.bottom <= s.bottom + 1,
+      fills: c.width >= s.width - 8 || c.height >= s.height - 8
+    };
+  });
+const fit = await canvasBox();
+check('terminal fits inside the stage', fit.inside, JSON.stringify(fit));
+check('terminal fills the stage edge to edge', fit.fills, JSON.stringify(fit));
 
-// ---- 3. ½ and ¼ shrink the canvas around the centre; Fit restores
-await page.click('#btn-half');
-await page.waitForTimeout(150);
-const wHalf = await canvasW();
-check('half ≈ fit/2', Math.abs(wHalf - wFit / 2) <= 2, `${wHalf.toFixed(0)} vs ${(wFit / 2).toFixed(0)}`);
-check('½ button active', await page.evaluate(() => document.getElementById('btn-half').classList.contains('active')));
-check('localStorage persists ½', (await page.evaluate(() => localStorage.getItem('web5250.zoom'))) === '0.5');
+// ---- 3. a window resize refits the terminal into the new box
+await page.setViewportSize({ width: 900, height: 640 });
+await page.waitForTimeout(400);
+const small = await canvasBox();
+check('resize refits (canvas shrunk)', small.cw < fit.cw && small.ch < fit.ch && small.inside, JSON.stringify(small));
+await page.setViewportSize({ width: 1280, height: 900 });
+await page.waitForTimeout(400);
+const big = await canvasBox();
+check('resize refits (canvas restored)', Math.abs(big.cw - fit.cw) <= 2 && Math.abs(big.ch - fit.ch) <= 2, JSON.stringify(big));
 
-await page.click('#btn-quarter');
-await page.waitForTimeout(150);
-const wQuarter = await canvasW();
-check('quarter ≈ fit/4', Math.abs(wQuarter - wFit / 4) <= 2, `${wQuarter.toFixed(0)} vs ${(wFit / 4).toFixed(0)}`);
-check('terminal stays centred (left gap ≈ right gap)', await page.evaluate(() => {
-  const c = document.getElementById('screen-canvas').getBoundingClientRect();
-  const s = document.getElementById('stage').getBoundingClientRect();
-  return Math.abs((c.left - s.left) - (s.right - c.right)) <= 3;
-}));
-await page.screenshot({ path: `${OUT}/01-quarter.png` });
-
-await page.click('#btn-fit');
-await page.waitForTimeout(150);
-check('Fit restores full size', Math.abs((await canvasW()) - wFit) <= 2);
-
-// ---- 4. zoom choice survives reload (½ still selected now) - and the
-// session itself survives: the reloaded page reattaches to the running
-// gateway-side session instead of dropping back to the menu.
-await page.click('#btn-half');
+// ---- 4. the session survives a reload - the reloaded page reattaches to
+// the running gateway-side session instead of dropping back to the menu.
 const devBefore = await page.textContent('#dev-info');
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForFunction(
@@ -118,18 +118,15 @@ await page.waitForFunction(
   undefined,
   { timeout: 10000 }
 );
-check('½ active after reload (persisted)', await page.evaluate(() => document.getElementById('btn-half').classList.contains('active')));
 await page.waitForTimeout(500); // fit settles after the reattached screen lands
-check('canvas at half after reload', Math.abs((await canvasW()) - wFit / 2) <= 2);
 check('reload reattached the same session', (await page.textContent('#dev-info')) === devBefore,
   `${JSON.stringify(await page.textContent('#dev-info'))} vs ${JSON.stringify(devBefore)}`);
-await page.click('#btn-fit');
+check('terminal refilled the window after reload', (await canvasBox()).fills);
 
 // ---- 5. Systems → menu → Split ↔ (in place - no navigation, one shell)
 page.once('dialog', (d) => void d.accept().catch(() => {})); // Systems ends the live session: asks
 await page.click('#btn-systems');
 await page.waitForSelector('#menu:not(.hidden)', { timeout: 5000 });
-check('zoom group hidden again on menu', !(await page.isVisible('#zoom-group')));
 await page.fill('#menu-devname', 'MULTI');
 await page.click('#menu-splith');
 await page.waitForSelector('#panes > .split.split-h', { timeout: 5000 });
