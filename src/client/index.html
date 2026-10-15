@@ -152,7 +152,7 @@
       <div id="ctx-menu" class="hidden" role="menu">
         <button id="ctx-copysel" type="button" role="menuitem" disabled title="Copy the marked region (drag with the left button)">Copy selection</button>
         <button id="ctx-copy" type="button" role="menuitem">Copy screen</button>
-        <button id="ctx-paste" type="button" role="menuitem">Paste</button>
+        <button id="ctx-paste" type="button" role="menuitem" title="Paste at the cursor. If the browser asks to allow the paste, Ctrl+V (Cmd+V) skips that.">Paste</button>
       </div>
 
       <div id="copy-toast" role="status"></div>
@@ -180,6 +180,7 @@
               <tr><td>Left-drag</td><td>Mark text - copied on release (Alt+drag: rectangle)</td></tr>
               <tr><td>Double-click</td><td>Mark word</td></tr>
               <tr><td>Ctrl+C</td><td>Copy the marked text</td></tr>
+              <tr><td>Ctrl+V / Cmd+V</td><td>Paste at the cursor</td></tr>
             </tbody>
           </table>
           <button id="keys-close" type="button" class="ghost">Close</button>

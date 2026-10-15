@@ -469,6 +469,13 @@ terminal emulator does:
   the double click itself).
 - **Ctrl+C** / **Cmd+C** re-copies the standing mark; a plain click clears it
   and places the host cursor as before.
+- **Ctrl+V** / **Cmd+V** pastes at the cursor with no browser prompt - tabs in
+  the pasted text advance to the next field, line breaks are dropped.
+- **Paste** (the right-click item) has to *read* the clipboard, and the
+  browser answers that read with its own confirmation box (Safari and Firefox
+  every time, Chrome once and then remembered). That box is the browser's
+  clipboard privacy rule, not something the page can skip - use **Ctrl+V** /
+  **Cmd+V** to paste in one step.
 - Text in hidden (non-display) fields - e.g. the sign-on password - always
   copies as blanks.
 

@@ -1249,6 +1249,21 @@ window.addEventListener('keydown', (e) => {
   copySelection(activePane);
 });
 
+// Ctrl+V / Cmd+V: the browser hands the text over in the paste event with
+// no confirmation - unlike the menu's readText(), which Safari and Firefox
+// gate behind their own box. Typing surfaces keep their native paste; on a
+// touch device the hidden input's own handler covers soft-keyboard paste.
+window.addEventListener('paste', (e) => {
+  if (uiSurfaceOpen()) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (!activePane || activePane.viewOnly) return;
+  const text = e.clipboardData?.getData('text/plain') ?? '';
+  if (!text) return;
+  e.preventDefault();
+  pasteText(activePane, text);
+});
+
 // Copy the marked region (the menu item is disabled without a mark); the
 // toast is copySelection's own feedback.
 $('ctx-copysel').addEventListener('click', () => {
@@ -1266,10 +1281,22 @@ $('ctx-copy').addEventListener('click', (e) => {
   hideCtxMenu();
   focusTerminal();
 });
-// Paste at the cursor, typed character by character. Tabs advance to the
-// next field (a spreadsheet row fills successive prompt fields); line
-// breaks are dropped - auto-submitting a half-filled screen on a stray
-// newline is never what the user meant.
+// Paste text at the pane's cursor, typed character by character. Tabs
+// advance to the next field (a spreadsheet row fills successive prompt
+// fields); line breaks are dropped - auto-submitting a half-filled screen
+// on a stray newline is never what the user meant.
+function pasteText(pane: SessionPane, text: string): void {
+  for (const ch of text) {
+    if (ch === '\t') pane.sendKey('tab');
+    else if (ch !== '\r' && ch !== '\n') pane.sendKey('char', ch);
+  }
+}
+
+// Menu Paste must read the clipboard with readText() - and the browser
+// answers that read with its own "Paste?" confirmation box (Safari and
+// Firefox on every read, Chrome once and then remembered). That box is the
+// browser's clipboard privacy rule, not something the page can skip;
+// Ctrl+V, handled by the paste listener above, is the prompt-free path.
 $('ctx-paste').addEventListener('click', () => {
   const clip = navigator.clipboard;
   if (!clip?.readText) {
@@ -1279,11 +1306,7 @@ $('ctx-paste').addEventListener('click', () => {
       .readText()
       .then((text) => {
         const pane = menuPane ?? activePane;
-        if (!pane) return;
-        for (const ch of text) {
-          if (ch === '\t') pane.sendKey('tab');
-          else if (ch !== '\r' && ch !== '\n') pane.sendKey('char', ch);
-        }
+        if (pane) pasteText(pane, text);
       })
       .catch(() => window.alert('Paste is unavailable: the browser blocked clipboard access.'));
   }
