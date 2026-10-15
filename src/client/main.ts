@@ -564,7 +564,17 @@ function popOut(pane: SessionPane): void {
   // the same token, detaching this pane's front-end server-side.
   // The window name is per session: a constant name would make the second
   // pop-out navigate (and silently end) the first one's window.
-  const win = window.open(u.href, `web5250-${pane.token}`, 'popup=yes,width=1000,height=680');
+  // Size the window to the screen it will carry: the terminal's natural
+  // (1:1) box plus the app chrome (top bar, stage padding, pane frame, OIA
+  // strip) plus room for the browser's own chrome - platforms differ on
+  // whether height means the viewport or the outer window, and a window
+  // that comes up a few pixels short is what clips the bottom line. Too
+  // tall costs nothing: the terminal refits whatever the viewport is.
+  const availW = Math.floor(window.screen.availWidth * 0.9);
+  const availH = Math.floor(window.screen.availHeight * 0.9);
+  const w = Math.min(Math.max(pane.term.naturalWidth + 80, 720), availW);
+  const h = Math.min(Math.max(pane.term.naturalHeight + 200, 700), availH);
+  const win = window.open(u.href, `web5250-${pane.token}`, `popup=yes,width=${w},height=${h}`);
   if (!win) {
     window.alert('The browser blocked the pop-up window. Allow pop-ups for this site and try again.');
     return;
@@ -1009,7 +1019,10 @@ function showMenuFor(): void {
 // shrink while typing and expand again when the keyboard closes.
 function applyViewport(): void {
   const h = window.visualViewport?.height ?? window.innerHeight;
-  document.documentElement.style.setProperty('--vvh', `${Math.round(h)}px`);
+  // Floor, never round: a fractional viewport (HiDPI scaling, odd WM
+  // sizes) that rounds up makes the app a hair taller than the window -
+  // exactly the sliver that clips the bottom line in a pop-out.
+  document.documentElement.style.setProperty('--vvh', `${Math.floor(h)}px`);
 }
 window.visualViewport?.addEventListener('resize', applyViewport);
 window.visualViewport?.addEventListener('scroll', () => {
