@@ -306,12 +306,20 @@ Two delivery modes per system:
   real PDFs and print through the browser's PDF viewer; PCL is
   download-only (browsers cannot render it).
 
-Host-side setup (once, as an admin): create the device
-`CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT) TYPE(3812) MODEL(1)` and vary it on,
-or let `QAUTOVRT` auto-configure it. The printer device name is exact —
-its output queue is per device — so a name collision is reported as an
-error in the spool list (and `printer-status`) instead of being silently
-renamed; rename the configured device to fix it. The full byte-level
+Host-side setup (once, as an admin): a `*VRT` device must name a virtual
+controller, and a manually created one starts varied off — `CRTCTLVDE
+CTLD(QVIRCD0001)` (if it doesn't exist) and `VRYCFG … CFGTYPE(*CTL)
+STATUS(*ON)` — without the controller vary-on the device sits at "Powered
+off or not yet available" (and with no controller at all, vary-on fails
+with reason code 2301). Then `CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT)
+CTL(QVIRCD0001) TYPE(3812) MODEL(1) FONT(011) FORMFEED(*CONT)` and
+`VRYCFG … STATUS(*ON)`. Or skip the manual commands entirely and let
+`QAUTOVRT` auto-configure the device when the session first connects (it
+arrives with the exact DEVNAME, so the created device carries that name,
+controller and all). The printer device name is exact — its output queue
+is per device — so a name collision is reported as an error in the spool
+list (and `printer-status`) instead of being silently renamed; rename the
+configured device to fix it. The full byte-level
 protocol write-up is in
 [`docs/printer-session-notes.md`](docs/printer-session-notes.md); the design
 discussion in [`docs/printer-session.md`](docs/printer-session.md).

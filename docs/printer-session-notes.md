@@ -151,11 +151,20 @@ printer session and is reused as-is.
 
 ## 6. Host-side recipe (Q2, from RFC 2877 §7 + IBM device docs)
 
-- Pre-created device (v1 model): `CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT)
-  TYPE(3812) MODEL(1) TEXT('web5250 printer')` then `VRYCFG
-  CFGOBJ(WEB5250P) CFGTYPE(*DEV) STATUS(*ON)`. The telnet server varies the
-  device on when the session starts (as it does for displays); `8901` means
-  it could not.
+- Pre-created device (v1 model): a `*VRT` device must name a virtual
+  controller, or VRYCFG fails with "configuration not valid, reason code
+  2301" (device not attached to a controller). Create the controller once
+  if it does not exist (`CRTCTLVDE CTLD(QVIRCD0001)`) and vary IT on - a
+  manually created controller starts varied off, leaving the device at
+  "Powered off or not yet available" in WRKCFGSTS - then:
+  `CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT) CTL(QVIRCD0001) TYPE(3812)
+  MODEL(1) FONT(011) FORMFEED(*CONT) TEXT('web5250 printer')`,
+  `VRYCFG CFGOBJ(QVIRCD0001) CFGTYPE(*CTL) STATUS(*ON)` and
+  `VRYCFG CFGOBJ(WEB5250P) CFGTYPE(*DEV) STATUS(*ON)`. (SCS device types
+  demand FONT - it has no default; there is no PAGESIZE on CRTDEVPRT,
+  page size belongs to the printer file.)
+  The telnet server varies the device on when the session starts (as it
+  does for displays); `8901` means it could not.
 - Auto-config alternative: telnet auto-creates devices only while
   `QAUTOVRT` > 0 — printer sessions with a named DEVNAME are created
   device-type 3812 model 1 automatically. If auto-config is off/failed the

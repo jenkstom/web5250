@@ -140,7 +140,7 @@
                     up so host spool files reach the Spool list</em></span>
                   <label for="f-printerdev">Printer device</label>
                   <input id="f-printerdev" maxlength="10" autocapitalize="characters" placeholder="WEB5250P"
-                         title="The host device (and its output queue) the printer session claims. Create it with CRTDEVPRT TYPE(3812) MODEL(1) or let QAUTOVRT auto-configure." />
+                         title="The host device (and its output queue) the printer session claims. Create it once with CRTDEVPRT DEVCLS(*VRT) CTL(QVIRCD0001) TYPE(3812) MODEL(1) FONT(011) — see README — or let QAUTOVRT auto-configure it on first connect." />
                   <label for="f-printermode">Printer mode</label>
                   <select id="f-printermode">
                     <option value="text">text — extract plain text from SCS</option>

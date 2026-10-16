@@ -16,7 +16,11 @@
 //   [PRINTER_TEST_WAIT_MS=180000]  npm run build && npm run test:printer-real
 //
 // Host prerequisites (see docs/printer-session-notes.md section 6):
-//   CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT) TYPE(3812) MODEL(1) && VRYCFG ON
+//   CRTCTLVDE CTLD(QVIRCD0001)                      // once, if missing
+//   VRYCFG CFGOBJ(QVIRCD0001) CFGTYPE(*CTL) STATUS(*ON)
+//   CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT) CTL(QVIRCD0001)
+//            TYPE(3812) MODEL(1) FONT(011) FORMFEED(*CONT)
+//   VRYCFG CFGOBJ(WEB5250P) CFGTYPE(*DEV) STATUS(*ON)
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
