@@ -20,6 +20,7 @@
           <button id="btn-exitsplit" class="ghost" type="button" title="Leave split view (ends the extra sessions)">Exit split</button>
         </span>
         <button id="btn-systems" class="ghost hidden" type="button" title="End this session and pick another system">Systems</button>
+        <button id="btn-spool" class="ghost hidden" type="button" title="Spool files printed from the host (printer session)">Spool<span id="spool-count" class="hidden"></span></button>
         <button id="btn-diag" class="ghost hidden" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
         <button id="btn-keypad" class="ghost" type="button" title="Toggle on-screen keypad">Pad</button>
@@ -134,6 +135,17 @@
                   <input id="f-proxyuser" maxlength="255" autocomplete="off" />
                   <label for="f-proxypass">Proxy password</label>
                   <input id="f-proxypass" type="password" maxlength="255" autocomplete="new-password" />
+                  <label for="f-printer">Printer</label>
+                  <span class="check"><input id="f-printer" type="checkbox" /> <em>keep a printer session
+                    up so host spool files reach the Spool list</em></span>
+                  <label for="f-printerdev">Printer device</label>
+                  <input id="f-printerdev" maxlength="10" autocapitalize="characters" placeholder="WEB5250P"
+                         title="The host device (and its output queue) the printer session claims. Create it with CRTDEVPRT TYPE(3812) MODEL(1) or let QAUTOVRT auto-configure." />
+                  <label for="f-printermode">Printer mode</label>
+                  <select id="f-printermode">
+                    <option value="text">text — extract plain text from SCS</option>
+                    <option value="raw">raw — store host print transform bytes</option>
+                  </select>
                 </div>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">
@@ -157,6 +169,22 @@
           <button id="copy-close" type="button" class="ghost">Close</button>
         </div>
       </div>
+
+      <div id="spool-modal" class="hidden">
+        <div id="spool-card">
+          <div class="panel-title">SPOOL PRINT JOBS</div>
+          <div id="spool-printers"></div>
+          <ul id="spool-list"></ul>
+          <p id="spool-empty" class="hidden"></p>
+          <p id="spool-error" class="hidden"></p>
+          <div class="admin-actions">
+            <button id="spool-refresh" type="button">Refresh</button>
+            <button id="spool-close" type="button" class="ghost">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <iframe id="spool-print-frame" title="Print" class="hidden"></iframe>
 
       <div id="ctx-menu" class="hidden" role="menu">
         <button id="ctx-copysel" type="button" role="menuitem" disabled title="Copy the marked region (drag with the left button)">Copy selection</button>

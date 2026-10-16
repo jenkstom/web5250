@@ -129,6 +129,90 @@ export const aidForPF = (n: number): number => {
   throw new Error(`invalid PF key ${n}`);
 };
 
+// ---------------------------------------------------------------------------
+// Printer sessions (TN5250E, RFC 4777 section 11). A printer session is a
+// normal RFC 1205 negotiation answered with terminal type IBM-3812-1; no
+// extra telnet option is needed. Bytes 4-5 of the GDS header - 00 00 on
+// display records - become the record flow type, byte 6 the pass-through
+// header length (LL), bytes 7-8 flags, byte 9 the opcode; data follows at
+// LL+1. Byte-level sources: docs/printer-session-notes.md.
+// ---------------------------------------------------------------------------
+export const TERM_TYPE_SCS_PRINTER = 'IBM-3812-1';
+
+export const FLOW_DISPLAY = 0x0000; // display data stream (RFC 1205)
+export const FLOW_STARTUP_RESPONSE = 0x9000; // host -> client: session start result
+export const FLOW_PRINT_DATA = 0x0101; // host -> client: print record
+export const FLOW_PRINT_RESPONSE = 0x0102; // client -> host: print-complete ACK
+
+// Byte 7 of a print record (the RFC writes the pair as 1800/0800 - these
+// bits live in the high byte; record.h reads data[7]).
+export const PRINT_FLAG_ERROR = 0x80;
+export const PRINT_FLAG_PRINTER_READY = 0x20;
+export const PRINT_FLAG_FIRST_OF_CHAIN = 0x10;
+export const PRINT_FLAG_LAST_OF_CHAIN = 0x08;
+
+export const PRINT_OPCODE_PRINT = 0x01; // print data (host) / print complete (client)
+export const PRINT_OPCODE_CLEAR = 0x02; // clear print buffers (host, never ACKed)
+
+// Startup response record (flow 9000): the 4-char EBCDIC code sits at
+// offset 6+LL+5 (LL = byte 6 = 5 on startup records -> offset 16).
+export const PRINT_STARTUP_CODE_OFFSET = 16;
+
+// Codes the printer client accepts as "session started" (printsession.c);
+// everything else is a fatal, admin-visible error.
+export const PRINT_STARTUP_OK = new Set(['I901', 'I902', 'I906']);
+
+/** Human text for the startup response codes that matter in practice. */
+export const PRINT_STARTUP_MESSAGES: Record<string, string> = {
+  I901: 'session started (device has less function than requested)',
+  I902: 'session started',
+  I906: 'session started (sign-on screen follows)',
+  '2702': 'device description not found on the host',
+  '2703': 'controller description not found on the host',
+  '2777': 'device description damaged',
+  '8901': 'device not varied on',
+  '8902': 'device not available (already in use?)',
+  '8903': 'device not valid for this session',
+  '8906': 'session initiation failed',
+  '8907': 'session failure',
+  '8910': 'controller not valid for this session',
+  '8916': 'no matching device found',
+  '8917': 'not authorized to the device',
+  '8923': 'start-up record built incorrectly',
+  '8929': 'vary on or vary off failed',
+  '8930': 'message queue does not exist',
+  '8934': 'start up for S/36 WSF received',
+  '8935': 'session rejected',
+  '8936': 'security failure on session attempt',
+  '8940': 'automatic configuration failed or not allowed',
+  I904: 'source system at incompatible release'
+};
+
+// ---------------------------------------------------------------------------
+// SCS control codes (IPDS & SCS Technical Reference ch.16; the subset that
+// occurs on *SCS spool output - scs.c). Text bytes are EBCDIC 0x40-0xFE;
+// these codes select the text-mode extractor's behaviour.
+// ---------------------------------------------------------------------------
+export const SCS_TRANSPARENT = 0x03; // 1 length byte, then that many raw bytes
+export const SCS_HT = 0x05;
+export const SCS_RNL = 0x06;
+export const SCS_RPT = 0x0a; // 2 params: count, char
+export const SCS_FF = 0x0c;
+export const SCS_CR = 0x0d;
+export const SCS_NOOP = 0x00;
+export const SCS_NL = 0x15;
+export const SCS_IRS = 0x1e;
+export const SCS_LF = 0x25;
+export const SCS_SSA = 0x2b; // sub-coded presentation blocks follow
+export const SCS_BEL = 0x2f;
+export const SCS_SPS = 0x09;
+export const SCS_SBS = 0x38;
+export const SCS_PP = 0x34; // 2 param bytes
+export const SCS_RFF = 0x3a;
+export const SCS_AHPP = 0xc0; // 2 param bytes
+export const SCS_AVPP = 0xc4; // 2 param bytes
+export const SCS_RRPP = 0xc8; // 2 param bytes
+
 // Negative-response categories (5250 Functions Reference 12.4)
 export const NR_REQUEST_REJECT = 0x08;
 export const NR_REQUEST_ERROR = 0x10;

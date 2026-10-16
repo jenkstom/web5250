@@ -27,6 +27,12 @@ export interface SystemRow {
   proxyPort: number | null;
   proxyUser: string | null;
   proxyPass: string | null;
+  /** Gateway-owned TN5250E printer session (spool files land in the browser). */
+  printerEnabled: boolean;
+  /** Exact printer device name (the host output queue hangs off it). */
+  printerDeviceName: string | null;
+  /** text = extract plain text from SCS; raw = store bytes, sniff format. */
+  printerMode: 'text' | 'raw';
   position: number;
 }
 
@@ -100,6 +106,17 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
     return { ok: false, error: 'Proxy username/password need a proxy host' };
   }
 
+  const printerEnabled =
+    r.printerEnabled === true || r.printerEnabled === 'true' || r.printerEnabled === 1 || r.printerEnabled === '1';
+  const printerMode = r.printerMode === 'raw' ? 'raw' : 'text';
+  const printerDeviceName = str(r.printerDeviceName, 10);
+  if (printerDeviceName && !PREFIX_RE.test(printerDeviceName)) {
+    return {
+      ok: false,
+      error: 'Printer device name may only contain A-Z 0-9 # $ @ _ (max 10 chars)'
+    };
+  }
+
   return {
     ok: true,
     value: {
@@ -114,7 +131,10 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       proxyHost: proxyHost || null,
       proxyPort,
       proxyUser: proxyUser || null,
-      proxyPass: proxyPass || null
+      proxyPass: proxyPass || null,
+      printerEnabled,
+      printerDeviceName: printerDeviceName ? printerDeviceName.toUpperCase() : null,
+      printerMode
     }
   };
 }
@@ -133,6 +153,9 @@ interface Row {
   proxy_port: number | null;
   proxy_user: string | null;
   proxy_pass: string | null;
+  printer_enabled: number;
+  printer_device_name: string | null;
+  printer_mode: string;
   position: number;
 }
 
@@ -150,6 +173,9 @@ const mapRow = (r: Row): SystemRow => ({
   proxyPort: r.proxy_port === null || r.proxy_port === undefined ? null : Number(r.proxy_port),
   proxyUser: r.proxy_user ?? null,
   proxyPass: r.proxy_pass ?? null,
+  printerEnabled: Number(r.printer_enabled ?? 0) !== 0,
+  printerDeviceName: r.printer_device_name ?? null,
+  printerMode: r.printer_mode === 'raw' ? 'raw' : 'text',
   position: Number(r.position)
 });
 
@@ -175,6 +201,9 @@ export class Systems {
         proxy_port  INTEGER,
         proxy_user  TEXT,
         proxy_pass  TEXT,
+        printer_enabled     INTEGER NOT NULL DEFAULT 0,
+        printer_device_name TEXT,
+        printer_mode        TEXT NOT NULL DEFAULT 'text',
         position    INTEGER NOT NULL DEFAULT 1,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -194,6 +223,11 @@ export class Systems {
     addColumn('proxy_port', 'INTEGER');
     addColumn('proxy_user', 'TEXT');
     addColumn('proxy_pass', 'TEXT');
+    // Databases from before printer sessions: printer stays off until an
+    // admin enables it (NULL name -> the default device name at connect).
+    addColumn('printer_enabled', 'INTEGER NOT NULL DEFAULT 0');
+    addColumn('printer_device_name', 'TEXT');
+    addColumn('printer_mode', "TEXT NOT NULL DEFAULT 'text'");
 
     if (this.list().length === 0) {
       const seed = validateSystemInput(
@@ -209,7 +243,10 @@ export class Systems {
           proxyHost: cfg.ibmProxyHost ?? '',
           proxyPort: cfg.ibmProxyPort,
           proxyUser: cfg.ibmProxyUser ?? '',
-          proxyPass: cfg.ibmProxyPassword ?? ''
+          proxyPass: cfg.ibmProxyPassword ?? '',
+          printerEnabled: cfg.ibmPrinterEnabled,
+          printerDeviceName: cfg.ibmPrinterEnabled ? cfg.ibmPrinterDeviceName : '',
+          printerMode: cfg.ibmPrinterMode
         },
         cfg
       );
@@ -244,6 +281,7 @@ export class Systems {
         `UPDATE systems SET name = ?, description = ?, host = ?, port = ?, ssl = ?,
          term_type = ?, code_page = ?, dev_prefix = ?,
          proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
+         printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
          updated_at = datetime('now') WHERE id = ?`
       )
       .run(
@@ -259,6 +297,9 @@ export class Systems {
         input.proxyPort,
         input.proxyUser,
         input.proxyPass,
+        input.printerEnabled ? 1 : 0,
+        input.printerDeviceName,
+        input.printerMode,
         id
       );
     return { ok: true, row: this.get(id)! };
@@ -291,8 +332,9 @@ export class Systems {
     const res = this.db
       .prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
-         proxy_host, proxy_port, proxy_user, proxy_pass, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         proxy_host, proxy_port, proxy_user, proxy_pass,
+         printer_enabled, printer_device_name, printer_mode, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -307,6 +349,9 @@ export class Systems {
         input.proxyPort,
         input.proxyUser,
         input.proxyPass,
+        input.printerEnabled ? 1 : 0,
+        input.printerDeviceName,
+        input.printerMode,
         Number(max.m) + 1
       );
     return this.get(Number(res.lastInsertRowid))!;

@@ -31,7 +31,9 @@
     "test:real": "node scripts/real-signon-test.mjs",
     "test:auto": "node scripts/auto-test.mjs",
     "test:reads": "node scripts/read-commands-test.mjs",
-    "test:list": "node scripts/list-nav-test.mjs"
+    "test:list": "node scripts/list-nav-test.mjs",
+    "test:printer": "node scripts/printer-test.mjs",
+    "test:printer-real": "node scripts/printer-real-test.mjs"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

@@ -99,6 +99,19 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   caller-supplied string into the user profile's initial-program screen, and
   `postMessage`s the embedding page when the user exits and the host drops
   the session — one-line deep links for other apps' data-entry screens.
+- **Spool printing to the browser (TN5250E printer sessions)**: the
+  gateway keeps one always-on printer device per system (RFC 4777 printer
+  flow — terminal type `IBM-3812-1`, no extra host infrastructure). Press
+  Print on the host or move a spool file to the device's output queue and
+  it appears in the browser under the top-bar **Spool** button —
+  downloadable, printable on a local printer, or forwarded as a real PDF
+  when the device has host print transform configured. `text` mode extracts
+  plain text from the SCS stream (form feeds become page breaks); `raw`
+  mode stores the transformed bytes and sniffs the format (`%PDF`, PCL).
+  Storage is bounded (`PRINTJOBS_*`), jobs never contain credentials, and
+  a collision on the configured device name surfaces as an error instead
+  of a silent rename; see
+  [Spool printing (printer sessions)](#spool-printing-printer-sessions).
 - **Proxy-friendly**: relative asset paths (works under any sub-path),
   accepts upgrades on any `…/ws` path, WebSocket keepalive pings, `/healthz`
   for uptime checks, zero client-side dependencies beyond static assets.
@@ -191,6 +204,12 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_PROXY_PORT` | SOCKS5 proxy port | `1080` |
 | `IBM_I_PROXY_USER` | SOCKS5 username (RFC 1929, with `IBM_I_PROXY_PASSWORD`) | – |
 | `IBM_I_PROXY_PASSWORD` | SOCKS5 password — stored in SQLite on the data volume, never served to unauthenticated browsers | – |
+| `IBM_I_PRINTER_ENABLED` | First-boot seed: keep a printer session up for the seeded system (per-system afterwards, in the admin editor) | `false` |
+| `IBM_I_PRINTER_DEVNAME` | Printer device name the seed system claims (`CRTDEVPRT … TYPE(3812) MODEL(1)`, or let `QAUTOVRT` auto-configure) | `WEB5250P` |
+| `IBM_I_PRINTER_MODE` | Seed printer delivery mode: `text` (extract plain text from SCS) or `raw` (store host-print-transform bytes, sniff `%PDF`/PCL) | `text` |
+| `PRINTJOBS_MAX_COUNT` | Spool-job retention: newest jobs kept per system (drop-oldest) | `200` |
+| `PRINTJOBS_MAX_BYTES` | Spool-job retention: total bytes kept per system (drop-oldest) | `104857600` (100 MB) |
+| `PRINTJOBS_TTL_MS` | Spool-job retention: age limit, swept periodically | `1209600000` (14 days) |
 | `ALLOW_CUSTOM_HOST` | Let users point a session at another host via query params (`?host=&port=&ssl=1&term=&cp=&devname=`) | `false` |
 | `ALLOW_HOST_URL_OPEN` | Let host `STRPCCMD` commands that carry an http(s) URI open it in the user's browser (the browser's own popup warning/consent applies) | `true` |
 | `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
@@ -223,11 +242,15 @@ custom-host behaviour.
 edit / delete / reorder systems. Edits persist to SQLite (mount the compose
 `web5250-data` volume) and apply immediately — no restart needed. Every
 system carries its own host, port, TLS flag, terminal model, code page and
-optional device prefix, and can be routed through a **SOCKS5 proxy** (host,
-port, optional username/password): the gateway's TN5250 connection is
-tunneled through it, with TLS-to-host still layered inside the tunnel when
-the system has TLS enabled. Proxy details are visible only inside the
-authenticated editor; the public menu list shows just a `SOCKS5` marker.
+optional device prefix, can be routed through a **SOCKS5 proxy** (host,
+port, optional username/password), and can keep a **printer session** up
+(enabled flag, printer device name, `text`/`raw` mode — see
+[Spool printing](#spool-printing-printer-sessions)): the gateway's TN5250
+connection is tunneled through the proxy with TLS-to-host still layered
+inside the tunnel when the system has TLS enabled, and the printer session
+follows the same connection settings. Proxy and printer-infrastructure
+details are visible only inside the authenticated editor; the public menu
+list shows just a `SOCKS5` / `printer` marker.
 
 **Display name** (the `Display` field on the menu): an optional 5250
 device name for this browser's sessions, saved in `localStorage` and sent
@@ -244,6 +267,10 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | :-- | :-- | :-- |
 | `GET /api/meta` | – | admin enabled?, terminal models, code pages, form defaults |
 | `GET /api/systems` | – | the menu list |
+| `GET /api/printer-status` | – | per-system printer session state (ready / connecting / error) |
+| `GET /api/printjobs` | – | spool jobs, newest first (token, system, device, size, pages, time) |
+| `GET /api/printjobs/<token>` | – | job download (content type by format; `no-store`) |
+| `DELETE /api/printjobs/<token>` | token | delete one job (retention usually suffices) |
 | `POST /api/admin/auth` | PIN | `{pin}` → `{token}` (8 h bearer token) |
 | `POST /api/admin/systems` | token | create |
 | `PUT /api/admin/systems/<id>` | token | update |
@@ -253,6 +280,48 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 WebSocket sessions target a system with `?system=<id>` (rejected with 404 if
 the id no longer exists — the browser falls back to the menu). Failed PIN
 attempts lock administration for 60 s after 5 tries.
+
+## Spool printing (printer sessions)
+
+The 5250 display protocol has no file transfer — the only channel a host
+can push bytes down is a **TN5250E printer session** (the mechanism ACS and
+tn5250 use for "print to local printer"). When a system has its printer
+enabled, the gateway keeps one always-on printer device connected
+(independent of any display sessions, reconnected with backoff): like a
+real printer being powered on, the device must be there for the host's
+writer to send to it. Print on the host — or move any spool file to the
+device's output queue — and the job lands in the browser: the top-bar
+**Spool** button (with a pending-jobs count) opens the job list, where each
+job can be **downloaded** or **printed** on a locally connected printer.
+
+Two delivery modes per system:
+
+- **`text`** (default): the device is an SCS printer (`IBM-3812-1`); the
+  gateway extracts plain text from the SCS stream — form feeds become page
+  breaks, page counts are shown, the print view paginates properly. Zero
+  host-side transform configuration.
+- **`raw`**: for devices created with host print transform
+  (`CRTDEVPRT … TRANSFORM(*YES) MFRTYPMDL(...)` or a WSCST), the gateway
+  stores the bytes as-is and sniffs the format — `%PDF` jobs download as
+  real PDFs and print through the browser's PDF viewer; PCL is
+  download-only (browsers cannot render it).
+
+Host-side setup (once, as an admin): create the device
+`CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT) TYPE(3812) MODEL(1)` and vary it on,
+or let `QAUTOVRT` auto-configure it. The printer device name is exact —
+its output queue is per device — so a name collision is reported as an
+error in the spool list (and `printer-status`) instead of being silently
+renamed; rename the configured device to fix it. The full byte-level
+protocol write-up is in
+[`docs/printer-session-notes.md`](docs/printer-session-notes.md); the design
+discussion in [`docs/printer-session.md`](docs/printer-session.md).
+
+Jobs live in a bounded store on the data volume next to the SQLite DB
+(`<data>/printjobs/…`): newest `PRINTJOBS_MAX_COUNT` jobs / total
+`PRINTJOBS_MAX_BYTES` bytes per system (drop-oldest) and a
+`PRINTJOBS_TTL_MS` age limit, with the per-job download keyed by an
+unguessable token under the app's usual edge-authentication trust model.
+Job files never contain credentials.
 
 ## Multiple sessions on one page
 
@@ -567,6 +636,10 @@ npm run test:socks      # SOCKS5 per-system proxy: tunnelled session,
                         #   username/password auth, failure paths, proxy
                         #   credentials kept off the public API, SQLite
                         #   migration of pre-proxy databases
+npm run test:printer    # TN5250E printer sessions: SCS jobs arrive/list/
+                        #   download, framing stress (records + TCP
+                        #   segments), retention purge, host-refusal and
+                        #   device-collision paths, raw-mode PDF sniffing
 npm run test:pcuri      # STRPCCMD: host-pushed URI arrives as an openurl
                         #   message (never painted), Enter completion,
                         #   non-URI commands ignored, mirrors excluded

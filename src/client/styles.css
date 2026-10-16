@@ -765,6 +765,81 @@ button.primary { border-color: var(--green); color: var(--green); }
 .sys-menu-frame button.primary { background: var(--green); color: #04140a; font-weight: 700; }
 .sys-menu-frame button.primary:hover { background: #6df57f; color: #04140a; }
 
+/* ------------------------------------------------------- spool modal ----- */
+#spool-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 94;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(4, 8, 6, 0.85);
+}
+#spool-modal.hidden { display: none; }
+
+#spool-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  width: min(94vw, 42rem);
+  max-height: 92dvh;
+  overflow: auto;
+  padding-bottom: 1.1rem;
+}
+
+#spool-printers { margin: 0.5rem 1rem 0; }
+.spool-printer {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  padding: 0.15rem 0;
+}
+.spool-printer b { font-weight: 400; }
+.spool-printer.ready b { color: var(--green); }
+.spool-printer.error b { color: var(--err); }
+.spool-printer.connecting b { color: var(--warn); }
+
+#spool-list { list-style: none; margin: 0.3rem 1rem; padding: 0; }
+.spool-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.2rem;
+  border-bottom: 1px solid var(--line);
+}
+.spool-main { flex: 1; min-width: 0; }
+.spool-main b { color: var(--text); display: block; font-size: 0.8rem; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spool-main small { color: var(--dim); font-size: 0.7rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spool-row button { font-size: 0.7rem; padding: 0.25rem 0.5rem; }
+.spool-row button:disabled { opacity: 0.3; cursor: default; }
+
+#spool-empty {
+  color: var(--dim);
+  font-size: 0.75rem;
+  text-align: center;
+  white-space: pre-line;
+  margin: 1rem 1rem 0.2rem;
+}
+#spool-error { color: var(--err); font-size: 0.75rem; text-align: center; margin: 0.4rem 1rem; }
+
+#spool-count { color: var(--warn); margin-left: 0.25rem; }
+
+/* Hidden print carrier (text jobs render into its document; PDFs load it). */
+#spool-print-frame {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+}
+#spool-print-frame.hidden { display: none; }
+
+
 /* ------------------------------------------------------- admin modal ----- */
 #admin-modal {
   position: fixed;

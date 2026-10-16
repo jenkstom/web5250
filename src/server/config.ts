@@ -45,6 +45,18 @@ export interface Config {
   showDiagButton: boolean;
   /** Forward STRPCCMD http(s) URIs from the host to the browser (openurl). */
   allowHostUrlOpen: boolean;
+  /** First-boot seed: enable the printer session on the seeded system. */
+  ibmPrinterEnabled: boolean;
+  /** First-boot seed: printer device name (the host's output queue target). */
+  ibmPrinterDeviceName: string;
+  /** First-boot seed printer delivery mode (text = SCS extraction, raw = passthrough). */
+  ibmPrinterMode: 'text' | 'raw';
+  /** Print-job retention: newest jobs kept per system (drop-oldest). */
+  printjobsMaxCount: number;
+  /** Print-job retention: total bytes kept per system (drop-oldest). */
+  printjobsMaxBytes: number;
+  /** Print-job retention: age limit, swept periodically. */
+  printjobsTtlMs: number;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -116,7 +128,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     autoSignOnPassword: env.AUTO_SIGNON_PASSWORD ?? null,
     frameAncestors: env.FRAME_ANCESTORS?.trim() || null,
     showDiagButton: bool(env.SHOW_DIAG_BUTTON, false),
-    allowHostUrlOpen: bool(env.ALLOW_HOST_URL_OPEN, true)
+    allowHostUrlOpen: bool(env.ALLOW_HOST_URL_OPEN, true),
+    ibmPrinterEnabled: bool(env.IBM_I_PRINTER_ENABLED, false),
+    ibmPrinterDeviceName: (env.IBM_I_PRINTER_DEVNAME?.trim().toUpperCase() || 'WEB5250P').slice(0, 10),
+    ibmPrinterMode: env.IBM_I_PRINTER_MODE === 'raw' ? 'raw' : 'text',
+    printjobsMaxCount: clampInt(env.PRINTJOBS_MAX_COUNT, 1, 10000, 200),
+    printjobsMaxBytes: clampInt(env.PRINTJOBS_MAX_BYTES, 1024, 16 * 1024 * 1024 * 1024, 100 * 1024 * 1024),
+    printjobsTtlMs: clampInt(env.PRINTJOBS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 14 * 24 * 60 * 60 * 1000)
   };
 }
 

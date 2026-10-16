@@ -4,6 +4,7 @@
 // systems from the gateway's SQLite store. Users pick one with the arrow
 // keys / a number + Enter, or by tapping. The admin editor (PIN-gated on the
 // server via ADMIN_PIN) manages that list: add, edit, delete, reorder.
+import { recheckSpool } from './spool.ts';
 export interface MenuSystem {
   id: number;
   name: string;
@@ -16,11 +17,15 @@ export interface MenuSystem {
   devPrefix: string | null;
   /** True on the public list: this system connects through a SOCKS5 proxy. */
   viaProxy?: boolean;
+  /** True on the public list: a gateway-owned printer session runs for this system. */
+  printerEnabled?: boolean;
   /** Present only on the admin editor's (authenticated) copy of the row. */
   proxyHost?: string | null;
   proxyPort?: number | null;
   proxyUser?: string | null;
   proxyPass?: string | null;
+  printerDeviceName?: string | null;
+  printerMode?: 'text' | 'raw';
 }
 
 interface Meta {
@@ -153,7 +158,9 @@ function render(): void {
     }
     const sub = document.createElement('span');
     sub.className = 'row-sub';
-    sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'} · ${s.termType} · ${s.codePage}${s.viaProxy ? ' · SOCKS5' : ''}`;
+    sub.textContent =
+      `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'} · ${s.termType} · ${s.codePage}` +
+      `${s.viaProxy ? ' · SOCKS5' : ''}${s.printerEnabled ? ' · printer' : ''}`;
     main.appendChild(sub);
 
     li.append(num, main);
@@ -543,6 +550,7 @@ async function refreshAdminList(): Promise<void> {
   try {
     systems = await fetchSystems();
     render(); // keep the menu behind the overlay in sync
+    recheckSpool(); // enabling the first printer reveals the Spool button
   } catch {
     /* menu refresh is cosmetic here */
   }
@@ -576,6 +584,7 @@ async function refreshAdminList(): Promise<void> {
     small.textContent =
       `${s.host}:${s.port}${s.ssl ? ' · TLS' : ''} · ${s.termType} · ${s.codePage}` +
       (s.viaProxy || s.proxyHost ? ' · SOCKS5' : '') +
+      (s.printerEnabled || s.printerDeviceName ? ' · printer' : '') +
       (s.devPrefix ? ` · ${s.devPrefix}` : '');
     nm.append(b, small);
 
@@ -653,6 +662,11 @@ function fillForm(s: MenuSystem | null): void {
   $<HTMLInputElement>('f-proxyport').value = s?.proxyPort != null ? String(s.proxyPort) : '';
   $<HTMLInputElement>('f-proxyuser').value = s?.proxyUser ?? '';
   $<HTMLInputElement>('f-proxypass').value = s?.proxyPass ?? '';
+  // Printer session fields (same authenticated-copy rule). A new system
+  // defaults the device name to the gateway's default (WEB5250P).
+  $<HTMLInputElement>('f-printer').checked = s ? Boolean(s.printerEnabled) : false;
+  $<HTMLInputElement>('f-printerdev').value = s?.printerDeviceName ?? 'WEB5250P';
+  $<HTMLSelectElement>('f-printermode').value = s?.printerMode ?? 'text';
 }
 
 function editSystem(s: MenuSystem): void {
@@ -677,7 +691,10 @@ function formPayload(): Record<string, unknown> {
     proxyHost: $<HTMLInputElement>('f-proxyhost').value,
     proxyPort: $<HTMLInputElement>('f-proxyport').value,
     proxyUser: $<HTMLInputElement>('f-proxyuser').value,
-    proxyPass: $<HTMLInputElement>('f-proxypass').value
+    proxyPass: $<HTMLInputElement>('f-proxypass').value,
+    printerEnabled: $<HTMLInputElement>('f-printer').checked,
+    printerDeviceName: $<HTMLInputElement>('f-printerdev').value,
+    printerMode: $<HTMLSelectElement>('f-printermode').value
   };
 }
 

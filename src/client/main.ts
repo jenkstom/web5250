@@ -11,6 +11,7 @@ import './styles.css';
 import { SessionPane, SESSION_KEY, type SessionTarget, type PaneServices } from './pane.ts';
 import { attachKeyboard, mapEvent, type SendKey } from './keyboard.ts';
 import { buildKeypad } from './keypad.ts';
+import { initSpool, spoolVisible, closeSpool } from './spool.ts';
 import {
   closePanePickers,
   fetchSystems,
@@ -1080,11 +1081,13 @@ function focusTerminal(): void {
 }
 
 // While a UI surface covers the terminal (system menu, keyboard-mapping
-// help, right-click menu), its keys belong to that surface - not to the host.
+// help, right-click menu, spool list), its keys belong to that surface -
+// not to the host.
 const ctxOpen = (): boolean => !$('ctx-menu').classList.contains('hidden');
 const copyFallbackOpen = (): boolean => !$('copy-fallback').classList.contains('hidden');
 const uiSurfaceOpen = (): boolean =>
-  menuVisible() || ctxOpen() || copyFallbackOpen() || !$('keys-modal').classList.contains('hidden');
+  menuVisible() || ctxOpen() || copyFallbackOpen() || spoolVisible() ||
+  !$('keys-modal').classList.contains('hidden');
 
 const sendKey: SendKey = (k, ch) => {
   activePane?.sendKey(k, ch);
@@ -1165,6 +1168,9 @@ window.addEventListener('keydown', (e) => {
   } else if (copyFallbackOpen()) {
     e.preventDefault();
     $('copy-fallback').classList.add('hidden');
+  } else if (spoolVisible()) {
+    e.preventDefault();
+    closeSpool();
   } else if (!$('keys-modal').classList.contains('hidden')) {
     e.preventDefault();
     $('keys-modal').classList.add('hidden');
@@ -1177,6 +1183,12 @@ $('btn-diag').addEventListener('click', () => activePane?.send({ t: 'diag' }));
 void loadMeta().then((meta) => {
   if (meta?.showDiagButton) $('btn-diag').classList.remove('hidden');
 });
+
+// Spool: host-printed jobs (printer sessions). The button hides itself
+// again on view-only mirrors and embedded launches - a mirror watches a
+// session, it does not own the gateway's spool.
+initSpool();
+if (autoLaunch || shareView) $('btn-spool').classList.add('hidden');
 
 const keypad = $('keypad');
 if (coarsePointer && !shareView) {

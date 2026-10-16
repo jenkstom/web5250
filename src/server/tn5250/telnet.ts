@@ -20,6 +20,22 @@ export interface TelnetCallbacks {
   onNegotiated?: () => void;
   /** Non-fatal protocol surprise (logged upstream). */
   onWarn?: (msg: string) => void;
+  /**
+   * The host asked for DEVNAME again after we already sent one - the
+   * RFC 2877 name-collision signal (it re-asks until the client offers an
+   * unused name). Only fires when deviceNameRetry is disabled.
+   */
+  onDeviceNameCollision?: () => void;
+}
+
+export interface TelnetOptions {
+  /**
+   * Answer repeated NEW-ENVIRON DEVNAME requests with a numbered name
+   * (TOM -> TOM1), the RFC 2877 display behaviour. Printer sessions set
+   * this false: their output queue lives on the exact device name, so a
+   * collision must surface as an error, not a silent rename.
+   */
+  deviceNameRetry?: boolean;
 }
 
 export class Telnet5250 {
@@ -44,11 +60,19 @@ export class Telnet5250 {
   private devNameSent = false;
   negotiated = false;
 
-  constructor(termType: string, deviceName: string | null, cb: TelnetCallbacks) {
+  constructor(
+    termType: string,
+    deviceName: string | null,
+    cb: TelnetCallbacks,
+    opts: TelnetOptions = {}
+  ) {
     this.cb = cb;
     this.termType = termType;
     this.deviceName = deviceName;
+    this.deviceNameRetry = opts.deviceNameRetry ?? true;
   }
+
+  private readonly deviceNameRetry: boolean;
 
   /** Bind the live socket (called once connected/TLS-established). */
   attach(sock: Socket): void {
@@ -190,8 +214,14 @@ export class Telnet5250 {
 
     if (opt === C.OPT_NEW_ENVIRONMENT && qual === C.NEWENV_SEND) {
       // Respond with DEVNAME. When the host asks again it means a name
-      // collision: offer a fresh numbered name (RFC 2877).
+      // collision: offer a fresh numbered name (RFC 2877) - unless the
+      // caller disabled renaming (printer sessions: the output queue is
+      // per device name, so a collision must fail loudly instead).
       if (!this.deviceName) return;
+      if (!this.deviceNameRetry && this.devNameSent) {
+        this.cb.onDeviceNameCollision?.();
+        return;
+      }
       let name: string;
       if (this.devSeq === -1) {
         name = this.deviceName;
@@ -239,19 +269,21 @@ export class Telnet5250 {
 
   /**
    * Send one RFC 1205 GDS record:
-   *   <len:2> 12 A0 00 00 04 <flags> <b8> <opcode> <payload> <IAC EOR>
+   *   <len:2> 12 A0 <flow:2> 04 <flags> <b8> <opcode> <payload> <IAC EOR>
    * The length word counts itself and every byte after it, computed before
    * IAC doubling of 0xFF bytes and excluding the trailing IAC EOR - the form
    * live hosts and ACS both use. `b8` is the header byte between flags and
    * opcode: hosts send 0x00, ACS sets 0x80 on device records, so the
-   * screen-image reply matches that.
+   * screen-image reply matches that. `flow` fills bytes 4-5: 0x0000 on
+   * display records; printer sessions carry their flow types there
+   * (RFC 4777 section 11 - print-complete ACKs, see printer-client.ts).
    */
-  sendGds(flags: number, opcode: number, payload?: Buffer, b8 = 0): void {
+  sendGds(flags: number, opcode: number, payload?: Buffer, b8 = 0, flow = 0): void {
     const header = Buffer.from([
       (C.GDS_ID >> 8) & 0xff,
       C.GDS_ID & 0xff,
-      0x00,
-      0x00,
+      (flow >> 8) & 0xff,
+      flow & 0xff,
       0x04,
       flags & 0xff,
       b8 & 0xff,

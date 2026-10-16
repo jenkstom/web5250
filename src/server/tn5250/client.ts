@@ -1,13 +1,13 @@
 // TN5250 client session: socket lifecycle + telnet + screen + parser, plus
 // the outbound (AID) side of the protocol.
 import * as net from 'node:net';
-import * as tls from 'node:tls';
 import * as C from './constants.ts';
 import { Ebcdic } from './ebcdic.ts';
 import { Screen5250 } from './screen.ts';
 import { Parser5250 } from './parser.ts';
 import { Telnet5250 } from './telnet.ts';
-import { socks5Connect, type SocksProxy } from './socks.ts';
+import type { SocksProxy } from './socks.ts';
+import { openHostSocket } from './transport.ts';
 
 export type SessionStatus = 'connecting' | 'negotiating' | 'connected' | 'closed' | 'error';
 
@@ -125,7 +125,6 @@ export class Tn5250Client {
 
   connect(): void {
     if (this.destroyed) return;
-    const { host, port, ssl, proxy } = this.opts;
     const timeout = this.opts.connectTimeoutMs ?? 15000;
 
     this.connectTimer = setTimeout(() => {
@@ -140,46 +139,27 @@ export class Tn5250Client {
       if (!this.destroyed) this.telnet.heartbeat();
     }, 45000);
 
-    if (proxy) {
-      // Tunnel first (SOCKS5 CONNECT, username/password auth), then wire
-      // telnet to whatever came out - optionally TLS layered over it.
-      this.connectThroughProxy(proxy, host, port, ssl);
-      return;
-    }
-
-    const socket: net.Socket = ssl
-      ? tls.connect({ host, port, rejectUnauthorized: this.opts.tlsRejectUnauthorized })
-      : net.connect({ host, port });
-    this.adopt(socket, 'connect');
-  }
-
-  private connectThroughProxy(proxy: SocksProxy, host: string, port: number, ssl: boolean): void {
-    socks5Connect(proxy, { host, port }, (raw) => {
-      // Keep the in-flight tunnel reachable by destroy() (connect timeout,
-      // host-side teardown) while the handshake is still running.
-      if (this.destroyed) raw.destroy();
-      else this.sock = raw;
-    })
-      .then(({ socket: raw, preread }) => {
+    // Direct / TLS / SOCKS5(+TLS): one shared acquisition path (printer
+    // sessions use the same helper).
+    openHostSocket(
+      { host: this.opts.host, port: this.opts.port, ssl: this.opts.ssl, proxy: this.opts.proxy },
+      {
+        tlsRejectUnauthorized: this.opts.tlsRejectUnauthorized,
+        onSocket: (raw) => {
+          // Keep the in-flight tunnel reachable by destroy() (connect
+          // timeout, host-side teardown) while the handshake still runs.
+          if (this.destroyed) raw.destroy();
+          else this.sock = raw;
+        }
+      }
+    )
+      .then(({ socket, preread, ready }) => {
         if (this.destroyed) {
-          raw.destroy();
+          socket.destroy();
           return;
         }
-        if (!ssl) {
-          this.adopt(raw, null);
-          if (preread.length) this.telnet.receive(preread);
-          return;
-        }
-        // TLS rides inside the tunnel, so bytes that arrived with the proxy
-        // reply are the start of the TLS handshake: push them back into the
-        // socket for the TLS layer to parse, not into telnet.
-        if (preread.length) raw.unshift(preread);
-        const secure = tls.connect({
-          socket: raw,
-          servername: net.isIP(host) ? undefined : host,
-          rejectUnauthorized: this.opts.tlsRejectUnauthorized
-        });
-        this.adopt(secure, 'secureConnect');
+        this.adopt(socket, ready);
+        if (preread.length) this.telnet.receive(preread);
       })
       .catch((err: Error) => {
         if (this.destroyed) return;

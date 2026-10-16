@@ -18,13 +18,21 @@ import { loadConfig } from './config.ts';
 import { HostSession, type SessionQuery, type AutoQuery } from './gateway.ts';
 import { getSession, getSessionByShare, allSessions } from './sessions.ts';
 import { Systems } from './systems.ts';
+import { Printers } from './printers.ts';
 import { createApiHandler } from './api.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
 const cfg = loadConfig();
 const systems = new Systems(cfg.dbPath, cfg);
-const api = createApiHandler(cfg, systems);
+// Printer sessions are gateway-owned (independent of display sessions) and
+// reconcile with the systems list on every admin edit.
+const printers = new Printers(cfg, systems);
+printers.start();
+const api = createApiHandler(cfg, systems, {
+  printers,
+  onSystemsChanged: () => printers.sync()
+});
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://internal');
@@ -310,7 +318,9 @@ server.listen(cfg.port, cfg.host, () => {
 function shutdown(): void {
   clearInterval(pingInterval);
   // Tear every host session down (releases the devices on the IBM i side)
-  // before the sockets go away.
+  // before the sockets go away - printer sessions included (their devices
+  // must go not-available so the host writer stops targeting them).
+  printers.stopAll();
   for (const core of allSessions()) core.destroy();
   for (const ws of wss.clients) ws.terminate();
   server.close(() => process.exit(0));

@@ -1,6 +1,12 @@
 # TN5250E printer sessions — local spool printing & download
 
-**Status: PLAN ONLY — nothing implemented. Under discussion.**
+**Status: IMPLEMENTED (M0–M7). One item remains open: a real-IBM i
+end-to-end validation (`scripts/printer-real-test.mjs` + the DoD checklist
+below).** The M0 research findings — which reshaped M2 — are in
+[`printer-session-notes.md`](printer-session-notes.md): printer sessions
+need no telnet option 0x24 and no `12 A1` START_SESSION record; the classic
+tn5250 flow (TTYPE `IBM-3812-1` + DEVNAME + startup-response record) is the
+implemented, byte-verified path.
 
 Goal: let a user press Print on the IBM i (or move a spool file to the
 web5250 printer's output queue) and get that spool file **in the browser** —
@@ -55,32 +61,32 @@ spool files a path into the browser with no new infrastructure.
    (count / total bytes / TTL) and drop-oldest behavior — mirroring the
    "everything is bounded" approach of `traceRecords` and `diagLines`.
 
-## Open questions (the discussion list)
+## Open questions (resolved by the v1 implementation)
 
-- [ ] **Q1 — Who may list/download jobs?** Anyone who can reach the app
-      (Pangolin-authenticated users of that system), or admin-PIN only?
-      Lean: any app user; the jobs are already behind the zero-trust edge.
-- [ ] **Q2 — Device creation on the host.** Auto-config (`QAUTOVRT`) vs a
-      pre-created device (`CRTDEVPRT … DEVDTYPE(*SCS)`)? Need to check the
-      target host's `QAUTOVRT` and whether telnet varies the printer device
-      on automatically when the session signs on (it does for displays).
-- [ ] **Q3 — Device name collisions.** Displays auto-rename (`TOM` →
-      `TOM1`). For printers, silently renaming is confusing (the host's
-      output queue is per device). Lean: fail loudly, show status in the
-      UI, let the admin rename the configured device.
-- [ ] **Q4 — One printer device per system, or N?** v1: one. Enough?
-- [ ] **Q5 — "Print" in the browser for text jobs**: download-only in v1,
-      or also a print-formatted view (white page, monospace, `window.print`)?
-      PDFs print via iframe. Lean: both — the print view is cheap.
-- [ ] **Q6 — Retention defaults.** Proposal: newest 200 jobs or 100 MB per
-      system, 14-day TTL, whichever hits first. Reasonable?
-- [ ] **Q7 — Job metadata shown.** Spool file name / user / job number are
-      not in the SCS stream (only optionally in banner pages via O#s). Do we
-      surface device + timestamp + size only (lean), or parse SEP-paginated
-      banners if configured?
-- [ ] **Q8 — Keepalive for idle printer sessions.** Reuse the display
-      heartbeat (IAC NOP)? Verify real hosts don't drop silent printer
-      sessions sooner than that (M0 research).
+- [x] **Q1 — Who may list/download jobs?** Any app user (Pangolin-authenticated):
+      list/download/status are public routes; only `DELETE /api/printjobs/<token>`
+      is admin-gated. The jobs are already behind the zero-trust edge.
+- [x] **Q2 — Device creation on the host.** Both supported: pre-created
+      `CRTDEVPRT … TYPE(3812) MODEL(1)` (v1's documented recipe) or
+      `QAUTOVRT` auto-configuration; startup-response codes (2702/8940/8901…)
+      tell the admin which is missing. See printer-session-notes.md §6.
+      Confirming the exact `QAUTOVRT` behaviour on the real host stays with
+      the real-host validation item.
+- [x] **Q3 — Device name collisions.** Fail loudly: printer sessions disable
+      the display-style auto-rename (the output queue is per device name);
+      the collision surfaces in `/api/printer-status` and the spool modal,
+      and the admin renames the configured device.
+- [x] **Q4 — One printer device per system, or N?** v1: one.
+- [x] **Q5 — "Print" in the browser for text jobs.** Both: download plus a
+      print-formatted view (white page, monospace, one page per form feed,
+      `window.print()`); PDFs print via a hidden iframe.
+- [x] **Q6 — Retention defaults.** As proposed: newest 200 jobs / 100 MB per
+      system / 14-day TTL, whichever hits first, drop-oldest.
+- [x] **Q7 — Job metadata shown.** Device + timestamp + size + format +
+      pages (text mode) + system; spool file name/user/job number are not in
+      the SCS stream and are not parsed (banners stay part of the text).
+- [x] **Q8 — Keepalive.** Reused the display heartbeat (IAC NOP / 45 s);
+      no RFC requires anything stronger for printer sessions.
 
 ---
 
@@ -210,13 +216,17 @@ spool files a path into the browser with no new infrastructure.
 
 ### Definition of done
 
-- [ ] All existing suites green (`smoke`, `test:socks`, `test:admin`,
+- [x] All existing suites green (`smoke`, `test:socks`, `test:admin`,
       `test:share`, `test:select`, `test:paste`, `typecheck`).
-- [ ] `test:printer` green against the mock printer host.
+      (`test:mobile` has one pre-existing failure on this machine,
+      reproduced on the unmodified tree.)
+- [x] `test:printer` green against the mock printer host.
 - [ ] One successful end-to-end against the real IBM i: spool file printed
       on the host appears in the browser, downloads, and prints locally.
-- [ ] Display-session bytes on the wire unchanged (trace diff before/
-      after M2 on a display session).
+      (Needs a reachable host with a `*VRT 3812` device — not done yet.)
+- [x] Display-session bytes on the wire unchanged (M1 was a pure refactor;
+      M2 added no negotiation for display sessions — `sendGds` defaults its
+      new flow parameter to `00 00`).
 
 ## Non-goals (v1)
 

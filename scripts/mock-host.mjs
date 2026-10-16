@@ -66,6 +66,9 @@ class HostSession {
     // MOCK_SIGNON_REJECT=1: refuse every sign-on like a real host does
     // (full QDSIGNON redraw with the error line, keyboard unlocked).
     this.rejectSignon = process.env.MOCK_SIGNON_REJECT === '1';
+    // Printer-session swap (see onSubnegotiation / the server wrapper).
+    this.printerDetected = false;
+    this.handoff = [];
     // inbound state machine
     this.mode = 'data'; // data | iac | iac2 | sb | sbiac
     this.iacCmd = 0;
@@ -462,6 +465,12 @@ class HostSession {
   ingest(chunk) {
     for (const raw of chunk) {
       const b = raw & 0xff;
+      // After a printer terminal type is seen, remaining bytes belong to the
+      // printer session the wrapper swaps in; park them for the handoff.
+      if (this.printerDetected) {
+        this.handoff.push(b);
+        continue;
+      }
       switch (this.mode) {
         case 'data':
           if (b === IAC) this.mode = 'iac';
@@ -535,6 +544,13 @@ class HostSession {
     if (payload[0] === OPT_TTYPE && payload[1] === 0) {
       this.termType = payload.subarray(2).toString('ascii');
       this.gotTtype = true;
+      // A printer terminal type swaps this connection to a printer session
+      // (the host creates a *SCS printer device instead of a display).
+      if (/^IBM-(3812|5553)/.test(this.termType)) {
+        this.printerDetected = true;
+        this.onPrinter?.();
+        return;
+      }
       this.maybeStart();
     }
     if (payload[0] === OPT_NEWENV && payload[1] === 0) {
@@ -744,16 +760,291 @@ class HostSession {
 
 // ------------------------------------------------------------------ server
 const server = net.createServer((sock) => {
-  const s = new HostSession(sock);
+  const display = new HostSession(sock);
+  let session = display;
+  // IBM-3812-1 terminal type: the connection becomes a printer session.
+  // The swap happens mid-chunk (right after TTYPE IS), so bytes the display
+  // session parked after the detection point are handed over once its
+  // ingest() returns.
+  display.onPrinter = () => {
+    console.log('[mock-host] printer session (terminal ' + display.termType + ')');
+    // The display phase may already have consumed NEW-ENVIRON IS (DEVNAME)
+    // - the host asks NEW-ENVIRON before TERMINAL-TYPE - so carry it over.
+    session = new PrinterHostSession(sock, display.termType, display.dev, display.gotDevname);
+  };
   console.log('[mock-host] client connected');
-  sock.on('data', (chunk) => s.ingest(chunk));
+  sock.on('data', (chunk) => {
+    session.ingest(chunk);
+    if (session !== display && display.handoff.length) {
+      session.ingest(Buffer.from(display.handoff));
+      display.handoff = [];
+    }
+  });
   sock.on('close', () => console.log('[mock-host] client disconnected'));
   sock.on('error', (err) => console.log('[mock-host] socket error:', err.message));
 
   // RFC 2877 opening: NEW-ENVIRON + TERMINAL-TYPE, plus EOR/BINARY.
-  s.telnet([DO, OPT_NEWENV, IAC, DO, OPT_TTYPE, IAC, DO, OPT_EOR, IAC, DO, OPT_BINARY]);
-  s.telnet([WILL, OPT_EOR, IAC, WILL, OPT_BINARY]);
+  display.telnet([DO, OPT_NEWENV, IAC, DO, OPT_TTYPE, IAC, DO, OPT_EOR, IAC, DO, OPT_BINARY]);
+  display.telnet([WILL, OPT_EOR, IAC, WILL, OPT_BINARY]);
 });
+
+// ------------------------------------------------------------- printer host
+// Server side of a TN5250E printer session (RFC 4777 section 11): startup
+// response record, then canned SCS jobs that exercise the client - record
+// ACKs, jobs split across records and TCP segments, the null end-of-job
+// record (with and without the optional trailing zero), Clear Print
+// Buffers, a name collision, and raw (host-print-transform) output.
+//
+// Env knobs: MOCK_PRINT_JOBS (count, default 2), MOCK_PRINT_MODE
+// (text|raw, default text), MOCK_PRINT_STARTUP (response code, default
+// I902), MOCK_PRINT_DEV_INUSE=1 (re-ask DEVNAME = collision),
+// MOCK_PRINT_CLEAR=1 (clear the first job's buffers mid-stream).
+class PrinterHostSession {
+  constructor(sock, termType, dev = 'WEB5250P', gotDevname = false) {
+    this.sock = sock;
+    this.termType = termType;
+    this.dev = dev;
+    this.gotDevname = gotDevname;
+    this.reaskedDevname = false;
+    this.confirmed = new Set();
+    this.started = false;
+    this.jobs = Math.max(0, Number.parseInt(process.env.MOCK_PRINT_JOBS ?? '2', 10) || 0);
+    this.rawMode = process.env.MOCK_PRINT_MODE === 'raw';
+    this.startupCode = process.env.MOCK_PRINT_STARTUP ?? 'I902';
+    this.devInUse = process.env.MOCK_PRINT_DEV_INUSE === '1';
+    this.clearMidJob = process.env.MOCK_PRINT_CLEAR === '1';
+    this.outQueue = []; // record-fns pieces awaiting their turn (ACK-driven)
+    // inbound FSM (same shape as the display session's)
+    this.fsm = 'data';
+    this.iacCmd = 0;
+    this.recbits = [];
+    this.sub = [];
+    // DEVNAME may already have been collected by the display phase.
+    if (this.gotDevname) setTimeout(() => this.maybeStart(), 0);
+  }
+
+  log(...a) {
+    console.log(`[mock-print ${this.dev}]`, ...a);
+  }
+
+  sendRaw(bytes) {
+    if (!this.sock.destroyed) this.sock.write(Buffer.from(bytes));
+  }
+
+  telnet(seq) {
+    this.sendRaw([IAC, ...seq]);
+  }
+
+  /** One GDS record with an explicit flow / LL / flags / opcode / diag+data. */
+  buildGds(flowHi, flowLo, ll, flags, opcode, data = []) {
+    const header = [0x12, 0xa0, flowHi, flowLo, ll, (flags >> 8) & 0xff, flags & 0xff, opcode];
+    const diag = new Array(Math.max(0, ll - 4)).fill(0); // bytes 10..6+LL-1
+    const body = [...header, ...diag, ...data];
+    const out = [((body.length + 2) >> 8) & 0xff, (body.length + 2) & 0xff];
+    for (const b of body) {
+      if (b === IAC) out.push(IAC);
+      out.push(b);
+    }
+    out.push(IAC, EOR);
+    return out;
+  }
+
+  gds(flowHi, flowLo, ll, flags, opcode, data) {
+    this.sendRaw(this.buildGds(flowHi, flowLo, ll, flags, opcode, data));
+  }
+
+  /** Same record, delivered as two TCP segments 40 ms apart (framing stress). */
+  gdsSegmented(ll, flags, opcode, data) {
+    const out = this.buildGds(0x01, 0x01, ll, flags, opcode, data);
+    const half = Math.ceil(out.length / 2);
+    this.sock.write(Buffer.from(out.slice(0, half)));
+    setTimeout(() => this.sendRaw(out.slice(half)), 40);
+  }
+
+  /** Startup response (RFC 4777 section 4 example shape, length 0x49). */
+  sendStartup(code) {
+    const sysname = e('MOCK400').concat(new Array(8).fill(0x40)).slice(0, 8);
+    const objname = e('PCPRINTER').concat(new Array(10).fill(0x40)).slice(0, 10);
+    const body = [
+      0x12, 0xa0, 0x90, 0x00, 0x05, 0x60, 0x06, 0x00, 0x20, 0xc0, 0x00, 0x3d, 0x00, 0x00,
+      ...e(code), ...sysname, ...objname,
+      ...new Array(73 - 16 - 4 - 8 - 10).fill(0)
+    ];
+    const out = [((body.length + 2) >> 8) & 0xff, (body.length + 2) & 0xff];
+    for (const b of body) {
+      if (b === IAC) out.push(IAC);
+      out.push(b);
+    }
+    out.push(IAC, EOR);
+    this.sendRaw(out);
+    this.log(`startup response ${code}`);
+  }
+
+  // ------------------------------------------------------------- job bytes
+  textJob(i) {
+    const NL = 0x25, FF = 0x0c;
+    const line = (s) => e(s).concat([NL]);
+    return [
+      ...line(`MOCK400 SPOOL REPORT ${String(i + 1).padStart(3, '0')}`),
+      ...line('Printed by the web5250 mock host'),
+      ...line('Line three has some words to extract'),
+      ...e('Column A').concat(e(' '.repeat(4))).concat(e('Column B')).concat([NL]),
+      FF,
+      ...line(`REPORT ${i + 1} PAGE 2`),
+      ...line('Second page content'),
+      NL
+    ];
+  }
+
+  rawJob(i) {
+    return [
+      ...Buffer.from(`%PDF-1.4\n% mock-host job ${i + 1}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\ntrailer<<>>\n%%EOF\n`, 'latin1')
+    ];
+  }
+
+  /**
+   * Enqueue one job: split into records exercising the framing rules, then
+   * the null end-of-job record. Records are sent one at a time, each only
+   * after the client's print-complete ACK (the RFC's end-to-end rhythm).
+   */
+  enqueueJob(i) {
+    const bytes = this.rawMode ? this.rawJob(i) : this.textJob(i);
+    const mid = Math.floor(bytes.length / 2);
+    // Job 0 = single-record job (first+last of chain); later jobs arrive as
+    // two records (first-of-chain, last-of-chain) - and job 1's last record
+    // is additionally split across TCP segments.
+    const chunks = i === 0 ? [bytes] : [bytes.slice(0, mid), bytes.slice(mid)];
+    chunks.forEach((chunk, idx) => {
+      let flags = 0x0000;
+      if (chunks.length === 1) flags = 0x1800;
+      else if (idx === 0) flags = 0x1000;
+      else flags = 0x0800;
+      const segmented = i === 1 && idx === chunks.length - 1;
+      this.outQueue.push(() => {
+        if (segmented) this.gdsSegmented(0x0a, flags, 0x01, chunk);
+        else this.gds(0x01, 0x01, 0x0a, flags, 0x01, chunk);
+        if (this.clearMidJob && i === 0 && idx === 0) {
+          // Clear Print Buffers right after the first record: the client
+          // must drop the partial job and not ACK this record.
+          this.log('sending Clear Print Buffers mid-job');
+          this.gds(0x01, 0x01, 0x0a, 0x1800, 0x02, []);
+        }
+      });
+    });
+    // Null end-of-job record; alternate the optional trailing zero byte.
+    const trailing = i % 2 === 0 ? [0x00] : [];
+    this.outQueue.push(() => {
+      this.gds(0x01, 0x01, 0x0a, 0x0800, 0x01, trailing);
+      this.log(`job ${i + 1}: null end-of-job record (${trailing.length ? 'with' : 'without'} trailing 00)`);
+    });
+  }
+
+  sendNext() {
+    const next = this.outQueue.shift();
+    if (!next) return;
+    next();
+  }
+
+  // ------------------------------------------------------------- negotiation
+  ingest(chunk) {
+    for (const raw of chunk) {
+      const b = raw & 0xff;
+      switch (this.fsm) {
+        case 'data':
+          if (b === IAC) this.fsm = 'iac';
+          else this.recbits.push(b);
+          break;
+        case 'iac':
+          if (b === IAC) {
+            this.recbits.push(IAC);
+            this.fsm = 'data';
+          } else if (b === EOR) {
+            const rec = Buffer.from(this.recbits);
+            this.recbits = [];
+            this.fsm = 'data';
+            this.onRecord(rec);
+          } else if (b === SB) {
+            this.sub = [];
+            this.fsm = 'sb';
+          } else if (b === DO || b === 0xfc || b === 0xfe || b === WILL) {
+            this.iacCmd = b;
+            this.fsm = 'iac2';
+          } else {
+            this.fsm = 'data';
+          }
+          break;
+        case 'iac2':
+          if (this.iacCmd === WILL && !this.confirmed.has(b) &&
+              (b === OPT_TTYPE || b === OPT_EOR || b === OPT_BINARY || b === OPT_NEWENV)) {
+            this.confirmed.add(b);
+            this.telnet([DO, b]);
+          }
+          this.fsm = 'data';
+          break;
+        case 'sb':
+          if (b === IAC) this.fsm = 'sbiac';
+          else this.sub.push(b);
+          break;
+        case 'sbiac':
+          if (b === IAC) {
+            this.sub.push(IAC);
+            this.fsm = 'sb';
+          } else if (b === SE) {
+            this.onSubnegotiation(Buffer.from(this.sub));
+            this.fsm = 'data';
+          } else {
+            this.fsm = 'sb';
+          }
+          break;
+      }
+    }
+  }
+
+  onSubnegotiation(payload) {
+    if (payload.length < 2) return;
+    if (payload[0] === OPT_NEWENV && payload[1] === 0) {
+      const m = /DEVNAME\x01([A-Z0-9#$@_]+)/.exec(payload.toString('ascii'));
+      if (m) this.dev = m[1];
+      this.gotDevname = true;
+      this.maybeStart();
+    }
+  }
+
+  maybeStart() {
+    if (this.started || !this.gotDevname) return;
+    this.started = true;
+    this.log(`printer session devname=${this.dev} mode=${this.rawMode ? 'raw' : 'text'} jobs=${this.jobs}`);
+    // Name collision: the host re-asks DEVNAME (RFC 2877). A printer client
+    // must NOT auto-rename, so it stays silent and reports the collision.
+    if (this.devInUse && !this.reaskedDevname) {
+      this.reaskedDevname = true;
+      this.log('DEVNAME in use: re-asking (collision path)');
+      this.telnet([SB, OPT_NEWENV, 1, IAC, SE]);
+      return;
+    }
+    setTimeout(() => {
+      this.sendStartup(this.startupCode);
+      if (!/^[I]9(01|02|06)$/.test(this.startupCode)) {
+        this.log('startup refused: no jobs will flow');
+        return;
+      }
+      for (let i = 0; i < this.jobs; i++) this.enqueueJob(i);
+      setTimeout(() => this.sendNext(), 100);
+    }, 50);
+  }
+
+  onRecord(rec) {
+    if (rec.length < 10) return;
+    const flow = (rec[4] << 8) | rec[5];
+    // Print-complete ACK: 0102 (RFC 4777) or 0012 (classic tn5250).
+    if (flow === 0x0102 || flow === 0x0012) {
+      this.log(`print-complete ACK (flow ${flow.toString(16)})`);
+      setTimeout(() => this.sendNext(), 30);
+      return;
+    }
+    this.log(`unexpected record: ${rec.subarray(0, 12).toString('hex')}`);
+  }
+}
 
 const BIND = process.env.MOCK_BIND ?? '127.0.0.1';
 server.listen(PORT, BIND, () => {

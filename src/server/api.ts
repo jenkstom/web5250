@@ -1,7 +1,11 @@
-// JSON HTTP API for the connection menu and its admin editor.
+// JSON HTTP API for the connection menu, its admin editor, and the spool.
 //
 //   GET    /api/meta                      admin enabled?, form options/defaults
 //   GET    /api/systems                   menu list (public: the menu needs it)
+//   GET    /api/printer-status            per-system printer session states
+//   GET    /api/printjobs                 spool jobs, newest first (public)
+//   GET    /api/printjobs/<token>         job download (unguessable token)
+//   DELETE /api/printjobs/<token>         delete job            (Bearer token)
 //   POST   /api/admin/auth                {pin} -> {token}
 //   GET    /api/admin/systems             full rows incl. proxy (Bearer token)
 //   POST   /api/admin/systems             create          (Bearer token)
@@ -18,13 +22,18 @@
 //
 // Proxy credentials (and the proxy's location - internal infrastructure)
 // appear only on the authenticated admin routes; the public menu list gets
-// a `viaProxy` flag and nothing more.
+// a `viaProxy` flag and nothing more. The printer device name follows the
+// same policy on system rows; print jobs themselves are keyed by unguessable
+// per-job tokens (the session-token trust model) and never contain
+// credentials.
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { TERM_TYPES } from './tn5250/constants.ts';
 import { Ebcdic } from './tn5250/ebcdic.ts';
 import type { Config } from './config.ts';
 import type { Systems, SystemRow } from './systems.ts';
+import type { Printers } from './printers.ts';
 
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 32 * 1024;
@@ -40,6 +49,7 @@ interface Route {
   run: (ctx: {
     cfg: Config;
     systems: Systems;
+    deps: ApiDeps;
     req: IncomingMessage;
     res: ServerResponse;
     match: RegExpMatchArray;
@@ -47,7 +57,13 @@ interface Route {
   }) => void;
 }
 
-export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
+export interface ApiDeps {
+  printers: Printers;
+  /** Fires after any admin mutation that changed the systems list. */
+  onSystemsChanged: () => void;
+}
+
+export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): ApiHandler {
   // In-memory admin sessions + PIN rate limiting (single-process gateway).
   const tokens = new Map<string, number>();
   let pinFailures = 0;
@@ -68,11 +84,18 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
     return true;
   };
 
-  /** Menu-safe projection: no proxy details beyond "there is one". */
+  /** Menu-safe projection: no proxy or printer-infrastructure details. */
   const publicSystem = (s: SystemRow): Record<string, unknown> => {
-    const { proxyHost, proxyPort, proxyUser, proxyPass, ...pub } = s;
+    const {
+      proxyHost, proxyPort, proxyUser, proxyPass, printerDeviceName, ...pub
+    } = s;
     return { ...pub, viaProxy: Boolean(proxyHost) };
   };
+
+  /** System id/name pairs for stamping job rows (jobs keep arriving after
+   * their system row is gone, so fall back to the stored device). */
+  const systemNames = (): Map<number, string> =>
+    new Map(systems.list().map((s) => [s.id, s.name]));
 
   const routes: Route[] = [
     {
@@ -102,6 +125,59 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
       auth: false,
       run: ({ systems, res }) =>
         json(res, 200, { systems: systems.list().map(publicSystem) })
+    },
+    {
+      method: 'GET',
+      re: /(?:^|\/)api\/printer-status\/?$/,
+      auth: false,
+      run: ({ res, deps }) => json(res, 200, { printers: deps.printers.status() })
+    },
+    {
+      method: 'GET',
+      re: /(?:^|\/)api\/printjobs\/?$/,
+      auth: false,
+      run: ({ res, deps }) => {
+        const names = systemNames();
+        json(res, 200, {
+          jobs: deps.printers.listJobs().map((j) => ({
+            ...j,
+            systemName: names.get(j.systemId) ?? null
+          }))
+        });
+      }
+    },
+    {
+      method: 'GET',
+      re: /(?:^|\/)api\/printjobs\/([0-9a-f]{32})\/?$/,
+      auth: false,
+      run: ({ res, deps, match }) => {
+        const found = deps.printers.jobFile(match[1]);
+        if (!found) {
+          json(res, 404, { error: 'no such print job (it may have been cleaned up)' });
+          return;
+        }
+        const { job, file, contentType } = found;
+        const stamp = new Date(job.createdAt);
+        const p2 = (n: number): string => String(n).padStart(2, '0');
+        const name =
+          `spool-${job.device}-${stamp.getFullYear()}${p2(stamp.getMonth() + 1)}${p2(stamp.getDate())}` +
+          `-${p2(stamp.getHours())}${p2(stamp.getMinutes())}${p2(stamp.getSeconds())}.${job.format}`;
+        res.writeHead(200, {
+          'content-type': contentType,
+          'content-length': String(job.bytes),
+          'cache-control': 'no-store',
+          'content-disposition': `attachment; filename="${name}"`
+        });
+        fs.createReadStream(file).pipe(res);
+      }
+    },
+    {
+      method: 'DELETE',
+      re: /(?:^|\/)api\/printjobs\/([0-9a-f]{32})\/?$/,
+      auth: true,
+      run: ({ res, deps, match }) => {
+        json(res, deps.printers.deleteJob(match[1]) ? 200 : 404, { ok: true });
+      }
     },
     {
       method: 'POST',
@@ -145,28 +221,36 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
       method: 'POST',
       re: /(?:^|\/)api\/admin\/systems\/?$/,
       auth: true,
-      run: ({ systems, cfg, res, body }) => {
+      run: ({ systems, cfg, deps, res, body }) => {
         const result = systems.create(body, cfg);
         if (!result.ok) json(res, 400, { error: result.error });
-        else json(res, 201, { system: publicSystem(result.row) });
+        else {
+          deps.onSystemsChanged();
+          json(res, 201, { system: publicSystem(result.row) });
+        }
       }
     },
     {
       method: 'PUT',
       re: /(?:^|\/)api\/admin\/systems\/(\d+)\/?$/,
       auth: true,
-      run: ({ systems, cfg, res, match, body }) => {
+      run: ({ systems, cfg, deps, res, match, body }) => {
         const result = systems.update(Number(match[1]), body, cfg);
         if (!result.ok) json(res, result.error === 'System not found' ? 404 : 400, { error: result.error });
-        else json(res, 200, { system: publicSystem(result.row) });
+        else {
+          deps.onSystemsChanged();
+          json(res, 200, { system: publicSystem(result.row) });
+        }
       }
     },
     {
       method: 'DELETE',
       re: /(?:^|\/)api\/admin\/systems\/(\d+)\/?$/,
       auth: true,
-      run: ({ systems, res, match }) => {
-        json(res, systems.remove(Number(match[1])) ? 200 : 404, { ok: true });
+      run: ({ systems, deps, res, match }) => {
+        const ok = systems.remove(Number(match[1]));
+        if (ok) deps.onSystemsChanged();
+        json(res, ok ? 200 : 404, { ok: true });
       }
     },
     {
@@ -216,7 +300,7 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
         json(res, 401, { error: 'Administrator sign-on required' });
         return;
       }
-      route.run({ cfg, systems, req, res, match, body });
+      route.run({ cfg, systems, deps, req, res, match, body });
       return;
     }
     json(res, 404, { error: 'not found' });
