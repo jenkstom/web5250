@@ -14,6 +14,13 @@ export interface MenuSystem {
   termType: string;
   codePage: string;
   devPrefix: string | null;
+  /** True on the public list: this system connects through a SOCKS5 proxy. */
+  viaProxy?: boolean;
+  /** Present only on the admin editor's (authenticated) copy of the row. */
+  proxyHost?: string | null;
+  proxyPort?: number | null;
+  proxyUser?: string | null;
+  proxyPass?: string | null;
 }
 
 interface Meta {
@@ -67,6 +74,14 @@ async function fetchMeta(): Promise<Meta> {
   const res = await fetch(api('api/meta'), { headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error(`meta failed (${res.status})`);
   return (await res.json()) as Meta;
+}
+
+/** The editor's copy of the list: full rows, proxy credentials included. */
+async function fetchAdminSystems(): Promise<MenuSystem[]> {
+  const res = await adminCall('GET', 'api/admin/systems');
+  if (!res.ok) throw new Error(`admin systems list failed (${res.status})`);
+  const data = (await res.json()) as { systems: MenuSystem[] };
+  return data.systems ?? [];
 }
 
 let metaPromise: Promise<Meta | null> | null = null;
@@ -138,7 +153,7 @@ function render(): void {
     }
     const sub = document.createElement('span');
     sub.className = 'row-sub';
-    sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'} · ${s.termType} · ${s.codePage}`;
+    sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'} · ${s.termType} · ${s.codePage}${s.viaProxy ? ' · SOCKS5' : ''}`;
     main.appendChild(sub);
 
     li.append(num, main);
@@ -423,7 +438,7 @@ class PanePicker {
         }
         const sub = document.createElement('span');
         sub.className = 'row-sub';
-        sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'}`;
+        sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'}${s.viaProxy ? ' · SOCKS5' : ''}`;
         main.appendChild(sub);
         li.append(num, main);
         li.addEventListener('click', () => (this.selected === i ? this.connectTo(i) : this.select(i)));
@@ -531,9 +546,21 @@ async function refreshAdminList(): Promise<void> {
   } catch {
     /* menu refresh is cosmetic here */
   }
+  // The editor works from the authenticated copy: it carries the proxy
+  // fields the public list never sees. If that fetch fails, show no rows
+  // rather than the public ones - editing a public row would blank its
+  // proxy credentials on save (a 401 has already flipped to the PIN pane).
+  let rows: MenuSystem[] = [];
+  let listError = false;
+  try {
+    rows = await fetchAdminSystems();
+  } catch {
+    rows = [];
+    listError = true;
+  }
   const list = $('admin-list');
   list.innerHTML = '';
-  systems.forEach((s, i) => {
+  rows.forEach((s, i) => {
     const li = document.createElement('li');
     li.className = 'admin-row';
 
@@ -548,6 +575,7 @@ async function refreshAdminList(): Promise<void> {
     const small = document.createElement('small');
     small.textContent =
       `${s.host}:${s.port}${s.ssl ? ' · TLS' : ''} · ${s.termType} · ${s.codePage}` +
+      (s.viaProxy || s.proxyHost ? ' · SOCKS5' : '') +
       (s.devPrefix ? ` · ${s.devPrefix}` : '');
     nm.append(b, small);
 
@@ -568,13 +596,13 @@ async function refreshAdminList(): Promise<void> {
       pos,
       nm,
       upDownButton('↑', 'Move up', i === 0, () => void moveSystem(s.id, 'up')),
-      upDownButton('↓', 'Move down', i === systems.length - 1, () => void moveSystem(s.id, 'down')),
+      upDownButton('↓', 'Move down', i === rows.length - 1, () => void moveSystem(s.id, 'down')),
       edit,
       del
     );
     list.appendChild(li);
   });
-  $('admin-count').textContent = `${systems.length} system(s)`;
+  $('admin-count').textContent = listError ? 'system list unavailable — reopen Admin' : `${rows.length} system(s)`;
 }
 
 async function moveSystem(id: number, dir: 'up' | 'down'): Promise<void> {
@@ -619,6 +647,12 @@ function fillForm(s: MenuSystem | null): void {
   $<HTMLInputElement>('f-prefix').value = s?.devPrefix ?? d?.devPrefix ?? '';
   termSel.value = s?.termType ?? d?.termType ?? 'IBM-3477-FC';
   cpSel.value = s?.codePage ?? d?.codePage ?? 'cp037';
+  // Proxy fields exist only on the admin (authenticated) copy of the row;
+  // the masked password round-trips through the form like any field.
+  $<HTMLInputElement>('f-proxyhost').value = s?.proxyHost ?? '';
+  $<HTMLInputElement>('f-proxyport').value = s?.proxyPort != null ? String(s.proxyPort) : '';
+  $<HTMLInputElement>('f-proxyuser').value = s?.proxyUser ?? '';
+  $<HTMLInputElement>('f-proxypass').value = s?.proxyPass ?? '';
 }
 
 function editSystem(s: MenuSystem): void {
@@ -639,7 +673,11 @@ function formPayload(): Record<string, unknown> {
     ssl: $<HTMLInputElement>('f-ssl').checked,
     termType: $<HTMLSelectElement>('f-term').value,
     codePage: $<HTMLSelectElement>('f-cp').value,
-    devPrefix: $<HTMLInputElement>('f-prefix').value
+    devPrefix: $<HTMLInputElement>('f-prefix').value,
+    proxyHost: $<HTMLInputElement>('f-proxyhost').value,
+    proxyPort: $<HTMLInputElement>('f-proxyport').value,
+    proxyUser: $<HTMLInputElement>('f-proxyuser').value,
+    proxyPass: $<HTMLInputElement>('f-proxypass').value
   };
 }
 

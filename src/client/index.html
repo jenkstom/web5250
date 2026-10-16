@@ -125,6 +125,15 @@
                   <select id="f-cp"></select>
                   <label for="f-prefix">Device prefix</label>
                   <input id="f-prefix" maxlength="10" placeholder="PANG_" />
+                  <label for="f-proxyhost">SOCKS5 proxy</label>
+                  <input id="f-proxyhost" maxlength="253" placeholder="(direct)"
+                         title="Route this system's host connection through a SOCKS5 proxy (hostname or IP)" />
+                  <label for="f-proxyport">Proxy port</label>
+                  <input id="f-proxyport" inputmode="numeric" maxlength="5" placeholder="1080" />
+                  <label for="f-proxyuser">Proxy user</label>
+                  <input id="f-proxyuser" maxlength="255" autocomplete="off" />
+                  <label for="f-proxypass">Proxy password</label>
+                  <input id="f-proxypass" type="password" maxlength="255" autocomplete="new-password" />
                 </div>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">

@@ -18,6 +18,7 @@
 import type { WebSocket } from 'ws';
 import * as C from './tn5250/constants.ts';
 import { Tn5250Client } from './tn5250/client.ts';
+import type { SocksProxy } from './tn5250/socks.ts';
 import type { Config } from './config.ts';
 import { makeDeviceName } from './config.ts';
 import { devices } from './devices.ts';
@@ -119,10 +120,22 @@ export class HostSession {
     this.systemName = system?.name;
     this.systemId = system?.id;
 
+    // The proxy is a property of the system entry (its network position),
+    // never of the browser: URL overrides change the host, not the egress.
+    const proxy: SocksProxy | undefined = system?.proxyHost
+      ? {
+          host: system.proxyHost,
+          port: system.proxyPort ?? 1080,
+          username: system.proxyUser ?? undefined,
+          password: system.proxyPass ?? undefined
+        }
+      : undefined;
+
     this.client = new Tn5250Client({
       host,
       port,
       ssl,
+      proxy,
       tlsRejectUnauthorized: cfg.tlsRejectUnauthorized,
       termType,
       deviceName: this.devName,

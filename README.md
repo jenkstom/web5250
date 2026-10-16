@@ -46,12 +46,15 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
 - **Connection menu**: the app opens on a retro green-screen *System
   Selection* panel (number keys / arrows + Enter, or tap) listing the remote
   systems an administrator maintains — each with its own host, port, TLS,
-  terminal model, code page and device prefix. Systems live in a SQLite file
-  on a persistent volume; the list is seeded from `IBM_I_*` on first boot, so
-  upgrading deployments keep working unchanged.
+  terminal model, code page, device prefix and optional SOCKS5 proxy (with
+  username/password auth) its connection is tunneled through. Systems live
+  in a SQLite file on a persistent volume; the list is seeded from `IBM_I_*`
+  on first boot, so upgrading deployments keep working unchanged.
 - **Admin editor**: a PIN-protected (`ADMIN_PIN`) editor manages the system
   list — add, edit, delete, reorder. PINs are compared in constant time with
-  a lockout after repeated failures; tokens expire after 8 hours.
+  a lockout after repeated failures; tokens expire after 8 hours. Proxy
+  credentials are only ever served to the authenticated editor — the public
+  menu list shows no more than a "SOCKS5" marker.
 - **Browser UX**: canvas renderer with IBM Plex Mono, complete 5250 key
   interception (F1–F24 incl. Shift+F1–F12 → PF13–PF24), field exit, insert
   mode, roll keys, SysReq/Attn, Reset, on-screen keypad for touch devices,
@@ -177,6 +180,10 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_CODEPAGE` | EBCDIC code page: `cp037` `cp273` `cp277` `cp278` `cp280` `cp284` `cp285` `cp297` `cp500` `cp871` `cp1047` `cp1140` | `cp037` |
 | `IBM_I_TERM_TYPE` | Terminal model (`IBM-3477-FC` = color + 27×132, `IBM-3179-2` = 24×80 color, …) | `IBM-3477-FC` |
 | `IBM_I_DEV_PREFIX` | Prefix for auto-generated device names (max 10 chars total) | `PANG_` |
+| `IBM_I_PROXY_HOST` | SOCKS5 proxy the first-boot seed system tunnels through (per-system afterwards, in the admin editor) | – |
+| `IBM_I_PROXY_PORT` | SOCKS5 proxy port | `1080` |
+| `IBM_I_PROXY_USER` | SOCKS5 username (RFC 1929, with `IBM_I_PROXY_PASSWORD`) | – |
+| `IBM_I_PROXY_PASSWORD` | SOCKS5 password — stored in SQLite on the data volume, never served to unauthenticated browsers | – |
 | `ALLOW_CUSTOM_HOST` | Let users point a session at another host via query params (`?host=&port=&ssl=1&term=&cp=&devname=`) | `false` |
 | `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
 | `WEB5250_DB` | SQLite file for the system catalog (compose mounts the `web5250-data` volume at `/data`) | `/data/web5250.db` in the container, `data/web5250.db` locally |
@@ -206,9 +213,13 @@ custom-host behaviour.
 
 **Admin** (bottom of the menu, or press `A`): enter `ADMIN_PIN`, then add /
 edit / delete / reorder systems. Edits persist to SQLite (mount the compose
-volume) and apply immediately — no restart needed. Every system carries its
-own host, port, TLS flag, terminal model, code page and optional device
-prefix.
+`web5250-data` volume) and apply immediately — no restart needed. Every
+system carries its own host, port, TLS flag, terminal model, code page and
+optional device prefix, and can be routed through a **SOCKS5 proxy** (host,
+port, optional username/password): the gateway's TN5250 connection is
+tunneled through it, with TLS-to-host still layered inside the tunnel when
+the system has TLS enabled. Proxy details are visible only inside the
+authenticated editor; the public menu list shows just a `SOCKS5` marker.
 
 **Display name** (the `Display` field on the menu): an optional 5250
 device name for this browser's sessions, saved in `localStorage` and sent
@@ -544,6 +555,10 @@ npm run test:share      # share button + ?view= mirror: link copy, live
 npm run test:admin      # admin PIN/editor keyboard: Enter in the PIN form
                         #   opens the editor (not a connection), menu keys
                         #   intact (gateway needs ADMIN_PIN=1234)
+npm run test:socks      # SOCKS5 per-system proxy: tunnelled session,
+                        #   username/password auth, failure paths, proxy
+                        #   credentials kept off the public API, SQLite
+                        #   migration of pre-proxy databases
 npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
                         #   keypad, keyboard open/close shrink+expand
 ```

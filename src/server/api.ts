@@ -3,6 +3,7 @@
 //   GET    /api/meta                      admin enabled?, form options/defaults
 //   GET    /api/systems                   menu list (public: the menu needs it)
 //   POST   /api/admin/auth                {pin} -> {token}
+//   GET    /api/admin/systems             full rows incl. proxy (Bearer token)
 //   POST   /api/admin/systems             create          (Bearer token)
 //   PUT    /api/admin/systems/<id>        update          (Bearer token)
 //   DELETE /api/admin/systems/<id>        delete          (Bearer token)
@@ -14,12 +15,16 @@
 // attempts are hashed and compared in constant time, with a temporary
 // lockout after repeated failures. Identity itself is enforced by Pangolin
 // at the edge — this PIN only gates host-list administration.
+//
+// Proxy credentials (and the proxy's location - internal infrastructure)
+// appear only on the authenticated admin routes; the public menu list gets
+// a `viaProxy` flag and nothing more.
 import * as crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { TERM_TYPES } from './tn5250/constants.ts';
 import { Ebcdic } from './tn5250/ebcdic.ts';
 import type { Config } from './config.ts';
-import type { Systems } from './systems.ts';
+import type { Systems, SystemRow } from './systems.ts';
 
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 32 * 1024;
@@ -63,6 +68,12 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
     return true;
   };
 
+  /** Menu-safe projection: no proxy details beyond "there is one". */
+  const publicSystem = (s: SystemRow): Record<string, unknown> => {
+    const { proxyHost, proxyPort, proxyUser, proxyPass, ...pub } = s;
+    return { ...pub, viaProxy: Boolean(proxyHost) };
+  };
+
   const routes: Route[] = [
     {
       method: 'GET',
@@ -89,7 +100,8 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
       method: 'GET',
       re: /(?:^|\/)api\/systems\/?$/,
       auth: false,
-      run: ({ systems, res }) => json(res, 200, { systems: systems.list() })
+      run: ({ systems, res }) =>
+        json(res, 200, { systems: systems.list().map(publicSystem) })
     },
     {
       method: 'POST',
@@ -124,13 +136,19 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
       }
     },
     {
+      method: 'GET',
+      re: /(?:^|\/)api\/admin\/systems\/?$/,
+      auth: true,
+      run: ({ systems, res }) => json(res, 200, { systems: systems.list() })
+    },
+    {
       method: 'POST',
       re: /(?:^|\/)api\/admin\/systems\/?$/,
       auth: true,
       run: ({ systems, cfg, res, body }) => {
         const result = systems.create(body, cfg);
         if (!result.ok) json(res, 400, { error: result.error });
-        else json(res, 201, { system: result.row });
+        else json(res, 201, { system: publicSystem(result.row) });
       }
     },
     {
@@ -140,7 +158,7 @@ export function createApiHandler(cfg: Config, systems: Systems): ApiHandler {
       run: ({ systems, cfg, res, match, body }) => {
         const result = systems.update(Number(match[1]), body, cfg);
         if (!result.ok) json(res, result.error === 'System not found' ? 404 : 400, { error: result.error });
-        else json(res, 200, { system: result.row });
+        else json(res, 200, { system: publicSystem(result.row) });
       }
     },
     {

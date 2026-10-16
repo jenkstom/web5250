@@ -25,6 +25,7 @@
     "test:admin": "node scripts/admin-test.mjs",
     "test:select": "node scripts/select-test.mjs",
     "test:paste": "node scripts/paste-test.mjs",
+    "test:socks": "node scripts/socks-test.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "test:real": "node scripts/real-signon-test.mjs",
     "test:auto": "node scripts/auto-test.mjs",

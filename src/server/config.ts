@@ -8,6 +8,11 @@ export interface Config {
   ibmHost: string;
   ibmPort: number;
   ibmSsl: boolean;
+  /** SOCKS5 proxy for the first-boot seed system (IBM_I_PROXY_HOST etc). */
+  ibmProxyHost: string | null;
+  ibmProxyPort: number;
+  ibmProxyUser: string | null;
+  ibmProxyPassword: string | null;
   tlsRejectUnauthorized: boolean;
   codePage: string;
   termType: string;
@@ -81,6 +86,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ibmHost: env.IBM_I_HOST ?? '127.0.0.1',
     ibmPort: int(env.IBM_I_PORT, 23),
     ibmSsl: bool(env.IBM_I_SSL, false),
+    ibmProxyHost: env.IBM_I_PROXY_HOST?.trim() || null,
+    ibmProxyPort: int(env.IBM_I_PROXY_PORT, 1080),
+    ibmProxyUser: env.IBM_I_PROXY_USER?.trim() || null,
+    ibmProxyPassword: env.IBM_I_PROXY_PASSWORD ?? null,
     tlsRejectUnauthorized: bool(env.IBM_I_TLS_REJECT_UNAUTHORIZED, false),
     codePage,
     termType,

@@ -22,6 +22,11 @@ export interface SystemRow {
   termType: string;
   codePage: string;
   devPrefix: string | null;
+  /** SOCKS5 proxy the host TCP connection is tunneled through; null = direct. */
+  proxyHost: string | null;
+  proxyPort: number | null;
+  proxyUser: string | null;
+  proxyPass: string | null;
   position: number;
 }
 
@@ -73,6 +78,28 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
     return { ok: false, error: 'Device prefix may only contain A-Z 0-9 # $ @ _ (max 10 chars)' };
   }
 
+  const proxyHost = str(r.proxyHost, 253);
+  if (proxyHost && !HOST_RE.test(proxyHost)) {
+    return { ok: false, error: 'Proxy host must be a hostname or IP (letters, digits, . _ : -)' };
+  }
+  let proxyPort: number | null = null;
+  if (proxyHost) {
+    const p =
+      r.proxyPort === undefined || r.proxyPort === null || r.proxyPort === ''
+        ? 1080
+        : Number.parseInt(String(r.proxyPort), 10);
+    if (!Number.isFinite(p) || p < 1 || p > 65535) {
+      return { ok: false, error: 'Proxy port must be between 1 and 65535' };
+    }
+    proxyPort = p;
+  }
+  // RFC 1929 caps username and password at 255 bytes each.
+  const proxyUser = str(r.proxyUser, 255);
+  const proxyPass = str(r.proxyPass, 255);
+  if ((proxyUser || proxyPass) && !proxyHost) {
+    return { ok: false, error: 'Proxy username/password need a proxy host' };
+  }
+
   return {
     ok: true,
     value: {
@@ -83,7 +110,11 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       ssl,
       termType: termType.toUpperCase(),
       codePage,
-      devPrefix: devPrefixRaw ? devPrefixRaw.toUpperCase() : null
+      devPrefix: devPrefixRaw ? devPrefixRaw.toUpperCase() : null,
+      proxyHost: proxyHost || null,
+      proxyPort,
+      proxyUser: proxyUser || null,
+      proxyPass: proxyPass || null
     }
   };
 }
@@ -98,6 +129,10 @@ interface Row {
   term_type: string;
   code_page: string;
   dev_prefix: string | null;
+  proxy_host: string | null;
+  proxy_port: number | null;
+  proxy_user: string | null;
+  proxy_pass: string | null;
   position: number;
 }
 
@@ -111,6 +146,10 @@ const mapRow = (r: Row): SystemRow => ({
   termType: r.term_type,
   codePage: r.code_page,
   devPrefix: r.dev_prefix ?? null,
+  proxyHost: r.proxy_host ?? null,
+  proxyPort: r.proxy_port === null || r.proxy_port === undefined ? null : Number(r.proxy_port),
+  proxyUser: r.proxy_user ?? null,
+  proxyPass: r.proxy_pass ?? null,
   position: Number(r.position)
 });
 
@@ -132,11 +171,29 @@ export class Systems {
         term_type   TEXT NOT NULL,
         code_page   TEXT NOT NULL,
         dev_prefix  TEXT,
+        proxy_host  TEXT,
+        proxy_port  INTEGER,
+        proxy_user  TEXT,
+        proxy_pass  TEXT,
         position    INTEGER NOT NULL DEFAULT 1,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+    // Databases from before the SOCKS5-proxy columns keep their data: the
+    // columns are added in place (NULL = direct connection, as before).
+    const cols = new Set(
+      (this.db.prepare('PRAGMA table_info(systems)').all() as unknown as { name: string }[]).map(
+        (c) => c.name
+      )
+    );
+    const addColumn = (name: string, ddl: string): void => {
+      if (!cols.has(name)) this.db.exec(`ALTER TABLE systems ADD COLUMN ${name} ${ddl}`);
+    };
+    addColumn('proxy_host', 'TEXT');
+    addColumn('proxy_port', 'INTEGER');
+    addColumn('proxy_user', 'TEXT');
+    addColumn('proxy_pass', 'TEXT');
 
     if (this.list().length === 0) {
       const seed = validateSystemInput(
@@ -148,7 +205,11 @@ export class Systems {
           ssl: cfg.ibmSsl,
           termType: cfg.termType,
           codePage: cfg.codePage,
-          devPrefix: cfg.devPrefix ?? ''
+          devPrefix: cfg.devPrefix ?? '',
+          proxyHost: cfg.ibmProxyHost ?? '',
+          proxyPort: cfg.ibmProxyPort,
+          proxyUser: cfg.ibmProxyUser ?? '',
+          proxyPass: cfg.ibmProxyPassword ?? ''
         },
         cfg
       );
@@ -181,7 +242,9 @@ export class Systems {
     this.db
       .prepare(
         `UPDATE systems SET name = ?, description = ?, host = ?, port = ?, ssl = ?,
-         term_type = ?, code_page = ?, dev_prefix = ?, updated_at = datetime('now') WHERE id = ?`
+         term_type = ?, code_page = ?, dev_prefix = ?,
+         proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
+         updated_at = datetime('now') WHERE id = ?`
       )
       .run(
         input.name,
@@ -192,6 +255,10 @@ export class Systems {
         input.termType,
         input.codePage,
         input.devPrefix,
+        input.proxyHost,
+        input.proxyPort,
+        input.proxyUser,
+        input.proxyPass,
         id
       );
     return { ok: true, row: this.get(id)! };
@@ -223,8 +290,9 @@ export class Systems {
     };
     const res = this.db
       .prepare(
-        `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
+         proxy_host, proxy_port, proxy_user, proxy_pass, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -235,6 +303,10 @@ export class Systems {
         input.termType,
         input.codePage,
         input.devPrefix,
+        input.proxyHost,
+        input.proxyPort,
+        input.proxyUser,
+        input.proxyPass,
         Number(max.m) + 1
       );
     return this.get(Number(res.lastInsertRowid))!;

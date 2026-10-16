@@ -7,6 +7,7 @@ import { Ebcdic } from './ebcdic.ts';
 import { Screen5250 } from './screen.ts';
 import { Parser5250 } from './parser.ts';
 import { Telnet5250 } from './telnet.ts';
+import { socks5Connect, type SocksProxy } from './socks.ts';
 
 export type SessionStatus = 'connecting' | 'negotiating' | 'connected' | 'closed' | 'error';
 
@@ -18,6 +19,8 @@ export interface Tn5250ClientOptions {
   termType: string;
   deviceName: string | null;
   codePage: string;
+  /** Route the host TCP connection through this SOCKS5 proxy (per system). */
+  proxy?: SocksProxy;
   connectTimeoutMs?: number;
   /** Claim pointer-device capability in the query reply (IBM_I_MOUSE_GUI=1). */
   queryMouseGui?: boolean;
@@ -120,13 +123,76 @@ export class Tn5250Client {
 
   connect(): void {
     if (this.destroyed) return;
-    const { host, port, ssl } = this.opts;
+    const { host, port, ssl, proxy } = this.opts;
     const timeout = this.opts.connectTimeoutMs ?? 15000;
+
+    this.connectTimer = setTimeout(() => {
+      if (this.status === 'connecting') {
+        this.setStatus('error', `connect timeout after ${timeout}ms`);
+        this.destroy();
+      }
+    }, timeout);
+
+    // Keepalive: raw telnet NOP keeps idle sessions from being reaped.
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.destroyed) this.telnet.heartbeat();
+    }, 45000);
+
+    if (proxy) {
+      // Tunnel first (SOCKS5 CONNECT, username/password auth), then wire
+      // telnet to whatever came out - optionally TLS layered over it.
+      this.connectThroughProxy(proxy, host, port, ssl);
+      return;
+    }
 
     const socket: net.Socket = ssl
       ? tls.connect({ host, port, rejectUnauthorized: this.opts.tlsRejectUnauthorized })
       : net.connect({ host, port });
+    this.adopt(socket, 'connect');
+  }
 
+  private connectThroughProxy(proxy: SocksProxy, host: string, port: number, ssl: boolean): void {
+    socks5Connect(proxy, { host, port }, (raw) => {
+      // Keep the in-flight tunnel reachable by destroy() (connect timeout,
+      // host-side teardown) while the handshake is still running.
+      if (this.destroyed) raw.destroy();
+      else this.sock = raw;
+    })
+      .then(({ socket: raw, preread }) => {
+        if (this.destroyed) {
+          raw.destroy();
+          return;
+        }
+        if (!ssl) {
+          this.adopt(raw, null);
+          if (preread.length) this.telnet.receive(preread);
+          return;
+        }
+        // TLS rides inside the tunnel, so bytes that arrived with the proxy
+        // reply are the start of the TLS handshake: push them back into the
+        // socket for the TLS layer to parse, not into telnet.
+        if (preread.length) raw.unshift(preread);
+        const secure = tls.connect({
+          socket: raw,
+          servername: net.isIP(host) ? undefined : host,
+          rejectUnauthorized: this.opts.tlsRejectUnauthorized
+        });
+        this.adopt(secure, 'secureConnect');
+      })
+      .catch((err: Error) => {
+        if (this.destroyed) return;
+        this.setStatus('error', err.message);
+        this.destroy();
+      });
+  }
+
+  /**
+   * Hand a socket to the telnet layer and arm the error/close teardown.
+   * `ready` names the event that marks the transport established - 'connect'
+   * for direct sockets, 'secureConnect' for TLS layered over a proxy tunnel,
+   * null when the socket is already talking (plain tunnel).
+   */
+  private adopt(socket: net.Socket, ready: 'connect' | 'secureConnect' | null): void {
     this.sock = socket;
     this.telnet.attach(socket);
     socket.setNoDelay(true);
@@ -140,23 +206,16 @@ export class Tn5250Client {
       this.setStatus('closed');
       this.destroy();
     });
-    socket.on('connect', () => {
+    socket.on('data', (chunk: Buffer) => this.telnet.receive(chunk));
+    if (ready === null) {
       this.clearConnectTimer();
       this.setStatus('negotiating');
-    });
-    socket.on('data', (chunk: Buffer) => this.telnet.receive(chunk));
-
-    this.connectTimer = setTimeout(() => {
-      if (this.status === 'connecting') {
-        this.setStatus('error', `connect timeout after ${timeout}ms`);
-        this.destroy();
-      }
-    }, timeout);
-
-    // Keepalive: raw telnet NOP keeps idle sessions from being reaped.
-    this.heartbeatTimer = setInterval(() => {
-      if (!this.destroyed) this.telnet.heartbeat();
-    }, 45000);
+    } else {
+      socket.on(ready, () => {
+        this.clearConnectTimer();
+        this.setStatus('negotiating');
+      });
+    }
   }
 
   private clearConnectTimer(): void {
