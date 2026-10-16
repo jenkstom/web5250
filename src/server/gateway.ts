@@ -87,6 +87,7 @@ export class HostSession {
   /** Last host-facing status, replayed to a re-attaching front-end. */
   lastStatus = 'connecting';
   lastStatusDetail: string | undefined;
+  private readonly cfg: Config;
   private frontends: GatewaySession[] = [];
   private viewers: GatewaySession[] = [];
   private started = false; // client.connect() called exactly once
@@ -95,6 +96,7 @@ export class HostSession {
   private broadcastTimer: NodeJS.Timeout | null = null;
 
   constructor(cfg: Config, query: SessionQuery, system?: SystemRow) {
+    this.cfg = cfg;
     // Connection parameters resolve in order: explicit URL overrides
     // (ALLOW_CUSTOM_HOST) > menu-selected system (?system=<id> from the DB)
     // > the IBM_I_* environment defaults.
@@ -155,6 +157,11 @@ export class HostSession {
       for (const v of this.viewers) v.sendStatus(s, detail);
       if (s === 'closed' || s === 'error') this.destroy();
     };
+    // STRPCCMD: a host application asked the emulator to open something.
+    // Policy: only http(s) URIs are ever forwarded (a browser cannot and
+    // should not run PC commands), and only to controlling front-ends -
+    // read-only mirrors never get windows opened on them.
+    this.client.onPcCommand = (command) => this.handlePcCommand(command);
     // ?auto=1 launch: sign on with the configured assumed-identity account
     // and pre-fill the initial program's screen. The HTTP layer refuses
     // auto upgrades without AUTO_SIGNON_USER/AUTO_SIGNON_PASSWORD, so both
@@ -189,6 +196,21 @@ export class HostSession {
 
   get isDestroyed(): boolean {
     return this.destroyed;
+  }
+
+  /** STRPCCMD arrived: extract an http(s) URI, forward it to the front-ends. */
+  private handlePcCommand(command: string): void {
+    const uri = uriFromPcCommand(command);
+    if (!uri) {
+      console.log(`[ws] pccmd ignored (no http(s) URI): ${command.slice(0, 80)}`);
+      return;
+    }
+    if (!this.cfg.allowHostUrlOpen) {
+      console.log(`[ws] pccmd URI suppressed (ALLOW_HOST_URL_OPEN=false): ${uri}`);
+      return;
+    }
+    console.log(`[ws] pccmd open ${uri} -> ${this.frontends.length} front-end(s)`);
+    for (const f of this.frontends) f.sendOpenUrl(uri);
   }
 
   /** True while the launch automation is signing on / pre-filling. */
@@ -588,6 +610,11 @@ export class GatewaySession {
     this.send('status', { status, detail });
   }
 
+  /** STRPCCMD URI: the browser opens it under its own popup management. */
+  sendOpenUrl(uri: string): void {
+    this.send('openurl', { uri });
+  }
+
   /** Automation lifecycle for the embedding page (?auto=1 contract). */
   sendAuto(phase: 'ended', reason: string, detail: string): void {
     this.send('auto', { phase, reason, detail });
@@ -678,6 +705,20 @@ export class GatewaySession {
 // ------------------------------------------------------------ wire encoding
 /** The screen type of a tn5250 client, named for the helpers below. */
 type Screen = Tn5250Client['screen'];
+
+/**
+ * The first http(s) URI in a STRPCCMD PCCMD string, or null when the command
+ * opens anything else (paths, executables). Hosts wrap the URL in shell
+ * incantations - `start <url>`, `explorer <url>`,
+ * `rundll32 url.dll,FileProtocolHandler <url>` - but every variant still
+ * contains the bare URL, so scanning for it covers them all.
+ */
+export function uriFromPcCommand(command: string): string | null {
+  const m = /\bhttps?:\/\/[^\s"'<>]+/i.exec(command);
+  if (!m) return null;
+  const uri = m[0].replace(/[),.;:'"]+$/, '');
+  return uri.length > 0 && uri.length <= 2048 ? uri : null;
+}
 
 /** Compact host mouse bindings for the browser: {rightdown: 132, ...}. */
 function mouseJson(s: Screen): string {

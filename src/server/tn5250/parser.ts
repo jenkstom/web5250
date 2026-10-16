@@ -8,11 +8,21 @@ import type { Screen5250, SelectionChoice, WindowTitle } from './screen.ts';
 import type { Telnet5250 } from './telnet.ts';
 import type { Ebcdic } from './ebcdic.ts';
 
+/** A STRPCCMD the host asked the emulator to run (see ORDER_PC_CMD). */
+export interface PcCommand {
+  command: string;
+  /** WAIT(*YES): the host blocks until the emulator's Enter completion. */
+  wait: boolean;
+}
+
 export class Parser5250 {
   private buf: Buffer = Buffer.alloc(0);
   private pos = 0;
   private end = 0;
   private pendingUnlock = false;
+  /** STRPCCMD state: armed when the PCO magic matched in this record. */
+  private pcArmed = false;
+  private pcSaved: { chars: string[]; attrs: number[]; attrPlace: boolean[] } | null = null;
   beep = false;
   cursorChanged = false;
 
@@ -64,11 +74,14 @@ export class Parser5250 {
     return [this.screen.rowOf(this.screen.cursorPos) & 0xff, this.screen.colOf(this.screen.cursorPos) & 0xff];
   }
 
-  /** Parse one complete record (including the 2-byte length prefix). */
-  parse(record: Buffer): void {
+  /** Parse one complete record (including the 2-byte length prefix). Returns
+   *  the PC command when the record was a STRPCCMD carrier, else null. */
+  parse(record: Buffer): PcCommand | null {
     this.beep = false;
     this.cursorChanged = false;
-    if (record.length < 10) return; // smaller than the GDS header itself
+    this.pcArmed = false;
+    this.pcSaved = null;
+    if (record.length < 10) return null; // smaller than the GDS header itself
     const declared = (record[0] << 8) | record[1];
     // RFC 1205: the length word counts itself and the record still carries
     // it, so declared must equal the total length.
@@ -90,12 +103,12 @@ export class Parser5250 {
       switch (record[9]) {
         case 0x06: // Read Immediate: reply cursor + AID 0, no field data
           this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), 0x00]));
-          return;
+          return null;
         case 0x08: // Read Screen Operation: reply with the screen image
           this.telnet.sendGds(0, 0, this.screen.buildScreenDump());
-          return;
+          return null;
         case 0x09: // reserved
-          return;
+          return null;
         case 0x0a: {
           // Cancel Invite Operation (RFC 1205 4.3): the host cancels the
           // outstanding read - inhibit the keyboard (X SYSTEM) and answer
@@ -104,14 +117,14 @@ export class Parser5250 {
           this.screen.lockSystem();
           this.cursorChanged = true;
           this.telnet.sendGds(0, 0x0a);
-          return;
+          return null;
         }
         case 0x0b: // message light on
           this.screen.messageWait = true;
-          return;
+          return null;
         case 0x0c: // message light off
           this.screen.messageWait = false;
-          return;
+          return null;
       }
     }
 
@@ -132,6 +145,38 @@ export class Parser5250 {
       this.pendingUnlock = false;
       this.cursorChanged = true;
     }
+
+    return this.collectPcCommand();
+  }
+
+  /**
+   * STRPCCMD extraction. The flagged write placed the wait flag at plane
+   * offset 11 and the command at 12..134 as ordinary characters; tn5250j
+   * reads exactly those positions. After extraction the whole command area
+   * is put back to its pre-record content - the browser saw no diff for
+   * this record, so the buffer must match what it last saw (and what a
+   * fresh full snapshot would send).
+   */
+  private collectPcCommand(): PcCommand | null {
+    if (!this.pcArmed) return null;
+    this.pcArmed = false;
+    const s = this.screen;
+    const flag = s.chars[11] ?? 'a';
+    let command = '';
+    for (let i = 12; i < 12 + C.PC_CMD_MAX_LENGTH && i < s.chars.length; i++) {
+      const ch = s.chars[i] ?? ' ';
+      command += ch >= ' ' && ch !== '\x7f' ? ch : ' '; // ISO control -> space
+    }
+    if (this.pcSaved) {
+      const area = Math.min(12 + C.PC_CMD_MAX_LENGTH, s.chars.length);
+      for (let i = 0; i < area; i++) {
+        s.chars[i] = this.pcSaved.chars[i];
+        s.attrs[i] = this.pcSaved.attrs[i];
+        s.attrPlace[i] = this.pcSaved.attrPlace[i];
+      }
+      this.pcSaved = null;
+    }
+    return { command: command.trim(), wait: flag !== 'a' };
   }
 
   private parseCommand(): void {
@@ -410,6 +455,31 @@ export class Parser5250 {
         case C.ORDER_SF:
           this.processStartOfField();
           break;
+
+        case C.ORDER_PC_CMD: {
+          // STRPCCMD carrier: order X'80' + the 9-byte "PCO" magic. tn5250j
+          // rewinds the stream so the magic (and everything after) still
+          // arrives on the screen as characters - the command is read back
+          // from fixed plane offsets once the write completes.
+          let magic = true;
+          const peek: number[] = [];
+          for (let i = 0; i < C.PC_CMD_MAGIC.length && this.hasNext(); i++) {
+            const b = this.next();
+            peek.push(b);
+            if (b !== C.PC_CMD_MAGIC[i]) magic = false;
+          }
+          if (magic && !this.pcArmed) {
+            this.pcArmed = true;
+            const area = Math.min(12 + C.PC_CMD_MAX_LENGTH, this.screen.chars.length);
+            this.pcSaved = {
+              chars: this.screen.chars.slice(0, area),
+              attrs: this.screen.attrs.slice(0, area),
+              attrPlace: this.screen.attrPlace.slice(0, area)
+            };
+          }
+          for (const b of peek) this.screen.writeEbcdicByte(b);
+          break;
+        }
 
         default:
           // Data byte: attribute markers (0x20-0x3F) vs EBCDIC text.

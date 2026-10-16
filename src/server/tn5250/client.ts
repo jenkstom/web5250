@@ -45,6 +45,8 @@ export class Tn5250Client {
   status: SessionStatus = 'connecting';
   onStatus: (status: SessionStatus, detail?: string) => void = () => {};
   onScreenChange: () => void = () => {};
+  /** STRPCCMD from the host (URIs etc); see ORDER_PC_CMD. Never painted. */
+  onPcCommand: (command: string, wait: boolean) => void = () => {};
 
   private readonly opts: Tn5250ClientOptions;
 
@@ -227,14 +229,36 @@ export class Tn5250Client {
 
   private handleRecord(rec: Buffer): void {
     try {
-      this.parser.parse(rec);
+      const pc = this.parser.parse(rec);
       this.capture(rec);
-      if (this.parser.beep) this.onScreenChange(); // gateway also polls beep flag
       this.recordsSeen++;
       if (this.status !== 'connected') this.setStatus('connected');
+      if (pc) {
+        // STRPCCMD: the parser already erased the carrier block from the
+        // buffer and no screen change is broadcast - the command text must
+        // never reach a display. The gateway decides what to do with it.
+        this.diag(
+          `[tn5250 ${this.opts.deviceName ?? '-'}] pccmd wait=${pc.wait} '${pc.command}'`
+        );
+        this.onPcCommand(pc.command, pc.wait);
+        this.replyPcCommand();
+        return;
+      }
+      if (this.parser.beep) this.onScreenChange(); // gateway also polls beep flag
       this.onScreenChange();
     } catch (err) {
       this.warn(`unhandled record error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * STRPCCMD completion: tn5250j sends Enter unconditionally after running
+   * the command - with a read invited it completes the read (releasing a
+   * WAIT(*YES) caller), and the host buffers an AID sent without one.
+   */
+  private replyPcCommand(): void {
+    if (!this.sendAid(C.AID_ENTER)) {
+      this.telnet.sendGds(0, 3, Buffer.from([...this.cursorBytes(), C.AID_ENTER]));
     }
   }
 

@@ -181,7 +181,9 @@ class HostSession {
         this.text(10, 6, null, '  3. General system tasks'),
         this.text(11, 6, null, '  4. Work with demo items'),
         this.text(12, 6, null, '90. Sign off'),
-        this.text(14, 6, 0x28, 'CAUTION: mock host, no real IBM i behind this'),
+        this.text(13, 6, null, '96. Open a web page on the PC (STRPCCMD)'),
+        this.text(14, 6, null, '97. STRPCCMD with no URL'),
+        this.text(15, 6, 0x28, 'CAUTION: mock host, no real IBM i behind this'),
         this.text(17, 6, null, 'Command line:'),
         this.field(19, 25, 0x20, 21),
         this.text(19, 47, null, '(unused)'),
@@ -191,6 +193,33 @@ class HostSession {
       [6, 26],
       CMD_RMD
     );
+  }
+
+  /**
+   * STRPCCMD carrier, laid out the way tn5250j reads it back: the X'80'
+   * order + 9-byte "PCO" magic (consumed as an order, then rewritten as
+   * characters), filler up to plane offset 10, the wait flag at 11 ('a' =
+   * WAIT(*NO)), the command at 12..134 (padded to 123 chars, the pre-V7R2
+   * PCCMD limit). A read invite follows so the emulator's Enter completion
+   * has a read to complete.
+   */
+  sendPcCommand(command, wait = true) {
+    this.state = 'pccmd';
+    this.currentFields = [];
+    const PCO = [0xfc, 0xd7, 0xc3, 0xd6, 0x40, 0x83, 0x80, 0xa1, 0x80];
+    const body = (wait ? 'b' : 'a') + command.padEnd(123, ' ');
+    this.record(
+      0x03,
+      this.wtd(0x20, [
+        ORDER_SBA, 1, 1,
+        0x80, ...PCO,
+        0x40, 0x40, // filler: flag lands on plane offset 11
+        ...e(body),
+        ORDER_IC, 1, 1
+      ]),
+      this.esc(CMD_RIF, 0x00, 0x00)
+    );
+    this.lastReadCmd = CMD_RIF;
   }
 
   /** WRK-style option list: one input field per line, walked with Up/Down. */
@@ -631,6 +660,10 @@ class HostSession {
           this.sendHelp();
         } else if (sel.trim() === '4') {
           this.sendList();
+        } else if (sel.trim() === '96') {
+          this.sendPcCommand('start http://mock.example/report?from=menu', true);
+        } else if (sel.trim() === '97') {
+          this.sendPcCommand('rundll32 url.dll,FileProtocolHandler notepad.exe', false);
         } else if (cmd) {
           this.sendError(`Command ${cmd} not known to mock host`, CMD_RMD);
           this.sendMain(user);
@@ -639,6 +672,11 @@ class HostSession {
         }
         break;
       }
+
+      case 'pccmd':
+        // The emulator's Enter completion (WAIT(*YES)) lands here.
+        this.sendMain(this.lastUser);
+        break;
 
       case 'help':
         this.sendMain(this.lastUser);

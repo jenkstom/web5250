@@ -592,6 +592,18 @@ export class SessionPane {
         this.showKeyPressed(keyLabel(String(msg.k ?? '')));
         break;
       }
+      case 'openurl': {
+        // STRPCCMD from the host asked to open a URI. No prompt of our
+        // own: window.open goes through the browser's popup management,
+        // which warns the user and lets them allow or block it - exactly
+        // the consent path a host-pushed window should take.
+        const uri = String(msg.uri ?? '');
+        if (/^https?:\/\//i.test(uri)) {
+          const win = window.open(uri, '_blank', 'noopener');
+          if (!win) console.info('[openurl] blocked by the browser:', uri);
+        }
+        break;
+      }
     }
   }
 

@@ -63,6 +63,13 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   contents are blanked server-side so **passwords never reach the browser**.
   The terminal always **fits its window** (and its split pane), re-fitting
   as the layout changes.
+- **STRPCCMD opens URIs in the browser**: when a host program runs
+  `STRPCCMD PCCMD('start https://…')` (the PC-command escape real emulators
+  implement), the gateway extracts the http(s) URI — it never appears on
+  the 5250 screen — and the browser opens it in a new window under its own
+  popup management, so the user's browser asks before allowing it.
+  Commands that carry no URI are ignored; read-only mirrors never receive
+  them. Disable with `ALLOW_HOST_URL_OPEN=false`.
 - **Select & copy**: drag with the left button to mark a screen region and it
   is on the clipboard when you release (Alt+drag marks a column rectangle,
   double-click a word, Ctrl+C re-copies) — with hidden-field contents always
@@ -185,6 +192,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_PROXY_USER` | SOCKS5 username (RFC 1929, with `IBM_I_PROXY_PASSWORD`) | – |
 | `IBM_I_PROXY_PASSWORD` | SOCKS5 password — stored in SQLite on the data volume, never served to unauthenticated browsers | – |
 | `ALLOW_CUSTOM_HOST` | Let users point a session at another host via query params (`?host=&port=&ssl=1&term=&cp=&devname=`) | `false` |
+| `ALLOW_HOST_URL_OPEN` | Let host `STRPCCMD` commands that carry an http(s) URI open it in the user's browser (the browser's own popup warning/consent applies) | `true` |
 | `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
 | `WEB5250_DB` | SQLite file for the system catalog (compose mounts the `web5250-data` volume at `/data`) | `/data/web5250.db` in the container, `data/web5250.db` locally |
 | `IBM_I_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for host TLS (IBM i certs are usually self-signed) | `false` |
@@ -559,6 +567,9 @@ npm run test:socks      # SOCKS5 per-system proxy: tunnelled session,
                         #   username/password auth, failure paths, proxy
                         #   credentials kept off the public API, SQLite
                         #   migration of pre-proxy databases
+npm run test:pcuri      # STRPCCMD: host-pushed URI arrives as an openurl
+                        #   message (never painted), Enter completion,
+                        #   non-URI commands ignored, mirrors excluded
 npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
                         #   keypad, keyboard open/close shrink+expand
 ```

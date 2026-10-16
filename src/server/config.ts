@@ -43,6 +43,8 @@ export interface Config {
   frameAncestors: string | null;
   /** Show the Diag top-bar button in the browser UI (session diagnostics). */
   showDiagButton: boolean;
+  /** Forward STRPCCMD http(s) URIs from the host to the browser (openurl). */
+  allowHostUrlOpen: boolean;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -113,7 +115,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     autoSignOnUser: env.AUTO_SIGNON_USER?.trim() || null,
     autoSignOnPassword: env.AUTO_SIGNON_PASSWORD ?? null,
     frameAncestors: env.FRAME_ANCESTORS?.trim() || null,
-    showDiagButton: bool(env.SHOW_DIAG_BUTTON, false)
+    showDiagButton: bool(env.SHOW_DIAG_BUTTON, false),
+    allowHostUrlOpen: bool(env.ALLOW_HOST_URL_OPEN, true)
   };
 }
 

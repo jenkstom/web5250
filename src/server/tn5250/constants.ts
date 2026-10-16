@@ -98,6 +98,16 @@ export const ORDER_SBA = 0x11; // set buffer address
 export const ORDER_WEA = 0x12; // extended attribute (skipped)
 export const ORDER_IC = 0x13; // insert cursor
 export const ORDER_MC = 0x14; // move cursor
+
+// STRPCCMD carrier (tn5250j TFX.006253): order X'80' followed by this
+// 9-byte "PCO" magic flags a Write To Display as carrying a PC command.
+// The bytes still flow onto the screen as characters - the command is read
+// back from fixed plane offsets once the write completes (flag at 11,
+// command at 12..134; 'a' as the flag means WAIT(*NO)). Length limit of
+// the PCCMD parameter until OS V7R1.
+export const ORDER_PC_CMD = 0x80;
+export const PC_CMD_MAGIC = [0xfc, 0xd7, 0xc3, 0xd6, 0x40, 0x83, 0x80, 0xa1, 0x80];
+export const PC_CMD_MAX_LENGTH = 123;
 export const ORDER_WTDSF = 0x15; // write to display structured field
 export const ORDER_SF = 0x1d; // start of field
 
