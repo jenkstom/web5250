@@ -153,10 +153,17 @@
                   <button id="admin-cancel-edit" type="button" class="ghost">Cancel</button>
                 </div>
               </form>
+              <p id="admin-transfer-note" class="admin-note hidden" role="status"></p>
               <div class="admin-actions" id="admin-list-actions">
                 <button id="admin-add" type="button">Add system</button>
+                <button id="admin-export" type="button"
+                        title="Download every system (with proxy and printer settings) as a JSON file">Export</button>
+                <button id="admin-import" type="button"
+                        title="Upload a JSON export — replaces the whole system list">Import</button>
                 <button id="admin-close" type="button" class="ghost">Close</button>
               </div>
+              <input id="admin-import-file" type="file" accept=".json,application/json"
+                     class="hidden" tabindex="-1" aria-hidden="true" />
             </div>
           </div>
         </div>

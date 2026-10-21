@@ -312,6 +312,63 @@ export class Systems {
     return true;
   }
 
+  /**
+   * Import: replace the whole catalog with the given systems. Accepts an
+   * export document ({kind, version, systems: [...]}) or a bare array. Every
+   * row validates before anything changes; the swap is one transaction with
+   * menu positions following the array order, so a bad file leaves the
+   * existing configuration untouched.
+   */
+  replaceAll(raw: unknown, cfg: Config): { ok: true; rows: SystemRow[] } | { ok: false; error: string } {
+    const arr = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as { systems?: unknown } | null)?.systems)
+        ? ((raw as { systems: unknown[] }).systems)
+        : null;
+    if (!arr) return { ok: false, error: 'Expected a web5250 export file with a "systems" array' };
+    const inputs: SystemInput[] = [];
+    for (let i = 0; i < arr.length; i++) {
+      const v = validateSystemInput(arr[i], cfg);
+      if (!v.ok) return { ok: false, error: `System ${i + 1}: ${v.error}` };
+      inputs.push(v.value!);
+    }
+    this.db.exec('BEGIN');
+    try {
+      this.db.exec('DELETE FROM systems');
+      const stmt = this.db.prepare(
+        `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
+         proxy_host, proxy_port, proxy_user, proxy_pass,
+         printer_enabled, printer_device_name, printer_mode, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      inputs.forEach((input, i) =>
+        stmt.run(
+          input.name,
+          input.description,
+          input.host,
+          input.port,
+          input.ssl ? 1 : 0,
+          input.termType,
+          input.codePage,
+          input.devPrefix,
+          input.proxyHost,
+          input.proxyPort,
+          input.proxyUser,
+          input.proxyPass,
+          input.printerEnabled ? 1 : 0,
+          input.printerDeviceName,
+          input.printerMode,
+          i + 1
+        )
+      );
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+    return { ok: true, rows: this.list() };
+  }
+
   /** Swap a system with its neighbour in menu order (dir: 'up' | 'down'). */
   move(id: number, dir: string): boolean {
     if (dir !== 'up' && dir !== 'down') return false;

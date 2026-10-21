@@ -252,6 +252,15 @@ follows the same connection settings. Proxy and printer-infrastructure
 details are visible only inside the authenticated editor; the public menu
 list shows just a `SOCKS5` / `printer` marker.
 
+**Export / import**: the editor's `Export` button downloads every system —
+proxy and printer settings included — as a JSON file to your computer;
+`Import` uploads such a file back and **replaces the whole list** (the
+Import button asks for a second click first, since the previous list is
+gone). Every row is validated before anything changes, so a file with one
+bad system imports nothing; a good file's rows land in menu order. Handy
+for backing up before an experiment, cloning one deployment into another,
+or moving the catalog out of a throwaway container's volume.
+
 **Display name** (the `Display` field on the menu): an optional 5250
 device name for this browser's sessions, saved in `localStorage` and sent
 as `?devname=` on connect. The gateway keeps live display names unique —
@@ -276,6 +285,8 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | `PUT /api/admin/systems/<id>` | token | update |
 | `DELETE /api/admin/systems/<id>` | token | delete |
 | `POST /api/admin/systems/<id>/move` | token | `{dir: up\|down}` reorder |
+| `GET /api/admin/config` | token | export all systems as a JSON download (attachment) |
+| `PUT /api/admin/config` | token | import a JSON export — replaces the whole list |
 
 WebSocket sessions target a system with `?system=<id>` (rejected with 404 if
 the id no longer exists — the browser falls back to the menu). Failed PIN

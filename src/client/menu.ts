@@ -517,6 +517,7 @@ function closeAdmin(): void {
   $('admin-form').classList.add('hidden');
   $('admin-list-actions').classList.remove('hidden');
   hideFormError();
+  transferNote(null);
   $('menu-option').focus();
 }
 
@@ -527,6 +528,7 @@ function showPinPane(): void {
   $<HTMLInputElement>('admin-pin-input').value = '';
   // Hidden when the server reports ADMIN_PIN is unset.
   $('admin-pin-note').classList.toggle('hidden', meta?.adminEnabled !== false);
+  transferNote(null);
   window.setTimeout(() => $('admin-pin-input').focus(), 0);
 }
 
@@ -637,6 +639,72 @@ async function deleteSystem(s: MenuSystem, btn: HTMLButtonElement): Promise<void
     btn.dataset.armed = '';
     btn.textContent = 'Del';
   }
+  await refreshAdminList();
+}
+
+// -------------------------------------------------- export / import config
+function transferNote(msg: string | null): void {
+  const el = $('admin-transfer-note');
+  el.textContent = msg ?? '';
+  el.classList.toggle('hidden', !msg);
+}
+
+/** Download the whole system list as a JSON file (admin export). */
+async function exportConfig(): Promise<void> {
+  const res = await adminCall('GET', 'api/admin/config');
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    transferNote(`Export failed — ${err.error ?? res.status}`);
+    return;
+  }
+  const blob = new Blob([await res.text()], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  // Same-origin responses carry the header; anything between may strip it.
+  a.download = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1]
+    ?? 'web5250-systems.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  transferNote('System list exported — check your downloads.');
+}
+
+/** Arm-then-open the file picker: import replaces the whole list. */
+function pickImportFile(): void {
+  const btn = $<HTMLButtonElement>('admin-import');
+  // Two-step confirm without a native dialog (same pattern as Del): the
+  // first click arms for 3 s, the second opens the file picker.
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Replace?';
+    window.setTimeout(() => {
+      btn.dataset.armed = '';
+      btn.textContent = 'Import';
+    }, 3000);
+    return;
+  }
+  btn.dataset.armed = '';
+  btn.textContent = 'Import';
+  $<HTMLInputElement>('admin-import-file').click();
+}
+
+/** Upload an export file: the server replaces the whole system list. */
+async function importConfigFile(file: File): Promise<void> {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(await file.text());
+  } catch {
+    transferNote('Import failed — that file is not valid JSON.');
+    return;
+  }
+  const res = await adminCall('PUT', 'api/admin/config', doc);
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    transferNote(`Import failed — ${err.error ?? res.status}`);
+    return;
+  }
+  const data = (await res.json()) as { count?: number };
+  transferNote(`Imported ${data.count ?? 0} system(s) — the previous list was replaced.`);
   await refreshAdminList();
 }
 
@@ -777,6 +845,17 @@ function initAdmin(): void {
     hideFormError();
   });
   $('admin-form').addEventListener('submit', (e) => void saveForm(e));
+
+  // Config transfer: export downloads every system as JSON; import uploads a
+  // file and replaces the whole list (armed first — it is destructive).
+  $('admin-export').addEventListener('click', () => void exportConfig());
+  $('admin-import').addEventListener('click', pickImportFile);
+  $('admin-import-file').addEventListener('change', () => {
+    const input = $<HTMLInputElement>('admin-import-file');
+    const f = input.files?.[0];
+    input.value = ''; // picking the same file twice must still fire change
+    if (f) void importConfigFile(f);
+  });
 
   // Escape closes the admin overlay from anywhere inside it.
   $('admin-modal').addEventListener('keydown', (e) => {

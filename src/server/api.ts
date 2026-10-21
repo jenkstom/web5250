@@ -12,6 +12,8 @@
 //   PUT    /api/admin/systems/<id>        update          (Bearer token)
 //   DELETE /api/admin/systems/<id>        delete          (Bearer token)
 //   POST   /api/admin/systems/<id>/move   {dir: up|down}  (Bearer token)
+//   GET    /api/admin/config              export all systems as a JSON file (Bearer token)
+//   PUT    /api/admin/config              import a JSON file, replacing all systems (Bearer token)
 //
 // Routes match by path suffix so the app keeps working behind a reverse proxy
 // path-based rules (/as400/api/... etc), mirroring /healthz handling.
@@ -37,6 +39,8 @@ import type { Printers } from './printers.ts';
 
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 32 * 1024;
+/** Import uploads carry every system row; 512 KB is ~1000 of them. */
+const MAX_IMPORT_BYTES = 512 * 1024;
 const PIN_MAX_FAILURES = 5;
 const PIN_LOCK_MS = 60_000;
 
@@ -261,6 +265,56 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
         const dir = String((body as { dir?: unknown })?.dir ?? '');
         json(res, systems.move(Number(match[1]), dir) ? 200 : 404, { ok: true });
       }
+    },
+    {
+      // Export: the full catalog as a download document (ids/positions are
+      // re-assigned on import; the array order is the menu order).
+      method: 'GET',
+      re: /(?:^|\/)api\/admin\/config\/?$/,
+      auth: true,
+      run: ({ systems, res }) => {
+        const stamp = new Date();
+        const p2 = (n: number): string => String(n).padStart(2, '0');
+        const name =
+          `web5250-systems-${stamp.getFullYear()}${p2(stamp.getMonth() + 1)}${p2(stamp.getDate())}` +
+          `-${p2(stamp.getHours())}${p2(stamp.getMinutes())}${p2(stamp.getSeconds())}.json`;
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store',
+          'content-disposition': `attachment; filename="${name}"`
+        });
+        res.end(
+          JSON.stringify(
+            {
+              kind: 'web5250-systems',
+              version: 1,
+              exportedAt: stamp.toISOString(),
+              systems: systems.list().map(({ id: _id, position: _pos, ...system }) => system)
+            },
+            null,
+            2
+          )
+        );
+      }
+    },
+    {
+      // Import: replace the whole catalog (auth-gated like every mutation).
+      method: 'PUT',
+      re: /(?:^|\/)api\/admin\/config\/?$/,
+      auth: true,
+      run: ({ systems, cfg, deps, res, body }) => {
+        const result = systems.replaceAll(body, cfg);
+        if (!result.ok) {
+          json(res, 400, { error: result.error });
+          return;
+        }
+        deps.onSystemsChanged();
+        json(res, 200, {
+          ok: true,
+          count: result.rows.length,
+          systems: result.rows.map(publicSystem)
+        });
+      }
     }
   ];
 
@@ -270,7 +324,8 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
 
     // /api/* never falls through to the SPA: unknown API paths 404 as JSON.
     if (method !== 'GET' && method !== 'HEAD') {
-      readBody(req)
+      const limit = /(?:^|\/)api\/admin\/config\/?$/.test(pathname) ? MAX_IMPORT_BYTES : MAX_BODY_BYTES;
+      readBody(req, limit)
         .then((body) => {
           if (!body.ok) {
             json(res, body.status, { error: body.error });
@@ -313,11 +368,12 @@ function json(res: ServerResponse, status: number, body: Record<string, unknown>
 }
 
 function readBody(
-  req: IncomingMessage
+  req: IncomingMessage,
+  maxBytes: number = MAX_BODY_BYTES
 ): Promise<{ ok: true; data: unknown } | { ok: false; error: string; status: number }> {
   return new Promise((resolve) => {
     const declared = Number.parseInt(String(req.headers['content-length'] ?? ''), 10);
-    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    if (Number.isFinite(declared) && declared > maxBytes) {
       resolve({ ok: false, error: 'request too large', status: 413 });
       return;
     }
@@ -325,7 +381,7 @@ function readBody(
     let size = 0;
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         req.destroy();
         resolve({ ok: false, error: 'request too large', status: 413 });
         return;
