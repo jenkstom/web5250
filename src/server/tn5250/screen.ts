@@ -1007,11 +1007,15 @@ export class Screen5250 {
     const rowEnd = rowStart + this.cols - 1;
     // The cursor moves freely (real 5250s do not clamp it to the current
     // field - option-column lists are walked line by line with Up/Down).
-    // Attribute cells are the only exception: step right onto the next
-    // addressable cell of that row instead of landing on them.
+    // Attribute cells are the only exception: step past them in the
+    // direction of travel onto the next addressable cell of that row. A
+    // left move that bumped right could never cross a field's attribute
+    // cell and would strand the cursor at the next field's first data
+    // cell (tn5250j walks straight through, into the field beyond it).
+    const step = dc < 0 ? -1 : 1;
     let target = this.posOf(r + 1, c + 1);
-    while (target <= rowEnd && this.attrPlace[target]) target++;
-    if (target > rowEnd) return;
+    while (target >= rowStart && target <= rowEnd && this.attrPlace[target]) target += step;
+    if (target < rowStart || target > rowEnd) return;
     this.cursorPos = target;
   }
 
