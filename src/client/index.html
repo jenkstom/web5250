@@ -20,6 +20,8 @@
           <button id="btn-exitsplit" class="ghost" type="button" title="Leave split view (ends the extra sessions)">Exit split</button>
         </span>
         <button id="btn-systems" class="ghost hidden" type="button" title="End this session and pick another system">Systems</button>
+        <button id="btn-history" class="ghost hidden" type="button" title="Your recorded sessions (play them back)">History</button>
+        <button id="btn-rec" class="ghost hidden rec-btn" type="button" title="This session is being recorded — click to pause / resume">● REC</button>
         <button id="btn-spool" class="ghost hidden" type="button" title="Spool files printed from the host (printer session)">Spool<span id="spool-count" class="hidden"></span></button>
         <button id="btn-diag" class="ghost hidden" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
@@ -107,7 +109,14 @@
                 <span class="spacer"></span>
                 <button id="admin-logout" type="button" class="ghost">Sign off</button>
               </div>
-              <ul id="admin-list"></ul>
+              <div id="admin-tabs" class="admin-tabs" role="tablist">
+                <button type="button" data-tab="systems" class="active">Systems</button>
+                <button type="button" data-tab="sessions">Sessions</button>
+                <button type="button" data-tab="recordings">Recordings</button>
+                <button type="button" data-tab="audit">Audit</button>
+              </div>
+              <div id="admin-tab-systems">
+                <ul id="admin-list"></ul>
               <form id="admin-form" class="hidden" autocomplete="off">
                 <div class="admin-fields">
                   <label for="f-name">Name *</label>
@@ -146,6 +155,10 @@
                     <option value="text">text — extract plain text from SCS</option>
                     <option value="raw">raw — store host print transform bytes</option>
                   </select>
+                  <label for="f-recording">Recording</label>
+                  <span class="check"><input id="f-recording" type="checkbox" /> <em>record sessions
+                    on this system for replay (users see a ● REC marker and can pause their own
+                    recording; passwords are never captured)</em></span>
                 </div>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">
@@ -164,7 +177,54 @@
               </div>
               <input id="admin-import-file" type="file" accept=".json,application/json"
                      class="hidden" tabindex="-1" aria-hidden="true" />
+              </div>
+
+              <div id="admin-tab-sessions" class="hidden">
+                <p class="admin-lead">Live gateway sessions. Mirror opens a view-only window
+                  (from which control can be requested), Signal shows a banner on the user's
+                  screen, End closes the host session immediately.</p>
+                <div id="maint-block">
+                  <div class="panel-title small">MAINTENANCE WINDOWS</div>
+                  <p class="admin-lead">Block new sessions per system (or gateway-wide) and
+                    drain existing ones at a deadline — for host backups and IPLs.</p>
+                  <ul id="maint-list"></ul>
+                </div>
+                <div class="panel-title small">LIVE SESSIONS</div>
+                <ul id="sessions-list"></ul>
+                <p id="sessions-empty" class="hidden"></p>
+              </div>
+
+              <div id="admin-tab-recordings" class="hidden">
+                <p class="admin-lead">Session recordings (systems with recording enabled).
+                  Play opens the replay player; Download saves the raw event stream.</p>
+                <div class="admin-actions">
+                  <button id="recordings-refresh" type="button">Refresh</button>
+                </div>
+                <ul id="recordings-list"></ul>
+              </div>
+
+              <div id="admin-tab-audit" class="hidden">
+                <p class="admin-lead">Who exercised power over which session, when:
+                  console actions, assist lifecycle, replay links.</p>
+                <div class="admin-actions">
+                  <button id="audit-refresh" type="button">Refresh</button>
+                </div>
+                <ul id="audit-list"></ul>
+              </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="history-modal" class="hidden">
+        <div id="history-card">
+          <div class="panel-title">SESSION HISTORY</div>
+          <p class="admin-lead">Your recorded sessions. Play opens the replay in a new window.</p>
+          <ul id="history-list"></ul>
+          <p id="history-empty" class="hidden"></p>
+          <p id="history-error" class="admin-error" role="alert"></p>
+          <div class="admin-actions">
+            <button id="history-close" type="button" class="ghost">Close</button>
           </div>
         </div>
       </div>

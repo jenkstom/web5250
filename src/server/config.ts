@@ -57,6 +57,27 @@ export interface Config {
   printjobsMaxBytes: number;
   /** Print-job retention: age limit, swept periodically. */
   printjobsTtlMs: number;
+  /**
+   * Edge-injected identity header (e.g. the header Pangolin sets after
+   * authenticating). When set, its value stamps every session as the
+   * owner's identity (session console, assist prompts, audit). Only
+   * meaningful when the container is reachable solely through the edge.
+   */
+  trustedUserHeader: string | null;
+  /** Remote assist: allow viewers to request control of a session. */
+  assistEnabled: boolean;
+  /** Remote assist: maximum control-lease duration. */
+  assistMaxMs: number;
+  /** Remote assist: auto-release after this much assistant inactivity. */
+  assistIdleMs: number;
+  /** Remote assist: let the admin take control without owner consent (audited). */
+  adminAssistBreakglass: boolean;
+  /** Session-recording retention: newest recordings kept (drop-oldest). */
+  recordingsMaxCount: number;
+  /** Session-recording retention: total bytes kept. */
+  recordingsMaxBytes: number;
+  /** Session-recording retention: age limit, swept periodically. */
+  recordingsTtlMs: number;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -134,7 +155,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ibmPrinterMode: env.IBM_I_PRINTER_MODE === 'raw' ? 'raw' : 'text',
     printjobsMaxCount: clampInt(env.PRINTJOBS_MAX_COUNT, 1, 10000, 200),
     printjobsMaxBytes: clampInt(env.PRINTJOBS_MAX_BYTES, 1024, 16 * 1024 * 1024 * 1024, 100 * 1024 * 1024),
-    printjobsTtlMs: clampInt(env.PRINTJOBS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 14 * 24 * 60 * 60 * 1000)
+    printjobsTtlMs: clampInt(env.PRINTJOBS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 14 * 24 * 60 * 60 * 1000),
+    // HTTP header names arrive case-insensitively; normalize once here.
+    trustedUserHeader: env.TRUSTED_USER_HEADER?.trim().toLowerCase() || null,
+    assistEnabled: bool(env.ASSIST_ENABLED, true),
+    assistMaxMs: clampInt(env.ASSIST_MAX_MS, 10_000, 24 * 60 * 60 * 1000, 30 * 60 * 1000),
+    assistIdleMs: clampInt(env.ASSIST_IDLE_MS, 10_000, 24 * 60 * 60 * 1000, 5 * 60 * 1000),
+    adminAssistBreakglass: bool(env.ADMIN_ASSIST_BREAKGLASS, false),
+    recordingsMaxCount: clampInt(env.RECORDINGS_MAX_COUNT, 1, 10000, 200),
+    recordingsMaxBytes: clampInt(
+      env.RECORDINGS_MAX_BYTES,
+      1024,
+      64 * 1024 * 1024 * 1024,
+      500 * 1024 * 1024
+    ),
+    recordingsTtlMs: clampInt(env.RECORDINGS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000)
   };
 }
 

@@ -12,6 +12,8 @@ import { SessionPane, SESSION_KEY, type SessionTarget, type PaneServices } from 
 import { attachKeyboard, mapEvent, type SendKey } from './keyboard.ts';
 import { buildKeypad } from './keypad.ts';
 import { initSpool, spoolVisible, closeSpool } from './spool.ts';
+import { initPlayer } from './player.ts';
+import { initHistory, openHistory, historyVisible, closeHistory } from './history.ts';
 import {
   closePanePickers,
   fetchSystems,
@@ -42,6 +44,11 @@ const autoLaunch = ['1', 'true'].includes(launchParams.get('auto') ?? '');
 // this origin - remotely included.
 const shareViewToken = launchParams.get('view');
 const shareView = !!shareViewToken;
+
+// Replay (?replay=<token>): a finished recording rendered by the player
+// instead of a live session. The whole session chrome (menu, keypad, spool)
+// is absent - this page is a document, not a terminal.
+const replayToken = launchParams.get('replay');
 
 // Deep link (?grid=1..6, optionally &systems=<id>,<id> preassigning panes):
 // the page boots that many session panes in a balanced default tree. The
@@ -459,6 +466,15 @@ const paneServices: PaneServices = {
   requestFit() {
     fitPanes();
   },
+  onRecordState(pane) {
+    if (pane !== activePane) {
+      // A pane going away (cleanup) must clear the indicator even unfocused.
+      if (pane.recording) return;
+      if (!activePane?.recording) updateRecButton();
+      return;
+    }
+    updateRecButton();
+  },
   onAutoEnd(reason, detail) {
     signalSessionEnd(reason, detail);
   },
@@ -594,6 +610,7 @@ function setActive(pane: SessionPane | null): void {
     setConnState(activePane.connState);
     $('dev-info').textContent = activePane.label;
     document.title = activePane.label ? `${activePane.label} · web5250` : 'IBM i 5250 Terminal';
+    updateRecButton();
     // A pane whose system picker is open has no session to type into - the
     // keyboard stays with the picker (its input handles arrows/Enter/Esc).
     if (!coarsePointer) {
@@ -862,7 +879,7 @@ function copySelectionFallback(text: string): void {
 // leaving costs nothing and must not nag. Embedded launches (?auto=1) are
 // torn down by the parent page, so they stay out of this either way - and a
 // view-only mirror never ends anything it watches.
-if (!autoLaunch && !shareView) {
+if (!autoLaunch && !shareView && !replayToken) {
   window.addEventListener('beforeunload', (e) => {
     if (!panes.some((p) => p.sessionActive() && p.graceMs === 0)) return;
     e.preventDefault();
@@ -872,6 +889,15 @@ if (!autoLaunch && !shareView) {
 
 /** Landing logic: deep links map onto 1..N panes; everyone else gets the menu. */
 function boot(): void {
+  // ?replay=<token>: a recording played back in the terminal renderer. No
+  // session chrome (menu, keypad, spool, REC, History) belongs on it.
+  if (replayToken) {
+    initPlayer($('panes'), replayToken);
+    for (const id of ['split-group', 'btn-systems', 'btn-spool', 'btn-diag', 'btn-keypad', 'btn-kbd', 'btn-rec', 'btn-history']) {
+      $(id).classList.add('hidden');
+    }
+    return;
+  }
   tabsMode = localStorage.getItem(GRID_VIEW_KEY) === 'tabs';
   const params = launchParams;
   const sysId = Number.parseInt(params.get('system') ?? '', 10);
@@ -1086,7 +1112,7 @@ function focusTerminal(): void {
 const ctxOpen = (): boolean => !$('ctx-menu').classList.contains('hidden');
 const copyFallbackOpen = (): boolean => !$('copy-fallback').classList.contains('hidden');
 const uiSurfaceOpen = (): boolean =>
-  menuVisible() || ctxOpen() || copyFallbackOpen() || spoolVisible() ||
+  menuVisible() || ctxOpen() || copyFallbackOpen() || spoolVisible() || historyVisible() ||
   !$('keys-modal').classList.contains('hidden');
 
 const sendKey: SendKey = (k, ch) => {
@@ -1171,6 +1197,9 @@ window.addEventListener('keydown', (e) => {
   } else if (spoolVisible()) {
     e.preventDefault();
     closeSpool();
+  } else if (historyVisible()) {
+    e.preventDefault();
+    closeHistory();
   } else if (!$('keys-modal').classList.contains('hidden')) {
     e.preventDefault();
     $('keys-modal').classList.add('hidden');
@@ -1182,6 +1211,31 @@ window.addEventListener('keydown', (e) => {
 $('btn-diag').addEventListener('click', () => activePane?.send({ t: 'diag' }));
 void loadMeta().then((meta) => {
   if (meta?.showDiagButton) $('btn-diag').classList.remove('hidden');
+});
+
+// Session history (own recordings) and the REC indicator: both need the
+// gateway's edge-identity support (TRUSTED_USER_HEADER) or an active
+// recording respectively; both stay hidden on mirrors and embedded launches.
+initHistory();
+if (!autoLaunch && !shareView) {
+  $('btn-history').addEventListener('click', () => void openHistory());
+  void loadMeta().then((meta) => {
+    if (meta?.identityHeader) $('btn-history').classList.remove('hidden');
+  });
+}
+function updateRecButton(): void {
+  const btn = $('btn-rec');
+  const p = activePane;
+  if (!p?.recording) {
+    btn.classList.add('hidden');
+    return;
+  }
+  btn.classList.remove('hidden');
+  btn.textContent = p.recPaused ? 'REC paused' : '● REC';
+  btn.classList.toggle('paused', p.recPaused);
+}
+$('btn-rec').addEventListener('click', () => {
+  activePane?.toggleRecordingPause();
 });
 
 // Spool: host-printed jobs (printer sessions). The button hides itself
@@ -1269,7 +1323,7 @@ window.addEventListener('paste', (e) => {
   if (uiSurfaceOpen()) return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-  if (!activePane || activePane.viewOnly) return;
+  if (!activePane || !activePane.canDrive) return;
   const text = e.clipboardData?.getData('text/plain') ?? '';
   if (!text) return;
   e.preventDefault();

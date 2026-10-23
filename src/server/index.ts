@@ -19,6 +19,10 @@ import { HostSession, type SessionQuery, type AutoQuery } from './gateway.ts';
 import { getSession, getSessionByShare, allSessions } from './sessions.ts';
 import { Systems } from './systems.ts';
 import { Printers } from './printers.ts';
+import { Audit } from './audit.ts';
+import { Maintenance } from './maintenance.ts';
+import { Recordings } from './recordings.ts';
+import { AdminAuth } from './admin-auth.ts';
 import { createApiHandler } from './api.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -29,10 +33,30 @@ const systems = new Systems(cfg.dbPath, cfg);
 // reconcile with the systems list on every admin edit.
 const printers = new Printers(cfg, systems);
 printers.start();
+// Console plumbing: audit trail, maintenance windows, session recordings,
+// and the admin PIN/token store (shared by the API and WS break-glass).
+const audit = new Audit(cfg.dbPath);
+const maintenance = new Maintenance(audit);
+const recordings = new Recordings(cfg);
+recordings.start();
+const adminAuth = new AdminAuth(cfg);
 const api = createApiHandler(cfg, systems, {
   printers,
+  audit,
+  maintenance,
+  recordings,
+  adminAuth,
   onSystemsChanged: () => printers.sync()
 });
+
+/** Edge-injected identity for a request (TRUSTED_USER_HEADER), when set. */
+const identityOf = (req: http.IncomingMessage): string | null => {
+  if (!cfg.trustedUserHeader) return null;
+  const v = req.headers[cfg.trustedUserHeader];
+  const s = Array.isArray(v) ? v[0] : v;
+  const clean = String(s ?? '').trim().slice(0, 80);
+  return clean || null;
+};
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://internal');
@@ -143,12 +167,13 @@ server.on('upgrade', (req, socket, head) => {
     // logged so operators can correlate browser users with 5250 devices.
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim();
+    const identity = identityOf(req);
 
     // ?view=<share token>: attach this socket as a read-only mirror of a
     // running session. Any number of viewers may watch at once (locally or
     // remotely - the link is just a URL to this origin); none of them can
     // type, evict the controlling front-end or keep the session alive past
-    // its grace.
+    // its grace - until the owner grants one a remote-assist lease.
     if (query.view) {
       const core = getSessionByShare(query.view);
       if (!core || core.isDestroyed) {
@@ -164,10 +189,10 @@ server.on('upgrade', (req, socket, head) => {
         return;
       }
       console.log(
-        `[ws] viewer${clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
+        `[ws] viewer${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
           `${core.devName ?? 'no device'} (mirror of ${core.sessionInfo.host}:${core.sessionInfo.port})`
       );
-      wireSocket(ws, core.attachViewer(ws));
+      wireSocket(ws, core.attachViewer(ws, identity));
       return;
     }
 
@@ -192,19 +217,39 @@ server.on('upgrade', (req, socket, head) => {
       }
       const target = { host: core.sessionInfo.host, port: core.sessionInfo.port };
       console.log(
-        `[ws] attach${clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
+        `[ws] attach${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
           `${target.host}:${target.port} (${core.devName ?? 'no device'})`
       );
-      wireSocket(ws, core.attach(ws));
+      wireSocket(ws, core.attach(ws, identity));
+      return;
+    }
+
+    // Maintenance windows block *new* sessions on the affected systems (an
+    // existing session keeps running - it is banner'd and drained at the
+    // deadline instead). Watching and re-attaching stay allowed above.
+    const blocked = maintenance.blocked(query.systemId);
+    if (blocked) {
+      console.log(`[ws] session refused: maintenance on ${query.systemId ?? 'the gateway'}`);
+      ws.send(
+        JSON.stringify({
+          t: 'status',
+          status: 'error',
+          detail: `This system is in maintenance${blocked.deadlineAt ? ` until ${new Date(blocked.deadlineAt).toLocaleTimeString()}` : ''}: ${blocked.message}`
+        })
+      );
+      ws.close(1000, 'maintenance');
       return;
     }
 
     const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
     console.log(
-      `[ws] session open${clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
+      `[ws] session open${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
         `${target.host}:${target.port}`
     );
-    wireSocket(ws, new HostSession(cfg, query, system).attach(ws));
+    wireSocket(
+      ws,
+      new HostSession(cfg, query, system, { identity, clientIp, audit, recordings, adminAuth }).attach(ws, identity)
+    );
   });
 });
 

@@ -33,6 +33,8 @@ export interface SystemRow {
   printerDeviceName: string | null;
   /** text = extract plain text from SCS; raw = store bytes, sniff format. */
   printerMode: 'text' | 'raw';
+  /** Record every session on this system for later replay (opt-in). */
+  recording: boolean;
   position: number;
 }
 
@@ -116,6 +118,7 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       error: 'Printer device name may only contain A-Z 0-9 # $ @ _ (max 10 chars)'
     };
   }
+  const recording = r.recording === true || r.recording === 'true' || r.recording === 1 || r.recording === '1';
 
   return {
     ok: true,
@@ -134,7 +137,8 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       proxyPass: proxyPass || null,
       printerEnabled,
       printerDeviceName: printerDeviceName ? printerDeviceName.toUpperCase() : null,
-      printerMode
+      printerMode,
+      recording
     }
   };
 }
@@ -156,6 +160,7 @@ interface Row {
   printer_enabled: number;
   printer_device_name: string | null;
   printer_mode: string;
+  recording: number;
   position: number;
 }
 
@@ -176,6 +181,7 @@ const mapRow = (r: Row): SystemRow => ({
   printerEnabled: Number(r.printer_enabled ?? 0) !== 0,
   printerDeviceName: r.printer_device_name ?? null,
   printerMode: r.printer_mode === 'raw' ? 'raw' : 'text',
+  recording: Number(r.recording ?? 0) !== 0,
   position: Number(r.position)
 });
 
@@ -228,6 +234,9 @@ export class Systems {
     addColumn('printer_enabled', 'INTEGER NOT NULL DEFAULT 0');
     addColumn('printer_device_name', 'TEXT');
     addColumn('printer_mode', "TEXT NOT NULL DEFAULT 'text'");
+    // Databases from before session recording: recording stays off until an
+    // admin opts the system in.
+    addColumn('recording', 'INTEGER NOT NULL DEFAULT 0');
 
     if (this.list().length === 0) {
       const seed = validateSystemInput(
@@ -282,6 +291,7 @@ export class Systems {
          term_type = ?, code_page = ?, dev_prefix = ?,
          proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
          printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
+         recording = ?,
          updated_at = datetime('now') WHERE id = ?`
       )
       .run(
@@ -300,6 +310,7 @@ export class Systems {
         input.printerEnabled ? 1 : 0,
         input.printerDeviceName,
         input.printerMode,
+        input.recording ? 1 : 0,
         id
       );
     return { ok: true, row: this.get(id)! };
@@ -338,8 +349,8 @@ export class Systems {
       const stmt = this.db.prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         printer_enabled, printer_device_name, printer_mode, recording, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       inputs.forEach((input, i) =>
         stmt.run(
@@ -358,6 +369,7 @@ export class Systems {
           input.printerEnabled ? 1 : 0,
           input.printerDeviceName,
           input.printerMode,
+          input.recording ? 1 : 0,
           i + 1
         )
       );
@@ -390,8 +402,8 @@ export class Systems {
       .prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         printer_enabled, printer_device_name, printer_mode, recording, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -409,6 +421,7 @@ export class Systems {
         input.printerEnabled ? 1 : 0,
         input.printerDeviceName,
         input.printerMode,
+        input.recording ? 1 : 0,
         Number(max.m) + 1
       );
     return this.get(Number(res.lastInsertRowid))!;

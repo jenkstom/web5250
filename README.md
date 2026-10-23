@@ -112,6 +112,30 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   a collision on the configured device name surfaces as an error instead
   of a silent rename; see
   [Spool printing (printer sessions)](#spool-printing-printer-sessions).
+- **Session console (admin)**: the PIN-gated admin editor gains Sessions /
+  Recordings / Audit tabs — see every live session (who, where, which
+  device, signed-on user), open a view-only mirror of any of them, show a
+  banner on a user's screen, or end a session outright (device and message
+  queue freed immediately); plus a recording browser with replay and JSONL
+  download, and an audit trail of every console action; see
+  [Session console](#session-console).
+- **Maintenance windows**: block new sessions per system or gateway-wide
+  with a message on the menu, warn the users of live sessions
+  (T-10 / T-5 / T-1), and drain them at a deadline — the host-backup /
+  IPL ritual without walking anyone off the system; see
+  [Maintenance windows](#maintenance-windows).
+- **Remote assist — consent-based shared control**: a viewer of a share
+  link can *request control*; the owner gets a Grant / Deny / Deny+block
+  prompt and can revoke at any moment. The lease is bounded, idle-released,
+  one controller at a time, and every controller keypress is named on the
+  owner's screen (`Tab · HELPDESK`). Assist never sees a password (the
+  stream was already blanked server-side); see [Remote assist](#remote-assist).
+- **Session recording & replay**: systems can opt into recording; the
+  gateway stores exactly the wire stream a mirror would have seen —
+  passwords are blanked *before* capture — as seekable JSONL. Users replay
+  their own sessions from the **History** button; admins replay anyone's
+  from the console. Replay links are revocable bearer tokens; see
+  [Session recording & replay](#session-recording--replay).
 - **Proxy-friendly**: relative asset paths (works under any sub-path),
   accepts upgrades on any `…/ws` path, WebSocket keepalive pings, `/healthz`
   for uptime checks, zero client-side dependencies beyond static assets.
@@ -210,6 +234,14 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `PRINTJOBS_MAX_COUNT` | Spool-job retention: newest jobs kept per system (drop-oldest) | `200` |
 | `PRINTJOBS_MAX_BYTES` | Spool-job retention: total bytes kept per system (drop-oldest) | `104857600` (100 MB) |
 | `PRINTJOBS_TTL_MS` | Spool-job retention: age limit, swept periodically | `1209600000` (14 days) |
+| `TRUSTED_USER_HEADER` | Edge-injected identity header (e.g. the header Pangolin sets). Stamps sessions with the user's identity (console, assist prompts, audit, History). Only safe when the container is reachable solely through the edge | – |
+| `ASSIST_ENABLED` | Remote assist: viewers of a share link may request control | `true` |
+| `ASSIST_MAX_MS` | Remote assist: maximum control-lease duration | `1800000` (30 min) |
+| `ASSIST_IDLE_MS` | Remote assist: auto-release after this much controller inactivity | `300000` (5 min) |
+| `ADMIN_ASSIST_BREAKGLASS` | Admin may take control without owner consent (audited loudly) | `false` |
+| `RECORDINGS_MAX_COUNT` | Recording retention: newest recordings kept (drop-oldest) | `200` |
+| `RECORDINGS_MAX_BYTES` | Recording retention: total bytes kept | `524288000` (500 MB) |
+| `RECORDINGS_TTL_MS` | Recording retention: age limit, swept periodically | `2592000000` (30 days) |
 | `ALLOW_CUSTOM_HOST` | Let users point a session at another host via query params (`?host=&port=&ssl=1&term=&cp=&devname=`) | `false` |
 | `ALLOW_HOST_URL_OPEN` | Let host `STRPCCMD` commands that carry an http(s) URI open it in the user's browser (the browser's own popup warning/consent applies) | `true` |
 | `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
@@ -243,9 +275,11 @@ edit / delete / reorder systems. Edits persist to SQLite (mount the compose
 `web5250-data` volume) and apply immediately — no restart needed. Every
 system carries its own host, port, TLS flag, terminal model, code page and
 optional device prefix, can be routed through a **SOCKS5 proxy** (host,
-port, optional username/password), and can keep a **printer session** up
+port, optional username/password), can keep a **printer session** up
 (enabled flag, printer device name, `text`/`raw` mode — see
-[Spool printing](#spool-printing-printer-sessions)): the gateway's TN5250
+[Spool printing](#spool-printing-printer-sessions)), and can have sessions
+**recorded** for replay (see
+[Session recording & replay](#session-recording--replay)): the gateway's TN5250
 connection is tunneled through the proxy with TLS-to-host still layered
 inside the tunnel when the system has TLS enabled, and the printer session
 follows the same connection settings. Proxy and printer-infrastructure
@@ -287,6 +321,21 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | `POST /api/admin/systems/<id>/move` | token | `{dir: up\|down}` reorder |
 | `GET /api/admin/config` | token | export all systems as a JSON download (attachment) |
 | `PUT /api/admin/config` | token | import a JSON export — replaces the whole list |
+| `GET /api/admin/sessions` | token | live session list (internal ids, no tokens) |
+| `POST /api/admin/sessions/<id>/view` | token | mint a `?view=` mirror link for one session |
+| `POST /api/admin/sessions/<id>/signal` | token | `{message, level}` banner on that session's screen |
+| `POST /api/admin/sessions/<id>/end` | token | end the session now (`{notice}` shows briefly first) |
+| `POST /api/admin/systems/<id>/maintenance` | token | `{on, message, deadlineMs?}` window for one system |
+| `POST /api/admin/maintenance` | token | the same, gateway-wide |
+| `GET /api/admin/maintenance` | token | current windows |
+| `GET /api/admin/audit` | token | recent audit trail (`?limit=`) |
+| `GET /api/admin/recordings` | token | recording metadata, newest first |
+| `GET /api/admin/recordings/<id>/download` | token | raw JSONL event stream (attachment) |
+| `POST /api/admin/recordings/<id>/link` | token | mint a replay link |
+| `DELETE /api/admin/replay/<token>` | token | revoke a replay link |
+| `GET /api/recordings/mine` | edge identity | the requesting user's own recordings |
+| `POST /api/replay/mint` | edge identity | mint a replay link for an own recording |
+| `GET /api/replay/<token>` | – | one recording: metadata + frames (revocable token) |
 
 WebSocket sessions target a system with `?system=<id>` (rejected with 404 if
 the id no longer exists — the browser falls back to the menu). Failed PIN
@@ -301,7 +350,14 @@ enabled, the gateway keeps one always-on printer device connected
 (independent of any display sessions, reconnected with backoff): like a
 real printer being powered on, the device must be there for the host's
 writer to send to it. Print on the host — or move any spool file to the
-device's output queue — and the job lands in the browser: the top-bar
+device's output queue — that's the queue **named like the device**, which
+CRTDEVPRT auto-created in QUSRSYS (device descriptions have no OUTQ
+parameter; the attached session is the writer, so `WRKCFGSTS` shows the
+device ACTIVE while it's connected; files with a blank form type raise the
+CPA3394 form-type inquiry — the scoped fix is `FORMTYPE(*STD)` on routed
+files, `CHGWTR … FORMTYPE(*ALL) OPTION(*IMMED)` for the live writer, or a
+reply-list entry only if every printer on the system is unattended)
+— and the job lands in the browser: the top-bar
 **Spool** button (with a pending-jobs count) opens the job list, where each
 job can be **downloaded** or **printed** on a locally connected printer.
 
@@ -438,6 +494,109 @@ Two deployment notes:
   period the sessions survive the tab closing for a while and are then
   cleaned up host-side; use **Exit split** (or a pane's ×) to end them
   immediately.
+
+## Session console
+
+The admin editor grows three tabs next to Systems (one PIN, one token):
+
+- **Sessions** — every live session on this gateway: device name, the
+  signed-on IBM i user (captured from the sign-on screen as it is
+  submitted), the edge identity or source address, state (active /
+  connecting / detached-with-grace-countdown), started and last-active
+  times, viewer count, assist holder, REC marker. Row actions:
+  **Mirror** (opens a `?view=` window — from there a console operator can
+  request control like any assist), **Signal** (a banner on that user's
+  screen, never painted into the 5250 buffer), **End** (same path as the
+  pane × button: the device and the user's message queue free up
+  immediately, after an optional warning banner). The list auto-refreshes
+  every 5 s and never carries session/share tokens — those are minted per
+  action.
+- **Recordings** — every finished recording: play (opens the replay
+  player), download the raw JSONL (evidence export), mint replay links.
+- **Audit** — who did what to which session, when: console actions,
+  assist lifecycle (request / grant / deny / revoke / break-glass),
+  maintenance transitions, replay-link minting. Append-only, bounded
+  (5000 entries), lives in the SQLite DB.
+
+Sessions are also maintenance control: the same tab starts and stops
+[windows](#maintenance-windows) per system or gateway-wide.
+
+## Maintenance windows
+
+A maintenance window blocks *new* sessions on a system (or gateway-wide)
+while leaving running ones alone: the menu entry shows a MAINTENANCE line
+with the message, and a connect attempt is refused with the reason. With a
+deadline (minutes), the live sessions get banner warnings at T-10, T-5 and
+T-1 minutes and are ended at the bell — the host-backup / IPL ritual
+without having to walk anyone off. Window state is runtime-only by design:
+a gateway restart clears it, which is the safe failure direction. Every
+transition is audited.
+
+## Remote assist
+
+A share-link viewer watches; with assist it can also *drive* — but only
+with consent, and only for a while:
+
+1. The viewer clicks **Request control** on the mirror. The owner's screen
+   shows a modal: *"BOB requests control of this session"* with
+   **Grant / Deny / Deny + block 1h**. A request nobody answers expires
+   after a minute; one pending request at a time.
+2. On Grant, that viewer's socket gains the owner's input set — keys,
+   SysReq, host-programmed mouse, pull-down picks — under a **lease**:
+   bounded (`ASSIST_MAX_MS`), auto-released after `ASSIST_IDLE_MS` of
+   controller silence, ended by the owner's ever-visible **Revoke**
+   button, the helper's own **Release**, or the session ending. One
+   controller at a time.
+3. Nobody loses the keyboard: owner and helper can both type, like two
+   people at one desk. Every controller keypress is named on the owner's
+   status bar (`Enter · BOB`), and the owner alone can end the session or
+   receive host-pushed `STRPCCMD` windows.
+4. Everyone sees the state: the owner's bar counts down the lease, other
+   mirrors see who holds control, and a late joiner's hello carries the
+   current lease.
+
+The privacy invariant is inherited, not added: a controller sees exactly
+what a mirror sees, and non-display fields were blanked server-side before
+the stream existed — an assist session cannot leak a password, same as a
+colleague leaning over a shoulder never learns one. Admins assist through
+a session's Mirror like anyone else; with `ADMIN_ASSIST_BREAKGLASS=true`
+an authenticated console may take control *without* consent — every use
+lands in the audit log, which is why the default is off.
+
+Identity comes from `TRUSTED_USER_HEADER` (the header your edge sets after
+authenticating — Pangolin does): requests are named with it, sessions are
+stamped with it, and without it the gateway falls back to device names.
+Only set it when the container is reachable solely through the edge.
+
+## Session recording & replay
+
+A system with **Recording** enabled in the admin editor records every
+session on it: the gateway stores exactly the outbound wire stream — full
+screen snapshots (one per host screen; these are the player's seek
+points), cell diffs, OIA states, statuses, named keys with their origin,
+notice and assist events — as one JSON frame per line on the data volume,
+with SQLite metadata. Retention mirrors the spool store: newest
+`RECORDINGS_MAX_COUNT` recordings, `RECORDINGS_MAX_BYTES` total,
+`RECORDINGS_TTL_MS` age, drop-oldest.
+
+**A replay contains exactly what a view-only mirror would have seen —
+nothing more.** Password fields are blanked by the wire encoder *before*
+the recorder runs; keys typed into hidden fields leave no recoverable
+trace. Recording is per-system opt-in; users see a **● REC** marker in the
+top bar and can pause their own recording (the pause itself is recorded,
+so the gap is visible, not hidden). Recording indicator and pause are
+owner-only — mirrors cannot touch them.
+
+- **Users** replay their own finished sessions from the top-bar
+  **History** button (needs `TRUSTED_USER_HEADER`, which is what makes
+  "own" mean anything) and can mint replay links for their recordings.
+- **Admins** replay everything from the console's Recordings tab, download
+  JSONL, and mint links.
+- **Replay links** are unguessable bearer tokens (`?replay=<token>`) under
+  the same trust model as share links; they are revocable (console or by
+  outliving their recording) and the player is the terminal renderer
+  itself — scrub bar, 1×–16× speed, a clickable event lane (keys, assist
+  grants, notices) and wall-clock timestamps.
 
 ## Sessions outlive their window
 
@@ -659,6 +818,10 @@ npm run test:printer    # TN5250E printer sessions: SCS jobs arrive/list/
                         #   download, framing stress (records + TCP
                         #   segments), retention purge, host-refusal and
                         #   device-collision paths, raw-mode PDF sniffing
+npm run test:console    # session console: identity stamping, sign-on
+                        #   capture, signal banners, assist consent/lease/
+                        #   revoke, maintenance windows + drain, recording
+                        #   + replay tokens + history, audit trail
 npm run test:pcuri      # STRPCCMD: host-pushed URI arrives as an openurl
                         #   message (never painted), Enter completion,
                         #   non-URI commands ignored, mirrors excluded
@@ -732,7 +895,12 @@ NEW-ENVIRON) are all implemented faithfully.
 - 5250 traffic to the host is plaintext telnet unless `IBM_I_SSL=true`
   (per system in the menu).
 - Non-display field contents (passwords) are stripped server-side before
-  anything is sent to the browser.
+  anything is sent to the browser — mirrors, assist controllers and the
+  session recorder included: a replay cannot contain a password.
+- `TRUSTED_USER_HEADER` names the header your edge sets after
+  authenticating (session console identity, assist requesters, History).
+  It is trusted, not verified — set it only when the container is
+  reachable solely through the edge, never with a directly exposed port.
 
 ## License
 

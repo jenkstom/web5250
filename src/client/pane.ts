@@ -8,7 +8,7 @@
 // layout, focus and what "Systems" means (which pane the shared system menu
 // targets).
 import { Terminal, type OiaState } from './term.ts';
-import { displayName, type MenuSystem } from './menu.ts';
+import { displayName, loadMeta, type MenuSystem } from './menu.ts';
 
 export interface SessionTarget {
   system?: MenuSystem;
@@ -57,6 +57,8 @@ export interface PaneServices {
   onToken(pane: SessionPane, token: string, systemId: number | null): void;
   /** A new screen size arrived: the shell refits (it owns the box math). */
   requestFit(pane: SessionPane): void;
+  /** Recording state (hello / recstate): shell drives the REC indicator. */
+  onRecordState(pane: SessionPane): void;
   /** Automated-launch lifecycle (?auto=1): notify the embedding page. */
   onAutoEnd(reason: string, detail: string): void;
   /** The pane's session is gone (socket closed with no status). */
@@ -158,6 +160,24 @@ export class SessionPane {
   private flashTimer: number | undefined;
   private keyTimer: number | undefined;
 
+  // Remote assist: this socket's lease state and UI. A mirror with
+  // ctrlGranted drives the session like the owner (server-enforced).
+  ctrlGranted = false;
+  private ctrlExpiresAt = 0;
+  private ctrlCountdown: number | undefined;
+  private assistTimer: number | undefined;
+  private assistEl: HTMLDivElement;
+  private assistTextEl: HTMLSpanElement;
+  private assistBtnEl: HTMLButtonElement;
+  private assistAskEl: HTMLDivElement | null = null;
+  /** This browser's edge identity (hello 'you'), for naming key events. */
+  myIdentity: string | null = null;
+  /** Session recording is on (system opt-in): REC indicator + pause. */
+  recording = false;
+  recPaused = false;
+  /** Server-side banners (maintenance, assist): stacked, dismissible. */
+  private noticeEl: HTMLDivElement;
+
   // drag-selection state
   private selPressing = false;
   private selAnchor: { r: number; c: number } | null = null;
@@ -227,7 +247,26 @@ export class SessionPane {
     this.hostMenuEl.setAttribute('aria-label', 'Host menu');
     this.overlayEl = document.createElement('div');
     this.overlayEl.className = 'pane-overlay hidden';
-    this.screenEl.append(this.canvas, this.hostMenuEl, this.overlayEl);
+
+    // Remote assist chrome: a slim bar (state + Revoke/Release/Request) and
+    // a banner host for server notices. Both are overlays - never painted
+    // into the 5250 cell buffer.
+    this.assistEl = document.createElement('div');
+    this.assistEl.className = 'assist-bar hidden';
+    this.assistTextEl = document.createElement('span');
+    this.assistTextEl.className = 'assist-text';
+    this.assistBtnEl = document.createElement('button');
+    this.assistBtnEl.type = 'button';
+    this.assistBtnEl.className = 'assist-btn';
+    this.assistBtnEl.addEventListener('mousedown', (e) => e.preventDefault());
+    this.assistBtnEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.assistAction();
+    });
+    this.assistEl.append(this.assistTextEl, this.assistBtnEl);
+    this.noticeEl = document.createElement('div');
+    this.noticeEl.className = 'pane-notices';
+    this.screenEl.append(this.canvas, this.hostMenuEl, this.noticeEl, this.assistEl, this.overlayEl);
 
     const oia = document.createElement('div');
     oia.className = 'oia';
@@ -292,6 +331,11 @@ export class SessionPane {
   // ------------------------------------------------------------- shell API
   get label(): string {
     return this.labelEl.textContent ?? '';
+  }
+
+  /** This socket may send host input: the owner, or a viewer holding an assist lease. */
+  get canDrive(): boolean {
+    return !this.viewOnly || this.ctrlGranted;
   }
 
   setLabel(label: string): void {
@@ -407,6 +451,19 @@ export class SessionPane {
     window.clearTimeout(this.keyTimer);
     this.keyTimer = undefined;
     this.keyEl.textContent = '';
+    window.clearTimeout(this.ctrlCountdown);
+    this.ctrlCountdown = undefined;
+    window.clearTimeout(this.assistTimer);
+    this.assistTimer = undefined;
+    this.ctrlGranted = false;
+    this.ctrlExpiresAt = 0;
+    this.assistEl.classList.add('hidden');
+    this.assistAskEl?.remove();
+    this.assistAskEl = null;
+    this.noticeEl.replaceChildren();
+    this.recording = false;
+    this.recPaused = false;
+    this.services.onRecordState(this);
     this.hostPopup = null;
     this.renderHostMenu();
     this.term.resizeGrid(24, 80);
@@ -423,7 +480,7 @@ export class SessionPane {
   }
 
   sendKey(k: string, ch?: string): void {
-    if (this.viewOnly) return; // a mirror's keyboard is decorative
+    if (!this.canDrive) return; // a mirror's keyboard is decorative
     this.term.clearSelection(); // typing abandons a marked region
     if (k === 'char' && ch !== undefined) {
       this.send({ t: 'key', k: 'char', ch });
@@ -477,6 +534,14 @@ export class SessionPane {
         this.setConnState('connecting');
         this.graceMs = typeof msg.graceMs === 'number' ? msg.graceMs : 0;
         if (typeof msg.systemId === 'number') this.systemId = msg.systemId;
+        this.myIdentity = typeof msg.you === 'string' && msg.you ? msg.you : null;
+        this.recording = msg.recording === true;
+        this.recPaused = false;
+        this.services.onRecordState(this);
+        const assist = msg.assist as { holder?: unknown; expiresAt?: unknown } | null | undefined;
+        this.ctrlGranted = false;
+        this.ctrlExpiresAt = typeof assist?.expiresAt === 'number' ? assist.expiresAt : 0;
+        this.renderAssistBar(typeof assist?.holder === 'string' ? assist.holder : null);
         if (typeof msg.shareToken === 'string' && msg.shareToken) {
           this.shareToken = msg.shareToken;
           this.shareBtn.disabled = false;
@@ -587,9 +652,51 @@ export class SessionPane {
         break;
       }
       case 'keyevent': {
-        // The session's owner pressed a key that does not echo as text;
-        // name it briefly so a mirror's viewer can keep up.
-        this.showKeyPressed(keyLabel(String(msg.k ?? '')));
+        // A non-printing key from the session's other side - the owner for a
+        // mirror, or (with a byline) the assist controller for the owner.
+        // Printable characters echo on the screen and never arrive here.
+        const k = String(msg.k ?? '');
+        const by = typeof msg.by === 'string' ? msg.by : '';
+        this.showKeyPressed(by ? `${keyLabel(k)} · ${by}` : keyLabel(k));
+        break;
+      }
+      case 'notice': {
+        // Server-side banner (maintenance, assist, console signal): chrome
+        // overlay, never painted into the 5250 buffer.
+        this.showNotice(String(msg.level ?? 'info'), String(msg.message ?? ''));
+        break;
+      }
+      case 'ctrlask': {
+        // The owner side of an assist request: consent modal.
+        this.showAssistAsk(String(msg.from ?? 'someone'), typeof msg.expiresInMs === 'number' ? msg.expiresInMs : 60000);
+        break;
+      }
+      case 'ctrlreply': {
+        // The requester side: granted (bar flips to "you have control") or
+        // refused with a reason worth showing.
+        if (msg.ok === true) {
+          this.ctrlGranted = true;
+          this.ctrlExpiresAt = typeof msg.expiresAt === 'number' ? msg.expiresAt : 0;
+          this.renderAssistBar(null, 'granted');
+        } else {
+          this.assistRefused(String(msg.reason ?? 'refused'));
+        }
+        break;
+      }
+      case 'ctrlstate': {
+        // Lease state for everyone: holder name (or null), expiry, whether
+        // this socket is the holder.
+        const holder = typeof msg.holder === 'string' && msg.holder ? msg.holder : null;
+        this.ctrlExpiresAt = typeof msg.expiresAt === 'number' ? msg.expiresAt : 0;
+        if (msg.mine === true) this.ctrlGranted = true;
+        else if (!holder) this.ctrlGranted = false;
+        this.renderAssistBar(holder, String(msg.reason ?? ''));
+        break;
+      }
+      case 'recstate': {
+        // Recording pause/resume by the owner (the player shows the gap).
+        this.recPaused = msg.paused === true;
+        this.services.onRecordState(this);
         break;
       }
       case 'openurl': {
@@ -617,6 +724,159 @@ export class SessionPane {
       this.keyTimer = undefined;
       this.keyEl.textContent = '';
     }, 2000);
+  }
+
+  // ------------------------------------------------------------ notices
+  /** Dismissible server banners: info 15 s, warn 45 s, urgent 90 s. */
+  private showNotice(level: string, message: string): void {
+    if (!message) return;
+    const banner = document.createElement('div');
+    banner.className = `pane-notice ${level === 'warn' || level === 'urgent' ? level : 'info'}`;
+    const text = document.createElement('span');
+    text.textContent = message;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.title = 'Dismiss';
+    x.textContent = '×';
+    x.addEventListener('click', () => banner.remove());
+    banner.append(text, x);
+    this.noticeEl.append(banner);
+    const ttl = level === 'urgent' ? 90000 : level === 'warn' ? 45000 : 15000;
+    window.setTimeout(() => banner.remove(), ttl);
+  }
+
+  // ------------------------------------------------------- remote assist
+  /** The assist bar's single action button, by role and state. */
+  private assistAction(): void {
+    if (this.ctrlGranted) {
+      this.send({ t: 'ctrlrelease' });
+      return;
+    }
+    if (this.viewOnly) {
+      this.send({ t: 'ctrlrequest' });
+      this.assistTextEl.textContent = 'Requesting control…';
+      this.assistBtnEl.disabled = true;
+      return;
+    }
+    this.send({ t: 'ctrlrevoke' });
+  }
+
+  /** Draw the assist bar for whoever this pane is right now. */
+  private renderAssistBar(holder: string | null, reason = ''): void {
+    window.clearTimeout(this.ctrlCountdown);
+    this.ctrlCountdown = undefined;
+    this.assistBtnEl.disabled = false;
+    const show = (text: string, btn: string, cls = ''): void => {
+      this.assistTextEl.textContent = text;
+      this.assistBtnEl.textContent = btn;
+      this.assistBtnEl.className = `assist-btn ${cls}`.trim();
+      this.assistEl.classList.remove('hidden');
+    };
+    if (this.ctrlGranted) {
+      show('', 'Release');
+      this.startCtrlCountdown('You have control');
+      return;
+    }
+    if (this.viewOnly) {
+      // Idle mirror: offer the request when the gateway allows assist.
+      void loadMeta().then((meta) => {
+        if (!meta?.assistEnabled || this.ctrlGranted) return;
+        show('View-only', 'Request control');
+      });
+      return;
+    }
+    if (holder) {
+      show(`Control shared with ${holder}`, 'Revoke', 'danger');
+      this.startCtrlCountdown(`Control shared with ${holder}`);
+      return;
+    }
+    this.assistEl.classList.add('hidden');
+  }
+
+  /** "… mm:ss" countdown until the lease expires (bar text). */
+  private startCtrlCountdown(prefix: string): void {
+    const tick = (): void => {
+      const left = Math.max(0, this.ctrlExpiresAt - Date.now());
+      if (left === 0) return; // expiry's ctrlstate clears the bar
+      const s = Math.ceil(left / 1000);
+      this.assistTextEl.textContent = `${prefix} · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      this.ctrlCountdown = window.setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  /** The request was refused - name the reason for two seconds. */
+  private assistRefused(reason: string): void {
+    this.assistEl.classList.remove('hidden');
+    this.assistTextEl.textContent =
+      reason === 'busy'
+        ? 'Someone else already has control'
+        : reason === 'no-owner'
+          ? 'The session owner is not present'
+          : reason === 'blocked'
+            ? 'The owner declined and blocked further requests'
+            : reason === 'denied'
+              ? 'The owner declined'
+              : reason === 'pending'
+                ? 'Another request is waiting for the owner'
+                : reason === 'timeout'
+                  ? 'The owner did not answer'
+                  : `Control refused (${reason})`;
+    this.assistBtnEl.textContent = 'Request control';
+    this.assistBtnEl.className = 'assist-btn';
+    window.clearTimeout(this.assistTimer);
+    this.assistTimer = window.setTimeout(() => this.renderAssistBar(null), 4000);
+  }
+
+  /** Owner-side consent modal for an incoming control request. */
+  private showAssistAsk(from: string, ttlMs: number): void {
+    this.assistAskEl?.remove();
+    const card = document.createElement('div');
+    card.className = 'assist-ask';
+    const p = document.createElement('p');
+    p.textContent = `${from} requests control of this session.`;
+    const small = document.createElement('small');
+    small.textContent = 'They will be able to type on this screen. You keep control and can revoke at any time.';
+    const row = document.createElement('div');
+    row.className = 'assist-ask-actions';
+    const mk = (label: string, cls: string, fn: () => void): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.className = cls;
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const done = (): void => {
+      card.remove();
+      this.assistAskEl = null;
+    };
+    row.append(
+      mk('Grant', 'primary', () => {
+        this.send({ t: 'assistreply', accept: true });
+        done();
+      }),
+      mk('Deny', 'ghost', () => {
+        this.send({ t: 'assistreply', accept: false });
+        done();
+      }),
+      mk('Deny + block 1h', 'ghost', () => {
+        this.send({ t: 'assistreply', accept: false, block: true });
+        done();
+      })
+    );
+    card.append(p, small, row);
+    this.screenEl.append(card);
+    this.assistAskEl = card;
+    window.setTimeout(() => {
+      if (this.assistAskEl === card) done();
+    }, Math.max(5000, Math.min(ttlMs, 60000)));
+  }
+
+  /** Owner gesture: pause / resume this session's recording. */
+  toggleRecordingPause(): void {
+    if (!this.recording) return;
+    this.send({ t: 'recpause', on: !this.recPaused });
   }
 
   // ----------------------------------------------------------------- OIA
@@ -721,7 +981,7 @@ export class SessionPane {
         });
         item.addEventListener('click', (e) => {
           e.stopPropagation();
-          if (state === 0x80 || this.viewOnly) return;
+          if (state === 0x80 || !this.canDrive) return;
           this.send({ t: 'pick', choice: i + 1 });
         });
         return item;
@@ -808,7 +1068,7 @@ export class SessionPane {
       if (e.button === 0) {
         if (this.hostPopupOpen()) {
           // click dismisses the host pull-down (a mirror keeps watching it)
-          if (!this.viewOnly) this.send({ t: 'pick', choice: 0 });
+          if (this.canDrive) this.send({ t: 'pick', choice: 0 });
         } else {
           // Start a possible mark; the previous one (if any) goes away. The
           // click itself is deferred to mouseup, where click-vs-drag is
@@ -845,7 +1105,7 @@ export class SessionPane {
       // Plain click: place the host cursor at the clicked cell (the gateway
       // applies the same freedom as arrow movement). A mirror keeps the
       // click local - its screen is driven by the session's owner.
-      if (anchor && !this.viewOnly) this.send({ t: 'key', k: 'click', r: anchor.r, c: anchor.c });
+      if (anchor && this.canDrive) this.send({ t: 'key', k: 'click', r: anchor.r, c: anchor.c });
     });
     // A drag that ends outside the window never sees the mouseup.
     window.addEventListener('blur', () => {
@@ -860,7 +1120,7 @@ export class SessionPane {
     this.screenEl.addEventListener('dblclick', (e) => {
       const clicked = hit(e);
       if (!clicked) return;
-      if (this.viewOnly || this.hostMouse.leftdouble === undefined) {
+      if (!this.canDrive || this.hostMouse.leftdouble === undefined) {
         this.term.selectWord(clicked.r, clicked.c);
         this.services.onSelectionCopied(this);
         return;
@@ -888,7 +1148,7 @@ export class SessionPane {
         }
         return;
       }
-      if (this.hostMouse.rightdown !== undefined && !e.shiftKey && !this.viewOnly) {
+      if (this.hostMouse.rightdown !== undefined && !e.shiftKey && this.canDrive) {
         const clicked = hit(e);
         if (clicked) this.send({ t: 'mouseevent', ev: 'rightdown', r: clicked.r, c: clicked.c });
         return;

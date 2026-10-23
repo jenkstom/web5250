@@ -19,6 +19,10 @@ export interface MenuSystem {
   viaProxy?: boolean;
   /** True on the public list: a gateway-owned printer session runs for this system. */
   printerEnabled?: boolean;
+  /** Present while a maintenance window blocks this system. */
+  maintenance?: { on: boolean; message: string; deadlineAt: number | null } | null;
+  /** True: sessions on this system are recorded for replay (admin flag). */
+  recording?: boolean;
   /** Present only on the admin editor's (authenticated) copy of the row. */
   proxyHost?: string | null;
   proxyPort?: number | null;
@@ -32,6 +36,8 @@ interface Meta {
   adminEnabled: boolean;
   allowCustomHost: boolean;
   showDiagButton?: boolean;
+  assistEnabled?: boolean;
+  identityHeader?: boolean;
   termTypes: string[];
   codePages: string[];
   defaults: { port: number; ssl: boolean; termType: string; codePage: string; devPrefix: string };
@@ -134,12 +140,19 @@ export function setSplitHandler(fn: (dir: 'h' | 'v') => void): void {
 }
 
 // -------------------------------------------------------------- rendering
+/** Maintenance suffix for a blocked system's menu row. */
+function maintLabel(s: MenuSystem): string {
+  const m = s.maintenance;
+  if (!m?.on) return '';
+  return m.deadlineAt ? ` · MAINTENANCE until ${new Date(m.deadlineAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ' · MAINTENANCE';
+}
+
 function render(): void {
   const list = $('menu-list');
   list.innerHTML = '';
   systems.forEach((s, i) => {
     const li = document.createElement('li');
-    li.className = 'menu-row' + (i === selected ? ' sel' : '');
+    li.className = 'menu-row' + (i === selected ? ' sel' : '') + (s.maintenance?.on ? ' maint' : '');
 
     const num = document.createElement('span');
     num.className = 'row-num';
@@ -160,7 +173,7 @@ function render(): void {
     sub.className = 'row-sub';
     sub.textContent =
       `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'} · ${s.termType} · ${s.codePage}` +
-      `${s.viaProxy ? ' · SOCKS5' : ''}${s.printerEnabled ? ' · printer' : ''}`;
+      `${s.viaProxy ? ' · SOCKS5' : ''}${s.printerEnabled ? ' · printer' : ''}${maintLabel(s)}`;
     main.appendChild(sub);
 
     li.append(num, main);
@@ -186,6 +199,12 @@ function select(i: number): void {
 
 function connectTo(i: number): void {
   const s = systems[i];
+  if (s?.maintenance?.on) {
+    const err = $('menu-error');
+    err.textContent = `${s.name} is in maintenance — ${s.maintenance.message}`;
+    err.classList.remove('hidden');
+    return;
+  }
   if (s && onSelect) {
     const cb = onSelect;
     onSelect = null;
@@ -476,6 +495,11 @@ class PanePicker {
   private connectTo(i: number): void {
     const s = this.rows[i];
     if (!s) return;
+    if (s.maintenance?.on) {
+      this.errEl.textContent = `${s.name} is in maintenance — ${s.maintenance.message}`;
+      this.errEl.classList.remove('hidden');
+      return;
+    }
     this.close();
     this.onPick(s);
   }
@@ -518,6 +542,7 @@ function closeAdmin(): void {
   $('admin-list-actions').classList.remove('hidden');
   hideFormError();
   transferNote(null);
+  stopConsolePoll();
   $('menu-option').focus();
 }
 
@@ -529,12 +554,14 @@ function showPinPane(): void {
   // Hidden when the server reports ADMIN_PIN is unset.
   $('admin-pin-note').classList.toggle('hidden', meta?.adminEnabled !== false);
   transferNote(null);
+  stopConsolePoll();
   window.setTimeout(() => $('admin-pin-input').focus(), 0);
 }
 
 function showEditorPane(): void {
   $('admin-pin').classList.add('hidden');
   $('admin-editor').classList.remove('hidden');
+  switchAdminTab('systems');
   void refreshAdminList();
 }
 
@@ -642,6 +669,364 @@ async function deleteSystem(s: MenuSystem, btn: HTMLButtonElement): Promise<void
   await refreshAdminList();
 }
 
+// ------------------------------------------------- console: tabs & sessions
+// Systems (the editor above), Sessions (live session table + maintenance
+// windows), Recordings and Audit share the admin PIN's bearer token. The
+// sessions table polls every 5 s while its tab is visible.
+
+let sessionsTimer: number | undefined;
+
+function stopConsolePoll(): void {
+  window.clearInterval(sessionsTimer);
+  sessionsTimer = undefined;
+}
+
+function switchAdminTab(tab: string): void {
+  stopConsolePoll();
+  for (const b of $('admin-tabs').querySelectorAll('button')) {
+    b.classList.toggle('active', (b as HTMLElement).dataset.tab === tab);
+  }
+  for (const t of ['systems', 'sessions', 'recordings', 'audit']) {
+    $(`admin-tab-${t}`).classList.toggle('hidden', t !== tab);
+  }
+  if (tab === 'sessions') {
+    void refreshSessions();
+    void refreshMaint();
+    sessionsTimer = window.setInterval(() => void refreshSessions(), 5000);
+  } else if (tab === 'recordings') {
+    void refreshRecordings();
+  } else if (tab === 'audit') {
+    void refreshAudit();
+  }
+}
+
+interface SessionRow {
+  id: string;
+  system: string | null;
+  devName: string | null;
+  identity: string | null;
+  signedOnUser: string | null;
+  state: string;
+  startedAt: number;
+  lastActivityAt: number;
+  viewers: number;
+  assist: { holder: string; expiresAt: number } | null;
+  recording: boolean;
+  ip: string | null;
+  graceEndsAt: number | null;
+}
+
+const fmtAgo = (ts: number): string => {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+};
+
+async function refreshSessions(): Promise<void> {
+  let rows: SessionRow[] = [];
+  try {
+    const res = await adminCall('GET', 'api/admin/sessions');
+    if (!res.ok) throw new Error(String(res.status));
+    rows = ((await res.json()) as { sessions: SessionRow[] }).sessions ?? [];
+  } catch {
+    return; // keep the last good table; the next poll retries
+  }
+  const list = $('sessions-list');
+  list.replaceChildren(
+    ...rows.map((s) => {
+      const li = document.createElement('li');
+      li.className = 'admin-row session-row';
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      const b = document.createElement('b');
+      b.textContent = `${s.devName ?? '(device pending)'}${s.signedOnUser ? ` · ${s.signedOnUser}` : ''}`;
+      const small = document.createElement('small');
+      const who = s.identity ?? s.ip ?? 'unknown origin';
+      const state =
+        s.state === 'grace'
+          ? `detached (grace ${Math.max(0, Math.round(((s.graceEndsAt ?? 0) - Date.now()) / 1000))}s)`
+          : s.state;
+      small.textContent =
+        `${s.system ?? 'no system'} · ${who} · ${state} · started ${fmtAgo(s.startedAt)} · active ${fmtAgo(s.lastActivityAt)}` +
+        `${s.viewers > 0 ? ` · ${s.viewers} viewer(s)` : ''}` +
+        `${s.assist ? ` · assist: ${s.assist.holder}` : ''}${s.recording ? ' · REC' : ''}`;
+      nm.append(b, small);
+
+      const mirror = document.createElement('button');
+      mirror.type = 'button';
+      mirror.textContent = 'Mirror';
+      mirror.title = 'Open a view-only window of this session (control can be requested from there)';
+      mirror.addEventListener('click', () => void mirrorSession(s, mirror));
+
+      const signal = document.createElement('button');
+      signal.type = 'button';
+      signal.textContent = 'Signal';
+      signal.title = 'Show a banner on this session';
+      signal.addEventListener('click', () => void signalSession(s));
+
+      const end = document.createElement('button');
+      end.type = 'button';
+      end.textContent = 'End';
+      end.className = 'danger';
+      end.title = 'End the host session now (releases the device and the user message queue)';
+      end.addEventListener('click', () => void endSession(s, end));
+
+      li.append(nm, mirror, signal, end);
+      return li;
+    })
+  );
+  const empty = $('sessions-empty');
+  if (rows.length === 0) {
+    empty.textContent = 'No live sessions.';
+    empty.classList.remove('hidden');
+  } else {
+    empty.classList.add('hidden');
+  }
+}
+
+/** Open a view-only mirror of a console session in a new tab. */
+async function mirrorSession(s: SessionRow, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  try {
+    const res = await adminCall('POST', `api/admin/sessions/${s.id}/view`);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as { shareToken: string };
+    const u = new URL(window.location.href);
+    for (const key of [...u.searchParams.keys()]) u.searchParams.delete(key);
+    u.searchParams.set('view', data.shareToken);
+    window.open(u.href, '_blank', 'noopener');
+  } catch {
+    window.alert('Could not open the mirror (the session may have ended).');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function signalSession(s: SessionRow): Promise<void> {
+  const message = window.prompt(`Banner text for ${s.devName ?? 'this session'}:`, '');
+  if (!message) return;
+  await adminCall('POST', `api/admin/sessions/${s.id}/signal`, { message, level: 'warn' });
+}
+
+async function endSession(s: SessionRow, btn: HTMLButtonElement): Promise<void> {
+  // Two-step confirm (same pattern as Del): the first click arms for 3 s.
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Sure?';
+    window.setTimeout(() => {
+      btn.dataset.armed = '';
+      btn.textContent = 'End';
+    }, 3000);
+    return;
+  }
+  btn.disabled = true;
+  await adminCall('POST', `api/admin/sessions/${s.id}/end`, { notice: 'Ended by the administrator.' });
+  await refreshSessions();
+}
+
+// ------------------------------------------------------ maintenance windows
+interface MaintView {
+  on: boolean;
+  message: string;
+  deadlineAt: number | null;
+}
+
+async function refreshMaint(): Promise<void> {
+  let views: { global: MaintView | null; systems: Record<string, MaintView> };
+  let rows: MenuSystem[];
+  try {
+    const [mRes, sRes] = await Promise.all([
+      adminCall('GET', 'api/admin/maintenance'),
+      adminCall('GET', 'api/admin/systems')
+    ]);
+    if (!mRes.ok || !sRes.ok) throw new Error('unavailable');
+    views = (await mRes.json()) as typeof views;
+    rows = ((await sRes.json()) as { systems: MenuSystem[] }).systems ?? [];
+  } catch {
+    $('maint-list').replaceChildren();
+    return;
+  }
+  const list = $('maint-list');
+  const row = (name: string, view: MaintView | null, systemId: number | null): HTMLElement => {
+    const li = document.createElement('li');
+    li.className = 'admin-row maint-row';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const b = document.createElement('b');
+    b.textContent = name;
+    const small = document.createElement('small');
+    small.textContent = view?.on
+      ? `ON — ${view.message}${view.deadlineAt ? ` · sessions end ${new Date(view.deadlineAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ' · no deadline'}`
+      : 'off — new sessions allowed';
+    nm.append(b, small);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = view?.on ? 'Stop' : 'Start';
+    btn.addEventListener('click', () => void setMaint(systemId, !view?.on));
+    li.append(nm, btn);
+    return li;
+  };
+  list.replaceChildren(
+    row('All systems (gateway-wide)', views.global, null),
+    ...rows.map((s) => row(s.name, views.systems[String(s.id)] ?? null, s.id))
+  );
+}
+
+async function setMaint(systemId: number | null, on: boolean): Promise<void> {
+  let message = 'Host maintenance';
+  let deadlineMs: number | null = null;
+  if (on) {
+    const typed = window.prompt('Message shown to users:', message);
+    if (typed === null) return;
+    message = typed.trim() || message;
+    const minsRaw = window.prompt('End existing sessions in how many minutes? (empty = block new sessions only)', '');
+    if (minsRaw !== null && minsRaw.trim() !== '') {
+      const mins = Number.parseFloat(minsRaw);
+      if (Number.isFinite(mins) && mins > 0) deadlineMs = Date.now() + mins * 60 * 1000;
+    }
+  }
+  const path = systemId === null ? 'api/admin/maintenance' : `api/admin/systems/${systemId}/maintenance`;
+  await adminCall('POST', path, { on, message, deadlineMs });
+  await refreshMaint();
+}
+
+// ------------------------------------------------------------- recordings
+interface RecMeta {
+  id: string;
+  systemName: string;
+  devName: string | null;
+  identity: string | null;
+  signedOnUser: string | null;
+  startedAt: number;
+  endedAt: number | null;
+  bytes: number;
+  frames: number;
+}
+
+const fmtSize = (bytes: number): string =>
+  bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+const fmtDur = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 3600
+    ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+    : `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
+};
+
+async function refreshRecordings(): Promise<void> {
+  let rows: RecMeta[] = [];
+  try {
+    const res = await adminCall('GET', 'api/admin/recordings');
+    if (!res.ok) throw new Error(String(res.status));
+    rows = ((await res.json()) as { recordings: RecMeta[] }).recordings ?? [];
+  } catch {
+    return;
+  }
+  $('recordings-list').replaceChildren(
+    ...rows.map((r) => {
+      const li = document.createElement('li');
+      li.className = 'admin-row';
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      const b = document.createElement('b');
+      b.textContent = `${r.systemName} · ${r.devName ?? 'device'}`;
+      const small = document.createElement('small');
+      small.textContent =
+        `${new Date(r.startedAt).toLocaleString([], { hour12: false })} · ` +
+        `${r.endedAt ? fmtDur(r.endedAt - r.startedAt) : 'live'} · ${fmtSize(r.bytes)} · ${r.frames} frames` +
+        `${r.identity ? ` · ${r.identity}` : ''}${r.signedOnUser ? ` · as ${r.signedOnUser}` : ''}`;
+      nm.append(b, small);
+
+      const play = document.createElement('button');
+      play.type = 'button';
+      play.textContent = 'Play';
+      play.disabled = !r.endedAt;
+      play.title = r.endedAt ? 'Open the replay player' : 'Still recording';
+      play.addEventListener('click', () => void playRecording(r.id, play));
+
+      const dl = document.createElement('button');
+      dl.type = 'button';
+      dl.textContent = 'Download';
+      dl.addEventListener('click', () => void downloadRecording(r.id));
+      li.append(nm, play, dl);
+      return li;
+    })
+  );
+}
+
+async function playRecording(id: string, btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  try {
+    const res = await adminCall('POST', `api/admin/recordings/${id}/link`);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as { token: string };
+    const u = new URL(window.location.href);
+    for (const key of [...u.searchParams.keys()]) u.searchParams.delete(key);
+    u.searchParams.set('replay', data.token);
+    window.open(u.href, '_blank', 'noopener');
+  } catch {
+    window.alert('Could not open the replay.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function downloadRecording(id: string): Promise<void> {
+  const res = await adminCall('GET', `api/admin/recordings/${id}/download`);
+  if (!res.ok) {
+    window.alert('Could not download the recording (retention may have removed it).');
+    return;
+  }
+  const blob = new Blob([await res.text()], { type: 'application/x-ndjson' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download =
+    /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? `recording-${id.slice(0, 8)}.jsonl`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ------------------------------------------------------------------ audit
+interface AuditRow {
+  ts: number;
+  actor: string;
+  action: string;
+  target: string;
+  detail: string;
+}
+
+async function refreshAudit(): Promise<void> {
+  let rows: AuditRow[] = [];
+  try {
+    const res = await adminCall('GET', 'api/admin/audit?limit=150');
+    if (!res.ok) throw new Error(String(res.status));
+    rows = ((await res.json()) as { entries: AuditRow[] }).entries ?? [];
+  } catch {
+    return;
+  }
+  $('audit-list').replaceChildren(
+    ...rows.map((r) => {
+      const li = document.createElement('li');
+      li.className = 'audit-row';
+      const ts = document.createElement('span');
+      ts.className = 'ts';
+      ts.textContent = new Date(r.ts).toLocaleString([], { hour12: false });
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = r.actor;
+      const act = document.createElement('span');
+      act.className = 'act';
+      act.textContent = r.action;
+      const tgt = document.createElement('span');
+      tgt.className = 'tgt';
+      tgt.textContent = [r.target, r.detail].filter(Boolean).join(' — ');
+      li.append(ts, who, act, tgt);
+      return li;
+    })
+  );
+}
+
 // -------------------------------------------------- export / import config
 function transferNote(msg: string | null): void {
   const el = $('admin-transfer-note');
@@ -735,6 +1120,7 @@ function fillForm(s: MenuSystem | null): void {
   $<HTMLInputElement>('f-printer').checked = s ? Boolean(s.printerEnabled) : false;
   $<HTMLInputElement>('f-printerdev').value = s?.printerDeviceName ?? 'WEB5250P';
   $<HTMLSelectElement>('f-printermode').value = s?.printerMode ?? 'text';
+  $<HTMLInputElement>('f-recording').checked = s ? Boolean(s.recording) : false;
 }
 
 function editSystem(s: MenuSystem): void {
@@ -762,7 +1148,8 @@ function formPayload(): Record<string, unknown> {
     proxyPass: $<HTMLInputElement>('f-proxypass').value,
     printerEnabled: $<HTMLInputElement>('f-printer').checked,
     printerDeviceName: $<HTMLInputElement>('f-printerdev').value,
-    printerMode: $<HTMLSelectElement>('f-printermode').value
+    printerMode: $<HTMLSelectElement>('f-printermode').value,
+    recording: $<HTMLInputElement>('f-recording').checked
   };
 }
 
@@ -856,6 +1243,13 @@ function initAdmin(): void {
     input.value = ''; // picking the same file twice must still fire change
     if (f) void importConfigFile(f);
   });
+
+  // Console tabs: Systems (the editor above) / Sessions / Recordings / Audit.
+  for (const b of $('admin-tabs').querySelectorAll('button')) {
+    b.addEventListener('click', () => switchAdminTab((b as HTMLElement).dataset.tab ?? 'systems'));
+  }
+  $('recordings-refresh').addEventListener('click', () => void refreshRecordings());
+  $('audit-refresh').addEventListener('click', () => void refreshAudit());
 
   // Escape closes the admin overlay from anywhere inside it.
   $('admin-modal').addEventListener('keydown', (e) => {

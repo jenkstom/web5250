@@ -958,3 +958,202 @@ button.primary { border-color: var(--green); color: var(--green); }
   /* The roomiest-pane heuristic stacks tall layouts on phones. */
   .split .splitter { flex-basis: 5px; }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Session console, remote assist, recording / replay (v1.1)
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Notices: server-side banners (maintenance, assist, console signal) */
+.pane-notices {
+  position: absolute;
+  top: 0.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  z-index: 30;
+  max-width: min(92%, 60rem);
+  pointer-events: none;
+}
+.pane-notice {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.9rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 0.86rem;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.pane-notice.warn { border-color: var(--warn); }
+.pane-notice.urgent { border-color: var(--err); color: #ffd9d9; }
+.pane-notice button {
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+.pane-notice button:hover { color: var(--text); }
+
+/* Remote assist bar + consent card */
+.assist-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.3rem 0.8rem;
+  background: rgba(17, 23, 19, 0.94);
+  border-top: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 0.85rem;
+  z-index: 35;
+}
+.assist-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assist-btn {
+  border: 1px solid var(--warn);
+  background: none;
+  color: var(--warn);
+  padding: 0.15rem 0.8rem;
+  font: inherit;
+  cursor: pointer;
+}
+.assist-btn:hover { background: var(--warn); color: #000; }
+.assist-btn.danger { border-color: var(--err); color: var(--err); }
+.assist-btn.danger:hover { background: var(--err); color: #000; }
+.assist-ask {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--panel);
+  border: 1px solid var(--warn);
+  padding: 1.1rem 1.3rem;
+  max-width: min(90%, 34rem);
+  z-index: 40;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+.assist-ask p { margin: 0 0 0.3rem; color: var(--text); }
+.assist-ask small { color: var(--dim); }
+.assist-ask-actions { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
+
+/* REC indicator (top bar) */
+#btn-rec { color: var(--err); }
+#btn-rec.paused { color: var(--dim); }
+
+/* Menu rows under maintenance */
+.menu-row.maint .row-name { text-decoration: line-through; color: var(--dim); }
+.menu-row.maint .row-sub { color: var(--warn); }
+
+/* Admin console tabs */
+.admin-tabs {
+  display: flex;
+  gap: 0.2rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.7rem;
+}
+.admin-tabs button {
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.admin-tabs button:hover { color: var(--text); }
+.admin-tabs button.active { color: var(--green); border-bottom-color: var(--green); }
+.panel-title.small { font-size: 0.8rem; margin: 0.8rem 0 0.4rem; }
+
+.session-row .nm small, .maint-row .nm small { display: block; }
+.maint-row.on b { color: var(--warn); }
+
+/* Audit trail rows */
+.audit-row {
+  display: flex;
+  gap: 0.8rem;
+  padding: 0.22rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+  list-style: none;
+}
+.audit-row .ts { color: var(--dim); white-space: nowrap; }
+.audit-row .who { color: var(--green); min-width: 9ch; overflow: hidden; text-overflow: ellipsis; }
+.audit-row .act { color: var(--warn); white-space: nowrap; }
+.audit-row .tgt { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+
+/* Session history modal */
+#history-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 1.1rem 1.3rem;
+  width: min(92vw, 44rem);
+  max-height: 80vh;
+  overflow: auto;
+}
+#history-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.35rem 0.2rem;
+  border-bottom: 1px solid var(--line);
+  list-style: none;
+}
+.history-row .nm { flex: 1; }
+.history-row .nm small { display: block; color: var(--dim); }
+
+/* Replay player */
+.player-pane { display: flex; flex-direction: column; min-height: 0; }
+.player-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.35rem 0.7rem;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.player-bar .primary { padding: 0.15rem 0.8rem; }
+.player-bar select { background: var(--bg); color: var(--text); border: 1px solid var(--line); }
+.player-bar input[type='range'] { flex: 1; }
+.player-time { color: var(--dim); white-space: nowrap; }
+.player-lane {
+  max-height: 9rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.player-lane-row {
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  padding: 0.12rem 0.8rem;
+  cursor: pointer;
+  list-style: none;
+}
+.player-lane-row:hover { color: var(--text); background: var(--panel); }
+.player-lane-row.key { color: var(--green); }
+.player-lane-row.warn { color: var(--warn); }
+.player-lane-row.urgent { color: var(--err); }
+.player-lane-row.assist { color: #ffb1e8; }
