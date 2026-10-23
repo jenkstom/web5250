@@ -169,10 +169,32 @@ printer session and is reused as-is.
   `QAUTOVRT` > 0 — printer sessions with a named DEVNAME are created
   device-type 3812 model 1 automatically. If auto-config is off/failed the
   startup response says `8940` / `2702`.
-- Printing to it: the device's output queue (`WRKOUTQ` on the device) or
-  `OVRPRTF + STRPRTWTR`, or spool files moved to that queue — the writer is
-  the host side of the printer session itself; a started printer session
-  **is** the writer (that is why the session must stay connected).
+- Printing to it: a printer device has no OUTQ parameter — the writer for
+  `DEV(WEB5250P)` (the attached telnet session itself) prints the output
+  queue **named like the device**, which CRTDEVPRT auto-created in QUSRSYS.
+  Route spool files with `OVRPRTF FILE(*PRTF) OUTQ(QUSRSYS/WEB5250P)`
+  before an `... OUTPUT(*PRINT)` command, or move existing files via WRKSPLF
+  option 2. `WRKCFGSTS` showing the device ACTIVE (not just VARIED ON) is
+  the signal that a session is attached and writing; a file sitting at
+  "Not assigned to printer" means no session is attached. Files with a
+  blank form type trigger the CPA3394 "Load form type" inquiry (writer
+  expects *STD, blank does not match) - scoped fixes, narrowest first:
+  give routed files an explicit form type (`OVRPRTF FILE(*PRTF)
+  OUTQ(QUSRSYS/WEB5250P) FORMTYPE(*STD)`, or CHGSPLFA on moved files);
+  `CHGWTR WTR(WEB5250P) FORMTYPE(*ALL) OPTION(*IMMED)` for the live
+  writer only (*IMMED, not *FILEEND - the parked file never ends, so a
+  *FILEEND change never activates; the writer is recreated picky on every
+  session reconnect); or, to automate without a system-wide reply list
+  entry, a break-handling CL on the device's own message queue. The blunt
+  instrument `ADDRPYLE MSGID(CPA3394) RPY(I)` auto-answers the inquiry
+  for EVERY printer on the system - use only where all printers are
+  virtual/unattended. Wide spooled files (WRKACTJOB prints 198 columns)
+  hit "attributes not supported, error code 1" on a 132-column 3812:
+  reply G to print folded, or `OVRPRTF FILE(QPDSPAJB) PAGESIZE(66 132)`
+  reflows the report to 132 at the source. Per-user default routing: `CHGUSRPRF USRPRF(x)
+  OUTQ(QUSRSYS/WEB5250P)` (applies at next sign-on, and only when the
+  sign-on job description says OUTQ(*USRPRF) - a JOBD naming a specific
+  queue wins; CHGJOB OUTQ() switches a running session live).
 
 ## 7. What this changes vs. the original plan
 
