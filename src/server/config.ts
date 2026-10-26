@@ -70,6 +70,10 @@ export interface Config {
   assistMaxMs: number;
   /** Remote assist: auto-release after this much assistant inactivity. */
   assistIdleMs: number;
+  /** Remote assist: how long an unanswered consent request waits. */
+  assistConsentMs: number;
+  /** Remote assist: what an unanswered consent request does at the timeout. */
+  assistConsentDefault: 'allow' | 'deny';
   /** Remote assist: let the admin take control without owner consent (audited). */
   adminAssistBreakglass: boolean;
   /** Session-recording retention: newest recordings kept (drop-oldest). */
@@ -161,6 +165,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     assistEnabled: bool(env.ASSIST_ENABLED, true),
     assistMaxMs: clampInt(env.ASSIST_MAX_MS, 10_000, 24 * 60 * 60 * 1000, 30 * 60 * 1000),
     assistIdleMs: clampInt(env.ASSIST_IDLE_MS, 10_000, 24 * 60 * 60 * 1000, 5 * 60 * 1000),
+    assistConsentMs: clampInt(env.ASSIST_CONSENT_TIMEOUT_MS, 1_000, 24 * 60 * 60 * 1000, 30_000),
+    assistConsentDefault: env.ASSIST_CONSENT_DEFAULT?.trim().toLowerCase() === 'deny' ? 'deny' : 'allow',
     adminAssistBreakglass: bool(env.ADMIN_ASSIST_BREAKGLASS, false),
     recordingsMaxCount: clampInt(env.RECORDINGS_MAX_COUNT, 1, 10000, 200),
     recordingsMaxBytes: clampInt(

@@ -480,6 +480,104 @@ async function main() {
     JSON.stringify((audit.entries ?? []).filter((e) => e.action.startsWith('assist.')))
   );
 
+  // ------------------------- 8. consent policy + break-glass session end
+  console.log('\n8. Consent policy and break-glass session end');
+  // Two small gateways with opposite consent policies; the second also
+  // enables break-glass so its takeover can end the whole session.
+  const policyGw = async (port, db, extra) => {
+    procs.push(spawn(process.execPath, ['dist/server.js'], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        PORT: String(port),
+        IBM_I_HOST: '127.0.0.1',
+        IBM_I_PORT: String(MOCK_PORT),
+        IBM_I_DEV_PREFIX: 'POL_',
+        IBM_I_TERM_TYPE: 'IBM-3477-FC',
+        IBM_I_CODEPAGE: 'cp037',
+        ADMIN_PIN,
+        TRUSTED_USER_HEADER: IDENTITY_HEADER,
+        ASSIST_CONSENT_TIMEOUT_MS: '1500',
+        SESSION_GRACE_MS: '20000',
+        WEB5250_DB: join(dataDir, db),
+        ...extra
+      }
+    }));
+    if (!(await waitHealthy(port))) throw new Error(`policy gateway on ${port} never became healthy`);
+    const auth = await (
+      await fetch(`http://127.0.0.1:${port}/api/admin/auth`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin: ADMIN_PIN }) })
+    ).json();
+    const sysId = (await (await fetch(`http://127.0.0.1:${port}/api/systems`)).json()).systems[0].id;
+    return { auth: auth.token, sysId };
+  };
+
+  const auditOf = async (port, token) =>
+    (await (await fetch(`http://127.0.0.1:${port}/api/admin/audit?limit=50`, { headers: { authorization: `Bearer ${token}` } })).json()).entries ?? [];
+
+  // deny: an unanswered request is declined at the timeout.
+  const g2 = await policyGw(HTTP_PORT + 1, 'policy-deny.db', { ASSIST_CONSENT_DEFAULT: 'deny' });
+  const oscar = await openClient(`ws://127.0.0.1:${HTTP_PORT + 1}/ws?system=${g2.sysId}&devname=POLICY`, 'oscar');
+  check('policy owner connected', await waitFor(() => oscar.text().includes('Sign On'), 8000));
+  const deb = await openClient(`ws://127.0.0.1:${HTTP_PORT + 1}/ws?view=${oscar.hello.shareToken}`, 'deb');
+  await sleep(300);
+  deb.sock.send(JSON.stringify({ t: 'ctrlrequest' }));
+  check(
+    'deny policy declines the unanswered request',
+    await waitFor(() => deb.has((m) => m.t === 'ctrlreply' && m.ok === false && m.reason === 'timeout'), 6000)
+  );
+  check('deny policy grants nothing', !deb.has((m) => m.t === 'ctrlreply' && m.ok === true));
+  check('deny timeout is audited', (await auditOf(HTTP_PORT + 1, g2.auth)).some((e) => e.action === 'assist.timeout'));
+  oscar.sock.close();
+  deb.sock.close();
+
+  // allow + break-glass: silence grants control; the takeover's End closes
+  // the whole session - the owner's socket and the takeover both die.
+  const g3 = await policyGw(HTTP_PORT + 3, 'policy-allow.db', {
+    ASSIST_CONSENT_DEFAULT: 'allow',
+    ADMIN_ASSIST_BREAKGLASS: '1'
+  });
+  const vera = await openClient(`ws://127.0.0.1:${HTTP_PORT + 3}/ws?system=${g3.sysId}&devname=ALLOWED`, 'vera');
+  check('allow owner connected', await waitFor(() => vera.text().includes('Sign On'), 8000));
+  const adm = await openClient(`ws://127.0.0.1:${HTTP_PORT + 3}/ws?view=${vera.hello.shareToken}`, 'deb');
+  await sleep(300);
+  adm.sock.send(JSON.stringify({ t: 'ctrlrequest' }));
+  check(
+    'allow policy auto-grants the unanswered request',
+    await waitFor(() => adm.has((m) => m.t === 'ctrlreply' && m.ok === true), 6000),
+    JSON.stringify(adm.msgs.filter((m) => m.t === 'ctrlreply'))
+  );
+  check('auto-grant is audited', (await auditOf(HTTP_PORT + 3, g3.auth)).some((e) => e.action === 'assist.auto-grant'));
+
+  // break-glass on a fresh session: instant control, End closes everything.
+  const vera2 = await openClient(`ws://127.0.0.1:${HTTP_PORT + 3}/ws?system=${g3.sysId}&devname=BREAKGLS`, 'vera');
+  check('second owner connected', await waitFor(() => vera2.text().includes('Sign On'), 8000));
+  const adm2 = await openClient(`ws://127.0.0.1:${HTTP_PORT + 3}/ws?view=${vera2.hello.shareToken}`, 'deb');
+  await sleep(300);
+  adm2.sock.send(JSON.stringify({ t: 'ctrlrequest', adminToken: g3.auth }));
+  check(
+    'break-glass grants control immediately',
+    await waitFor(() => adm2.has((m) => m.t === 'ctrlreply' && m.ok === true && m.breakglass === true), 5000)
+  );
+  key(adm2.sock, 'f3');
+  await sleep(200);
+  adm2.sock.send(JSON.stringify({ t: 'end' }));
+  check(
+    'admin End closes the owner session',
+    await waitFor(() => vera2.has((m) => m.t === 'status' && m.status !== 'connected'), 8000)
+  );
+  check(
+    'admin End closes the takeover too',
+    await waitFor(() => adm2.closed || adm2.has((m) => m.t === 'status' && m.status !== 'connected'), 8000)
+  );
+  check(
+    'takeover end is audited as the admin',
+    (await auditOf(HTTP_PORT + 3, g3.auth)).some(
+      (e) => e.action === 'session.end' && e.actor === 'deb' && String(e.detail).includes('break-glass')
+    )
+  );
+  vera.sock.close();
+  vera2.sock.close();
+
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   cleanup();
   process.exit(failures === 0 ? 0 : 1);

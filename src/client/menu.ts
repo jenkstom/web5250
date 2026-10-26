@@ -37,6 +37,8 @@ interface Meta {
   allowCustomHost: boolean;
   showDiagButton?: boolean;
   assistEnabled?: boolean;
+  /** Admin break-glass takeover available (ADMIN_ASSIST_BREAKGLASS). */
+  breakglass?: boolean;
   identityHeader?: boolean;
   termTypes: string[];
   codePages: string[];
@@ -512,8 +514,13 @@ class PanePicker {
 }
 
 // ------------------------------------------------------------------ admin
-const TOKEN_KEY = 'web5250.adminToken';
-let adminToken: string | null = sessionStorage.getItem(TOKEN_KEY);
+/**
+ * The admin token lives in localStorage (not sessionStorage) so a takeover
+ * mirror opened from the console - a separate tab - can present it for
+ * break-glass control. Server-side it expires after 8 hours.
+ */
+export const ADMIN_TOKEN_KEY = 'web5250.adminToken';
+let adminToken: string | null = localStorage.getItem(ADMIN_TOKEN_KEY);
 let editingId: number | null = null; // null = adding a new system
 
 async function adminCall(method: string, name: string, body?: unknown): Promise<Response> {
@@ -524,7 +531,7 @@ async function adminCall(method: string, name: string, body?: unknown): Promise<
   });
   if (res.status === 401 && adminToken) {
     adminToken = null;
-    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(ADMIN_TOKEN_KEY);
     showPinPane();
   }
   return res;
@@ -1222,7 +1229,7 @@ async function submitPin(): Promise<void> {
     }
     const data = (await res.json()) as { token: string };
     adminToken = data.token;
-    sessionStorage.setItem(TOKEN_KEY, adminToken);
+    localStorage.setItem(ADMIN_TOKEN_KEY, adminToken);
     input.value = '';
     showEditorPane();
   } catch {
@@ -1235,7 +1242,7 @@ function initAdmin(): void {
   $('admin-close').addEventListener('click', closeAdmin);
   $('admin-logout').addEventListener('click', () => {
     adminToken = null;
-    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(ADMIN_TOKEN_KEY);
     showPinPane();
   });
 

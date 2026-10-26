@@ -128,6 +128,7 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           allowCustomHost: cfg.allowCustomHost,
           showDiagButton: cfg.showDiagButton,
           assistEnabled: cfg.assistEnabled,
+          breakglass: cfg.adminAssistBreakglass,
           identityHeader: cfg.trustedUserHeader !== null,
           termTypes: TERM_TYPES,
           codePages: Ebcdic.availablePages(),

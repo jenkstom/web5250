@@ -1,6 +1,6 @@
 {
   "name": "web5250",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Web-to-5250 (TN5250) terminal gateway for IBM i / AS/400, designed to run behind the Pangolin reverse proxy",
   "type": "module",
   "license": "MIT",

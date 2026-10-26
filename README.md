@@ -238,6 +238,8 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `ASSIST_ENABLED` | Remote assist: viewers of a share link may request control | `true` |
 | `ASSIST_MAX_MS` | Remote assist: maximum control-lease duration | `1800000` (30 min) |
 | `ASSIST_IDLE_MS` | Remote assist: auto-release after this much controller inactivity | `300000` (5 min) |
+| `ASSIST_CONSENT_TIMEOUT_MS` | Remote assist: how long an unanswered consent request waits | `30000` (30 s) |
+| `ASSIST_CONSENT_DEFAULT` | What an unanswered request does: `allow` (auto-grant) or `deny` | `allow` |
 | `ADMIN_ASSIST_BREAKGLASS` | Admin may take control without owner consent (audited loudly) | `false` |
 | `RECORDINGS_MAX_COUNT` | Recording retention: newest recordings kept (drop-oldest) | `200` |
 | `RECORDINGS_MAX_BYTES` | Recording retention: total bytes kept | `524288000` (500 MB) |
@@ -543,8 +545,10 @@ with consent, and only for a while:
 
 1. The viewer clicks **Request control** on the mirror. The owner's screen
    shows a modal: *"BOB requests control of this session"* with
-   **Grant / Deny / Deny + block 1h**. A request nobody answers expires
-   after a minute; one pending request at a time.
+   **Grant / Deny / Deny + block 1h**. An unanswered request waits
+   `ASSIST_CONSENT_TIMEOUT_MS` (default 30 s) and then follows
+   `ASSIST_CONSENT_DEFAULT`: `allow` (default) grants control automatically,
+   `deny` declines it. One pending request at a time.
 2. On Grant, that viewer's socket gains the owner's input set — keys,
    SysReq, host-programmed mouse, pull-down picks — under a **lease**:
    bounded (`ASSIST_MAX_MS`), auto-released after `ASSIST_IDLE_MS` of
@@ -565,7 +569,11 @@ the stream existed — an assist session cannot leak a password, same as a
 colleague leaning over a shoulder never learns one. Admins assist through
 a session's Mirror like anyone else; with `ADMIN_ASSIST_BREAKGLASS=true`
 an authenticated console may take control *without* consent — every use
-lands in the audit log, which is why the default is off.
+lands in the audit log, which is why the default is off. A takeover is
+built for shutdown: its bar offers **End session**, which signs the host
+job off and closes every viewer (the takeover included), audited like the
+console End — so an unattended session the admin had to seize always ends
+cleanly instead of being hard-dropped or left signed on.
 
 Identity comes from `TRUSTED_USER_HEADER` (the header your edge sets after
 authenticating — Pangolin does): requests are named with it, sessions are

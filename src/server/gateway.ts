@@ -89,8 +89,6 @@ const LOCK_SAFE_KEYS = new Set(['reset', 'sysreq', 'attn', 'print']);
 // but never end the session.
 const CONTROL_INPUT = new Set(['key', 'sysreq', 'mouseevent', 'mouseprobe', 'pick']);
 
-// How long an unanswered control request keeps the owner's prompt up.
-const ASSIST_REQUEST_TTL_MS = 60_000;
 // "Deny + block" cooling-off after an owner refuses control.
 const ASSIST_BLOCK_MS = 60 * 60 * 1000;
 
@@ -155,6 +153,9 @@ export class HostSession {
   controller: GatewaySession | null = null;
   private controllerName: string | null = null;
   private ctrlExpiresAt = 0;
+  /** The lease was taken via admin break-glass (audited, may end the session). */
+  private ctrlBreakglass = false;
+  private adminEnded = false;
   private ctrlTimer: NodeJS.Timeout | null = null;
   private ctrlIdleTimer: NodeJS.Timeout | null = null;
   private pendingAssist: { viewer: GatewaySession; name: string; timer: NodeJS.Timeout } | null = null;
@@ -377,6 +378,21 @@ export class HostSession {
     this.destroy();
   }
 
+  /**
+   * Break-glass finish: the takeover's whole purpose is to shut an
+   * unattended session down, so the holder's End closes the host job - and
+   * with it every viewer, the takeover included. Banner first (the console
+   * End's 1.5 s grace), audited like the console End.
+   */
+  endByAdmin(): void {
+    if (this.adminEnded || this.destroyed) return;
+    this.adminEnded = true;
+    this.audit?.log(this.controllerName ?? 'administrator', 'session.end', this.devName ?? '', 'break-glass takeover');
+    this.notifyAll('urgent', 'Session ended by the administrator.');
+    const t = setTimeout(() => this.end(), 1500);
+    t.unref();
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -388,6 +404,7 @@ export class HostSession {
     this.clearAssistTimers();
     this.controller = null;
     this.controllerName = null;
+    this.ctrlBreakglass = false;
     this.recorder?.close();
     removeSession(this.token);
     this.automation?.destroy();
@@ -480,10 +497,17 @@ export class HostSession {
         reply(false, 'not-authorized');
         return;
       }
+      // A takeover supersedes any consent request still waiting: it can
+      // neither be answered nor auto-processed anymore.
+      if (this.pendingAssist) {
+        this.pendingAssist.viewer.send('ctrlreply', { ok: false, reason: 'busy' });
+        clearTimeout(this.pendingAssist.timer);
+        this.pendingAssist = null;
+      }
       const name = viewer.identity ?? 'administrator';
       this.audit?.log(name, 'assist.breakglass', this.devName ?? '', 'control granted without owner consent');
       console.log(`[ws] break-glass control of ${this.devName ?? ''} granted to ${name}`);
-      this.grantControl(viewer, name);
+      this.grantControl(viewer, name, true);
       return;
     }
     if (this.controller) {
@@ -504,15 +528,33 @@ export class HostSession {
     }
     const name = viewer.identity ?? 'a viewer';
     const timer = setTimeout(() => {
-      if (this.pendingAssist?.viewer === viewer) {
-        this.pendingAssist = null;
-        reply(false, 'timeout');
+      if (this.pendingAssist?.viewer !== viewer) return;
+      this.pendingAssist = null;
+      if (this.cfg.assistConsentDefault === 'allow') {
+        // Nobody answered and policy says silence is consent: grant the
+        // lease. Audited loudly - this bypassed a human decision.
+        this.audit?.log(
+          name,
+          'assist.auto-grant',
+          this.devName ?? '',
+          `no answer within ${Math.round(this.cfg.assistConsentMs / 1000)}s`
+        );
+        console.log(`[ws] assist: auto-granted ${this.devName ?? ''} to ${name} (consent timeout)`);
+        this.grantControl(viewer, name);
+        return;
       }
-    }, ASSIST_REQUEST_TTL_MS);
+      this.audit?.log(name, 'assist.timeout', this.devName ?? '');
+      reply(false, 'timeout');
+    }, this.cfg.assistConsentMs);
     timer.unref();
     this.pendingAssist = { viewer, name, timer };
     this.audit?.log(name, 'assist.request', this.devName ?? '');
-    for (const f of this.frontends) f.send('ctrlask', { from: name, expiresInMs: this.cfg.assistMaxMs });
+    for (const f of this.frontends)
+      f.send('ctrlask', {
+        from: name,
+        expiresInMs: this.cfg.assistConsentMs,
+        onTimeout: this.cfg.assistConsentDefault
+      });
   }
 
   /** The owner answered the consent prompt (assistreply). */
@@ -532,14 +574,20 @@ export class HostSession {
     this.audit?.log(pending.name, block ? 'assist.block' : 'assist.deny', this.devName ?? '', `by ${this.ownerName()}`);
   }
 
-  private grantControl(viewer: GatewaySession, name: string): void {
+  private grantControl(viewer: GatewaySession, name: string, breakglass = false): void {
+    if (this.controller) {
+      // A lease raced an auto-grant (or another grant path): one controller.
+      viewer.send('ctrlreply', { ok: false, reason: 'busy', holder: this.controllerName });
+      return;
+    }
     this.controller = viewer;
     this.controllerName = name;
+    this.ctrlBreakglass = breakglass;
     this.ctrlExpiresAt = Date.now() + this.cfg.assistMaxMs;
     this.armCtrlIdle();
     this.ctrlTimer = setTimeout(() => this.releaseControl('expired'), this.cfg.assistMaxMs);
     this.ctrlTimer.unref();
-    viewer.send('ctrlreply', { ok: true, expiresAt: this.ctrlExpiresAt });
+    viewer.send('ctrlreply', { ok: true, expiresAt: this.ctrlExpiresAt, breakglass });
     this.broadcastCtrlState('granted');
     console.log(`[ws] assist: ${name} controls ${this.devName ?? ''} until ${new Date(this.ctrlExpiresAt).toISOString()}`);
   }
@@ -551,6 +599,7 @@ export class HostSession {
     this.clearAssistTimers();
     this.controller = null;
     this.controllerName = null;
+    this.ctrlBreakglass = false;
     this.audit?.log(name, `assist.${reason}`, this.devName ?? '');
     this.broadcastCtrlState(reason);
   }
@@ -561,8 +610,10 @@ export class HostSession {
     this.releaseControl('revoked');
   }
 
-  get controllerView(): { holder: string; expiresAt: number } | null {
-    return this.controller ? { holder: this.controllerName ?? 'helper', expiresAt: this.ctrlExpiresAt } : null;
+  get controllerView(): { holder: string; expiresAt: number; breakglass: boolean } | null {
+    return this.controller
+      ? { holder: this.controllerName ?? 'helper', expiresAt: this.ctrlExpiresAt, breakglass: this.ctrlBreakglass }
+      : null;
   }
 
   /** Controller keystroke: push the idle auto-release horizon out again. */
@@ -845,6 +896,12 @@ export class GatewaySession {
         this.core.releaseControl('released');
         return;
       }
+      if (t === 'end') {
+        // Ending the session from a takeover is the break-glass payoff
+        // (shut the unattended job down); a consented helper never may.
+        if (this.hasControl && this.core.controllerView?.breakglass === true) this.core.endByAdmin();
+        return;
+      }
       if (this.hasControl && CONTROL_INPUT.has(t)) {
         if (t === 'sysreq') {
           this.core.touchControllerActivity();
@@ -1036,10 +1093,11 @@ export class GatewaySession {
   }
 
   /** Current assist lease, so late joiners and re-attachments render it. */
-  sendCtrlState(view: { holder: string; expiresAt: number } | null, mine: boolean, reason: string): void {
+  sendCtrlState(view: { holder: string; expiresAt: number; breakglass?: boolean } | null, mine: boolean, reason: string): void {
     this.send('ctrlstate', {
       holder: view?.holder ?? null,
       expiresAt: view?.expiresAt ?? null,
+      breakglass: view?.breakglass === true,
       mine,
       reason
     });

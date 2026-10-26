@@ -8,7 +8,7 @@
 // layout, focus and what "Systems" means (which pane the shared system menu
 // targets).
 import { Terminal, type OiaState } from './term.ts';
-import { displayName, loadMeta, type MenuSystem } from './menu.ts';
+import { displayName, loadMeta, ADMIN_TOKEN_KEY, type MenuSystem } from './menu.ts';
 
 export interface SessionTarget {
   system?: MenuSystem;
@@ -164,11 +164,14 @@ export class SessionPane {
   // ctrlGranted drives the session like the owner (server-enforced).
   ctrlGranted = false;
   private ctrlExpiresAt = 0;
+  /** The lease is ours via admin break-glass: an End-session action exists. */
+  private ctrlBreakglass = false;
   private ctrlCountdown: number | undefined;
   private assistTimer: number | undefined;
   private assistEl: HTMLDivElement;
   private assistTextEl: HTMLSpanElement;
   private assistBtnEl: HTMLButtonElement;
+  private assistEndBtnEl: HTMLButtonElement;
   private assistAskEl: HTMLDivElement | null = null;
   /** This browser's edge identity (hello 'you'), for naming key events. */
   myIdentity: string | null = null;
@@ -250,7 +253,8 @@ export class SessionPane {
 
     // Remote assist chrome: a slim bar (state + Revoke/Release/Request) and
     // a banner host for server notices. Both are overlays - never painted
-    // into the 5250 cell buffer.
+    // into the 5250 cell buffer. A break-glass takeover gets a second,
+    // destructive action: end the whole host session.
     this.assistEl = document.createElement('div');
     this.assistEl.className = 'assist-bar hidden';
     this.assistTextEl = document.createElement('span');
@@ -263,7 +267,20 @@ export class SessionPane {
       e.stopPropagation();
       this.assistAction();
     });
-    this.assistEl.append(this.assistTextEl, this.assistBtnEl);
+    this.assistEndBtnEl = document.createElement('button');
+    this.assistEndBtnEl.type = 'button';
+    this.assistEndBtnEl.className = 'assist-btn danger hidden';
+    this.assistEndBtnEl.textContent = 'End session';
+    this.assistEndBtnEl.title = 'End the host session (signs the user off and closes every viewer)';
+    this.assistEndBtnEl.addEventListener('mousedown', (e) => e.preventDefault());
+    this.assistEndBtnEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!window.confirm('End this session? The host job is signed off and every viewer is disconnected.')) return;
+      this.assistEndBtnEl.disabled = true;
+      this.assistBtnEl.disabled = true;
+      this.send({ t: 'end' });
+    });
+    this.assistEl.append(this.assistTextEl, this.assistBtnEl, this.assistEndBtnEl);
     this.noticeEl = document.createElement('div');
     this.noticeEl.className = 'pane-notices';
     this.screenEl.append(this.canvas, this.hostMenuEl, this.noticeEl, this.assistEl, this.overlayEl);
@@ -457,6 +474,7 @@ export class SessionPane {
     this.assistTimer = undefined;
     this.ctrlGranted = false;
     this.ctrlExpiresAt = 0;
+    this.ctrlBreakglass = false;
     this.assistEl.classList.add('hidden');
     this.assistAskEl?.remove();
     this.assistAskEl = null;
@@ -668,7 +686,11 @@ export class SessionPane {
       }
       case 'ctrlask': {
         // The owner side of an assist request: consent modal.
-        this.showAssistAsk(String(msg.from ?? 'someone'), typeof msg.expiresInMs === 'number' ? msg.expiresInMs : 60000);
+        this.showAssistAsk(
+          String(msg.from ?? 'someone'),
+          typeof msg.expiresInMs === 'number' ? msg.expiresInMs : 30000,
+          msg.onTimeout === 'deny' ? 'deny' : 'allow'
+        );
         break;
       }
       case 'ctrlreply': {
@@ -677,6 +699,7 @@ export class SessionPane {
         if (msg.ok === true) {
           this.ctrlGranted = true;
           this.ctrlExpiresAt = typeof msg.expiresAt === 'number' ? msg.expiresAt : 0;
+          this.ctrlBreakglass = msg.breakglass === true;
           this.renderAssistBar(null, 'granted');
         } else {
           this.assistRefused(String(msg.reason ?? 'refused'));
@@ -690,6 +713,7 @@ export class SessionPane {
         this.ctrlExpiresAt = typeof msg.expiresAt === 'number' ? msg.expiresAt : 0;
         if (msg.mine === true) this.ctrlGranted = true;
         else if (!holder) this.ctrlGranted = false;
+        this.ctrlBreakglass = this.ctrlGranted && msg.breakglass === true;
         this.renderAssistBar(holder, String(msg.reason ?? ''));
         break;
       }
@@ -753,9 +777,15 @@ export class SessionPane {
       return;
     }
     if (this.viewOnly) {
-      this.send({ t: 'ctrlrequest' });
-      this.assistTextEl.textContent = 'Requesting control…';
-      this.assistBtnEl.disabled = true;
+      // Attach the console's admin token when the gateway offers break-glass
+      // and this browser signed into the console: an absent owner then
+      // yields control immediately instead of timing out unanswered.
+      void loadMeta().then((meta) => {
+        const tok = meta?.breakglass ? localStorage.getItem(ADMIN_TOKEN_KEY) : null;
+        this.send(tok ? { t: 'ctrlrequest', adminToken: tok } : { t: 'ctrlrequest' });
+        this.assistTextEl.textContent = 'Requesting control…';
+        this.assistBtnEl.disabled = true;
+      });
       return;
     }
     this.send({ t: 'ctrlrevoke' });
@@ -766,15 +796,22 @@ export class SessionPane {
     window.clearTimeout(this.ctrlCountdown);
     this.ctrlCountdown = undefined;
     this.assistBtnEl.disabled = false;
-    const show = (text: string, btn: string, cls = ''): void => {
+    this.assistEndBtnEl.classList.add('hidden');
+    const show = (text: string, btn: string, cls = '', endBtn = false): void => {
       this.assistTextEl.textContent = text;
       this.assistBtnEl.textContent = btn;
       this.assistBtnEl.className = `assist-btn ${cls}`.trim();
+      this.assistEndBtnEl.classList.toggle('hidden', !endBtn);
       this.assistEl.classList.remove('hidden');
     };
     if (this.ctrlGranted) {
-      show('', 'Release');
-      this.startCtrlCountdown('You have control');
+      if (this.ctrlBreakglass) {
+        show('Administrator takeover', 'Release', '', true);
+        this.startCtrlCountdown('Administrator takeover');
+      } else {
+        show('', 'Release');
+        this.startCtrlCountdown('You have control');
+      }
       return;
     }
     if (this.viewOnly) {
@@ -819,8 +856,10 @@ export class SessionPane {
               ? 'The owner declined'
               : reason === 'pending'
                 ? 'Another request is waiting for the owner'
-                : reason === 'timeout'
-                  ? 'The owner did not answer'
+              : reason === 'timeout'
+                ? 'The owner did not answer'
+                : reason === 'not-authorized'
+                  ? 'Administrator sign-in expired — sign in to the console again'
                   : `Control refused (${reason})`;
     this.assistBtnEl.textContent = 'Request control';
     this.assistBtnEl.className = 'assist-btn';
@@ -829,7 +868,7 @@ export class SessionPane {
   }
 
   /** Owner-side consent modal for an incoming control request. */
-  private showAssistAsk(from: string, ttlMs: number): void {
+  private showAssistAsk(from: string, ttlMs: number, onTimeout: 'allow' | 'deny'): void {
     this.assistAskEl?.remove();
     const card = document.createElement('div');
     card.className = 'assist-ask';
@@ -837,6 +876,11 @@ export class SessionPane {
     p.textContent = `${from} requests control of this session.`;
     const small = document.createElement('small');
     small.textContent = 'They will be able to type on this screen. You keep control and can revoke at any time.';
+    const auto = document.createElement('small');
+    auto.textContent =
+      onTimeout === 'allow'
+        ? `If you do not answer, control is granted automatically in ${Math.round(ttlMs / 1000)} s.`
+        : `If you do not answer, the request is declined in ${Math.round(ttlMs / 1000)} s.`;
     const row = document.createElement('div');
     row.className = 'assist-ask-actions';
     const mk = (label: string, cls: string, fn: () => void): HTMLButtonElement => {
@@ -865,12 +909,12 @@ export class SessionPane {
         done();
       })
     );
-    card.append(p, small, row);
+    card.append(p, small, auto, row);
     this.screenEl.append(card);
     this.assistAskEl = card;
     window.setTimeout(() => {
       if (this.assistAskEl === card) done();
-    }, Math.max(5000, Math.min(ttlMs, 60000)));
+    }, Math.max(1000, ttlMs));
   }
 
   /** Owner gesture: start / stop this session's recording. */

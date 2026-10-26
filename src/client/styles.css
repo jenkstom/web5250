@@ -251,7 +251,7 @@ html, body {
 /* Overlay layers painted over the canvas carry real text; without this they
    inherit the canvas's line-height: 0 and their lines collapse onto each
    other (title over detail, glyphs over the banner border). */
-.pane-notices, .pane-overlay, .assist-bar { line-height: normal; }
+.pane-notices, .pane-overlay, .assist-bar, .assist-ask { line-height: normal; }
 
 /* Pane-scoped status overlay (connecting / ended / failed). */
 .pane-overlay {
