@@ -195,6 +195,24 @@ export class Recordings {
     return Number(res.changes) > 0;
   }
 
+  /**
+   * Console removal: file, metadata row and every replay token die together.
+   * A still-live recording must be stopped at its session first (see
+   * HostSession.stopRecording) so the writer lets go before the file does.
+   */
+  delete(id: string): RecordingMeta | null {
+    const meta = this.get(id);
+    if (!meta) return null;
+    try {
+      fs.rmSync(this.fileFor(id), { force: true });
+    } catch {
+      /* a missing file is already gone */
+    }
+    this.db.prepare('DELETE FROM recordings WHERE id = ?').run(id);
+    this.db.prepare('DELETE FROM replay_tokens WHERE recording_id = ?').run(id);
+    return meta;
+  }
+
   /** Drop-oldest retention: count, bytes, TTL. Live recordings are exempt. */
   private sweep(): void {
     const rows = this.db
@@ -212,15 +230,7 @@ export class Recordings {
         total -= Number(r.bytes);
       }
     });
-    for (const id of doomed) {
-      try {
-        fs.rmSync(this.fileFor(id), { force: true });
-      } catch {
-        /* a missing file is already gone */
-      }
-      this.db.prepare('DELETE FROM recordings WHERE id = ?').run(id);
-      this.db.prepare('DELETE FROM replay_tokens WHERE recording_id = ?').run(id);
-    }
+    for (const id of doomed) this.delete(id);
     if (doomed.size > 0) console.log(`[recording] retention sweep removed ${doomed.size} recording(s)`);
   }
 }
@@ -247,6 +257,11 @@ export class Recorder {
   ) {
     this.stream = fs.createWriteStream(file, { flags: 'ax' });
     this.stream.on('error', (e) => console.error(`[recording] write failed: ${String(e)}`));
+  }
+
+  /** The metadata row this writer feeds — lets the console find its session. */
+  get recordingId(): string {
+    return this.id;
   }
 
   setSignedOnUser(user: string): void {

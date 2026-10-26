@@ -948,7 +948,14 @@ async function refreshRecordings(): Promise<void> {
       dl.type = 'button';
       dl.textContent = 'Download';
       dl.addEventListener('click', () => void downloadRecording(r.id));
-      li.append(nm, play, dl);
+
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'danger';
+      rm.textContent = 'Remove';
+      rm.title = 'Delete this recording and its file';
+      rm.addEventListener('click', () => void removeRecording(r, rm));
+      li.append(nm, play, dl, rm);
       return li;
     })
   );
@@ -985,6 +992,29 @@ async function downloadRecording(id: string): Promise<void> {
     /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? `recording-${id.slice(0, 8)}.jsonl`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Console removal of one recording (a live one is stopped first). */
+async function removeRecording(r: RecMeta, btn: HTMLButtonElement): Promise<void> {
+  const live = r.endedAt === null;
+  if (
+    !window.confirm(
+      live
+        ? 'Stop this recording and delete everything captured so far?'
+        : 'Delete this recording? Its file and any replay links are removed.'
+    )
+  )
+    return;
+  btn.disabled = true;
+  try {
+    const res = await adminCall('DELETE', `api/admin/recordings/${r.id}`);
+    if (!res.ok && res.status !== 404) throw new Error(String(res.status));
+  } catch {
+    btn.disabled = false;
+    window.alert('The recording could not be removed.');
+    return;
+  }
+  void refreshRecordings();
 }
 
 // ------------------------------------------------------------------ audit
@@ -1251,8 +1281,18 @@ function initAdmin(): void {
   $('recordings-refresh').addEventListener('click', () => void refreshRecordings());
   $('audit-refresh').addEventListener('click', () => void refreshAudit());
 
-  // Escape closes the admin overlay from anywhere inside it.
-  $('admin-modal').addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeAdmin();
-  });
+  // Escape closes the admin overlay from anywhere: focus often stays outside
+  // it (on the ADMIN button that opened it, or on the page body), so a
+  // listener on the overlay itself never fires. Capture phase at document
+  // level, and swallow the event so the menu's own Escape (which would hide
+  // the whole menu underneath) doesn't act at the same time.
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Escape' || $('admin-modal').classList.contains('hidden')) return;
+      e.stopPropagation();
+      closeAdmin();
+    },
+    true
+  );
 }

@@ -120,8 +120,9 @@ export class HostSession {
   readonly graceMs: number;
   readonly client: Tn5250Client;
   readonly automation: Automation | null = null;
-  /** Session recorder (system recording enabled); null otherwise. */
-  readonly recorder: Recorder | null;
+  /** Session recorder (system recording enabled); null otherwise. The
+   * console can stop it (recording removed by the administrator). */
+  recorder: Recorder | null = null;
   /** IBM i user profile, captured from the sign-on screen's Enter. */
   signedOnUser: string | null = null;
   /** Edge identity of the current owning front-end (TRUSTED_USER_HEADER). */
@@ -419,6 +420,22 @@ export class HostSession {
     for (const f of this.frontends) f.sendNotice(level, message);
     for (const v of this.viewers) v.sendNotice(level, message);
     this.recorder?.event('notice', { level, message });
+  }
+
+  /**
+   * The console removed this session's recording: stop the writer and clear
+   * every client's REC indicator. The finalization UPDATE races with the
+   * row's deletion and must be harmless in either order (the store treats
+   * an UPDATE on a deleted row as a no-op).
+   */
+  stopRecording(): void {
+    if (!this.recorder) return;
+    const rec = this.recorder;
+    this.recorder = null;
+    rec.close();
+    console.log(`[ws] recording stopped by the console (session ${this.devName ?? ''})`);
+    for (const f of this.frontends) f.send('recstate', { recording: false });
+    for (const v of this.viewers) v.send('recstate', { recording: false });
   }
 
   // ---------------------------------------------------------- remote assist

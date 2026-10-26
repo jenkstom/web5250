@@ -313,7 +313,7 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | `GET /api/printer-status` | – | per-system printer session state (ready / connecting / error) |
 | `GET /api/printjobs` | – | spool jobs, newest first (token, system, device, size, pages, time) |
 | `GET /api/printjobs/<token>` | – | job download (content type by format; `no-store`) |
-| `DELETE /api/printjobs/<token>` | token | delete one job (retention usually suffices) |
+| `DELETE /api/printjobs/<token>` | – | delete one job (any spool viewer; audited) |
 | `POST /api/admin/auth` | PIN | `{pin}` → `{token}` (8 h bearer token) |
 | `POST /api/admin/systems` | token | create |
 | `PUT /api/admin/systems/<id>` | token | update |
@@ -332,6 +332,7 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | `GET /api/admin/recordings` | token | recording metadata, newest first |
 | `GET /api/admin/recordings/<id>/download` | token | raw JSONL event stream (attachment) |
 | `POST /api/admin/recordings/<id>/link` | token | mint a replay link |
+| `DELETE /api/admin/recordings/<id>` | token | delete one recording (a live one is stopped first) |
 | `DELETE /api/admin/replay/<token>` | token | revoke a replay link |
 | `GET /api/recordings/mine` | edge identity | the requesting user's own recordings |
 | `POST /api/replay/mint` | edge identity | mint a replay link for an own recording |
@@ -396,7 +397,10 @@ Jobs live in a bounded store on the data volume next to the SQLite DB
 `PRINTJOBS_MAX_BYTES` bytes per system (drop-oldest) and a
 `PRINTJOBS_TTL_MS` age limit, with the per-job download keyed by an
 unguessable token under the app's usual edge-authentication trust model.
-Job files never contain credentials.
+Job files never contain credentials. Anyone viewing the Spool window can
+also remove individual jobs (the gateway deletes the stored file and
+records the removal in the audit trail) — the shared list is readable by
+every gateway user, so removal follows the same visibility.
 
 ## Multiple sessions on one page
 
@@ -591,7 +595,9 @@ owner-only — mirrors cannot touch them.
   **History** button (needs `TRUSTED_USER_HEADER`, which is what makes
   "own" mean anything) and can mint replay links for their recordings.
 - **Admins** replay everything from the console's Recordings tab, download
-  JSONL, and mint links.
+  JSONL, mint links, and **Remove** recordings entirely (file, metadata and
+  every replay link die together; a still-live recording is stopped first,
+  which also clears the session's REC marker). Removal is audited.
 - **Replay links** are unguessable bearer tokens (`?replay=<token>`) under
   the same trust model as share links; they are revocable (console or by
   outliving their recording) and the player is the terminal renderer

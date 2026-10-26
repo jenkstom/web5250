@@ -383,13 +383,61 @@ async function main() {
   check('admin can revoke a replay link', revoked.status === 200);
   check('revoked link is dead', (await fetch(`${http}/api/replay/${link.token}`)).status === 404);
 
+  // ------------------------------------------------ 6b. recording removal
+  console.log('\n6b. Console removes recordings (live and finished)');
+  // Live first: carol connects on the recorded system and the console
+  // deletes her recording while it is still being written.
+  const carol = await openClient(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}&devname=DELREC`, 'carol');
+  check('carol session is recorded', carol.hello?.recording === true, JSON.stringify(carol.hello?.recording));
+  let liveRec = null;
+  check(
+    'live recording appears in the console list',
+    await waitFor(async () => {
+      const rows = (await (await fetch(`${http}/api/admin/recordings`, { headers: H })).json()).recordings;
+      liveRec = rows.find((r) => r.identity === 'carol' && r.endedAt === null) ?? null;
+      return liveRec !== null;
+    }, 8000)
+  );
+  const delLive = await fetch(`${http}/api/admin/recordings/${liveRec.id}`, { method: 'DELETE', headers: H });
+  check('console can delete a live recording', delLive.status === 200);
+  check(
+    'owner is told the recording stopped',
+    await waitFor(() => carol.has((m) => m.t === 'recstate' && m.recording === false), 5000)
+  );
+  check(
+    'deleted live recording leaves the list',
+    await waitFor(async () => {
+      const rows = (await (await fetch(`${http}/api/admin/recordings`, { headers: H })).json()).recordings;
+      return !rows.some((r) => r.id === liveRec.id);
+    }, 5000)
+  );
+  carol.sock.close();
+
+  // Finished: the alice recording (with a live replay token) dies completely.
+  const delDone = await fetch(`${http}/api/admin/recordings/${recording.id}`, { method: 'DELETE', headers: H });
+  check('console can delete a finished recording', delDone.status === 200);
+  check(
+    'finished recording leaves the list',
+    await waitFor(async () => {
+      const rows = (await (await fetch(`${http}/api/admin/recordings`, { headers: H })).json()).recordings;
+      return !rows.some((r) => r.id === recording.id);
+    }, 5000)
+  );
+  check('deleted recording download 404s', (await fetch(`${http}/api/admin/recordings/${recording.id}/download`, { headers: H })).status === 404);
+  check('minting for a deleted recording 404s', (await fetch(`${http}/api/admin/recordings/${recording.id}/link`, { method: 'POST', headers: H })).status === 404);
+  check('existing replay links die with it', (await fetch(`${http}/api/replay/${minted.token}`)).status === 404);
+  const delAgain = await fetch(`${http}/api/admin/recordings/${recording.id}`, { method: 'DELETE', headers: H });
+  check('deleting a gone recording is a JSON 404', delAgain.status === 404);
+  const delNoAuth = await fetch(`${http}/api/admin/recordings/${recording.id}`, { method: 'DELETE' });
+  check('recording delete requires the admin token', delNoAuth.status === 401);
+
   // ---------------------------------------------------------- 7. audit
   console.log('\n7. Audit trail');
   const audit = await (await fetch(`${http}/api/admin/audit?limit=200`, { headers: H })).json();
   const actions = new Set((audit.entries ?? []).map((e) => e.action));
   check(
     'audit records console, assist, maintenance and replay actions',
-    ['session.signal', 'assist.request', 'assist.grant', 'assist.revoked', 'maintenance.on', 'maintenance.drain', 'replay.link', 'replay.revoke'].every((a) =>
+    ['session.signal', 'assist.request', 'assist.grant', 'assist.revoked', 'maintenance.on', 'maintenance.drain', 'replay.link', 'replay.revoke', 'recording.delete'].every((a) =>
       actions.has(a)
     ),
     JSON.stringify([...actions])

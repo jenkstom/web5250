@@ -248,6 +248,11 @@ html, body {
 }
 .screen-canvas { display: block; }
 
+/* Overlay layers painted over the canvas carry real text; without this they
+   inherit the canvas's line-height: 0 and their lines collapse onto each
+   other (title over detail, glyphs over the banner border). */
+.pane-notices, .pane-overlay, .assist-bar { line-height: normal; }
+
 /* Pane-scoped status overlay (connecting / ended / failed). */
 .pane-overlay {
   position: absolute;
@@ -815,6 +820,19 @@ button.primary { border-color: var(--green); color: var(--green); }
 .spool-main small { color: var(--dim); font-size: 0.7rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spool-row button { font-size: 0.7rem; padding: 0.25rem 0.5rem; }
 .spool-row button:disabled { opacity: 0.3; cursor: default; }
+/* Destructive row actions (spool Remove, recordings Remove): red outline
+   that fills on hover, matching the app's ghost-button proportions. */
+.spool-row button.danger, .admin-row button.danger {
+  color: var(--err);
+  border-color: var(--err);
+}
+.spool-row button.danger:hover, .admin-row button.danger:hover {
+  background: var(--err);
+  color: #000;
+}
+.spool-row button.danger:disabled, .admin-row button.danger:disabled {
+  opacity: 0.3;
+}
 
 #spool-empty {
   color: var(--dim);
@@ -990,6 +1008,8 @@ button.primary { border-color: var(--green); color: var(--green); }
 }
 .pane-notice.warn { border-color: var(--warn); }
 .pane-notice.urgent { border-color: var(--err); color: #ffd9d9; }
+/* Long messages wrap inside the banner instead of pushing it wide. */
+.pane-notice > span { min-width: 0; overflow-wrap: anywhere; }
 .pane-notice button {
   border: 0;
   background: none;
@@ -1051,6 +1071,16 @@ button.primary { border-color: var(--green); color: var(--green); }
 /* Menu rows under maintenance */
 .menu-row.maint .row-name { text-decoration: line-through; color: var(--dim); }
 .menu-row.maint .row-sub { color: var(--warn); }
+/* A blocked row that is also the selected row: the bright green selection
+   wash makes the yellow marker unreadable (yellow on green), so selection
+   shows as a warning border and the text stays on the dark background. */
+.menu-row.maint.sel, .menu-row.maint.sel:hover {
+  background: none;
+  border-color: var(--warn);
+}
+.menu-row.maint.sel .row-num, .menu-row.maint.sel .row-desc { color: var(--dim); }
+.menu-row.maint.sel .row-name { color: var(--dim); }
+.menu-row.maint.sel .row-sub { color: var(--warn); }
 
 /* Admin console tabs */
 .admin-tabs {

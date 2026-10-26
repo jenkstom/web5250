@@ -168,7 +168,14 @@ function renderJobs(jobs: SpoolJob[]): void {
         window.open(api(`api/printjobs/${job.token}`), '_blank', 'noopener');
       });
 
-      li.append(main, print, dl);
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'danger';
+      rm.textContent = 'Remove';
+      rm.title = 'Delete this job from the gateway spool';
+      rm.addEventListener('click', () => void removeJob(job, rm));
+
+      li.append(main, print, dl, rm);
       return li;
     })
   );
@@ -192,6 +199,21 @@ function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Remove one job from the gateway spool (after a confirm; audited there). */
+async function removeJob(job: SpoolJob, btn: HTMLButtonElement): Promise<void> {
+  if (!window.confirm('Remove this spool item? It is deleted for everyone viewing the spool.')) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(api(`api/printjobs/${job.token}`), { method: 'DELETE' });
+    if (!res.ok && res.status !== 404) throw new Error(String(res.status));
+  } catch {
+    btn.disabled = false;
+    window.alert('The spool item could not be removed.');
+    return;
+  }
+  void refresh(); // redraws the list and the badge
 }
 
 /**

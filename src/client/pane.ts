@@ -694,8 +694,14 @@ export class SessionPane {
         break;
       }
       case 'recstate': {
-        // Recording pause/resume by the owner (the player shows the gap).
-        this.recPaused = msg.paused === true;
+        // Pause/resume by the owner; recording:false means the console
+        // removed the recording - the indicator goes away entirely.
+        if (msg.recording === false) {
+          this.recording = false;
+          this.recPaused = false;
+        } else {
+          this.recPaused = msg.paused === true;
+        }
         this.services.onRecordState(this);
         break;
       }

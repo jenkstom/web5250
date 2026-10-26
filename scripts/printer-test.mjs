@@ -234,17 +234,22 @@ await sleep(300);
   const adminRow = (await (await fetch(`${http}/api/admin/systems`, { headers: authHeaders })).json()).systems[0];
   check('admin row carries the printer fields', adminRow.printerEnabled === true && adminRow.printerDeviceName === DEVICE && adminRow.printerMode === 'text', JSON.stringify(adminRow));
 
-  // ---------------------------------------------------- delete is admin
+  // ------------------------------------------------ delete is a user action
   const del = await fetch(`${http}/api/printjobs/${job1.job.token}`, { method: 'DELETE' });
-  check('job delete requires the admin token', del.status === 401);
-  const delAuth = await fetch(`${http}/api/printjobs/${job1.job.token}`, { method: 'DELETE', headers: authHeaders });
-  check('admin can delete a job', delAuth.status === 200);
+  check('any spool viewer can delete a job', del.status === 200);
   check(
     'deleted job is gone from the list',
     await waitFor(async () => (await listJobs(GW_PORT)).length === 1, 5000),
     JSON.stringify(await listJobs(GW_PORT))
   );
   check('deleted job download 404s', (await fetch(`${http}/api/printjobs/${job1.job.token}`)).status === 404);
+  const auditEntries = (
+    await (await fetch(`${http}/api/admin/audit?limit=100`, { headers: authHeaders })).json()
+  ).entries;
+  const spoolDel = auditEntries.find((e) => e.action === 'spool.delete' && e.target === DEVICE);
+  check('spool deletion is audited', Boolean(spoolDel), JSON.stringify(auditEntries.slice(0, 5)));
+  const secondDel = await fetch(`${http}/api/printjobs/${job1.job.token}`, { method: 'DELETE' });
+  check('deleting a gone job is a JSON 404', secondDel.status === 404);
 }
 
 // ==================================================== 3. retention purge

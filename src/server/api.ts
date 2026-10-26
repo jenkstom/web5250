@@ -6,7 +6,7 @@
 //   GET    /api/printer-status              per-system printer session states
 //   GET    /api/printjobs                   spool jobs, newest first (public)
 //   GET    /api/printjobs/<token>           job download (unguessable token)
-//   DELETE /api/printjobs/<token>           delete job            (Bearer token)
+//   DELETE /api/printjobs/<token>           delete job (public, audited)
 //   POST   /api/admin/auth                  {pin} -> {token}
 //   GET    /api/admin/systems               full rows incl. proxy (Bearer token)
 //   POST   /api/admin/systems               create          (Bearer token)
@@ -26,6 +26,7 @@
 //   GET    /api/admin/recordings            recording metadata (Bearer token)
 //   GET    /api/admin/recordings/<id>/download  JSONL download (Bearer token)
 //   POST   /api/admin/recordings/<id>/link  mint a replay link (Bearer token)
+//   DELETE /api/admin/recordings/<id>       delete a recording (Bearer token)
 //   DELETE /api/admin/replay/<token>        revoke a replay link (Bearer token)
 //   GET    /api/recordings/mine             own recordings (TRUSTED_USER_HEADER)
 //   POST   /api/replay/mint                 mint own replay link (same header)
@@ -195,9 +196,23 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
     {
       method: 'DELETE',
       re: /(?:^|\/)api\/printjobs\/([0-9a-f]{32})\/?$/,
-      auth: true,
-      run: ({ res, deps, match }) => {
-        json(res, deps.printers.deleteJob(match[1]) ? 200 : 404, { ok: true });
+      auth: false,
+      run: ({ res, req, deps, match }) => {
+        // Removal is a spool-viewer action: the list (and every job on it)
+        // is already readable by every gateway user, so delete follows the
+        // same visibility. Logged so console users can see who removed what.
+        const found = deps.printers.jobFile(match[1]);
+        if (!found || !deps.printers.deleteJob(match[1])) {
+          json(res, 404, { error: 'no such job' });
+          return;
+        }
+        deps.audit.log(
+          identityOf(req) ?? 'user',
+          'spool.delete',
+          found.job.device,
+          `${found.job.bytes} bytes · ${found.job.format}`
+        );
+        json(res, 200, { ok: true });
       }
     },
     {
@@ -487,6 +502,30 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
         }
         deps.audit.log(actor(req), 'replay.link', match[1].slice(0, 8));
         json(res, 200, { token });
+      }
+    },
+    {
+      method: 'DELETE',
+      re: /(?:^|\/)api\/admin\/recordings\/([0-9a-f]+)\/?$/,
+      auth: true,
+      run: ({ res, req, deps, match }) => {
+        // A live recording is stopped at its session first: the writer lets
+        // go of the file and the owner's REC indicator clears.
+        const live = allSessions().find((s) => s.recorder?.recordingId === match[1]);
+        if (live) live.stopRecording();
+        const meta = deps.recordings.delete(match[1]);
+        if (!meta) {
+          json(res, 404, { error: 'no such recording' });
+          return;
+        }
+        deps.audit.log(
+          actor(req),
+          'recording.delete',
+          match[1].slice(0, 8),
+          `${meta.systemName}/${meta.devName ?? 'device'} · ${meta.bytes} bytes · ${meta.frames} frames` +
+            (meta.endedAt === null ? ' · was live' : '')
+        );
+        json(res, 200, { ok: true });
       }
     },
     {
