@@ -233,7 +233,8 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_PRINTER_MODE` | Seed printer delivery mode: `text` (extract plain text from SCS) or `raw` (store host-print-transform bytes, sniff `%PDF`/PCL) | `text` |
 | `PRINTJOBS_MAX_COUNT` | Spool-job retention: newest jobs kept per system (drop-oldest) | `200` |
 | `PRINTJOBS_MAX_BYTES` | Spool-job retention: total bytes kept per system (drop-oldest) | `104857600` (100 MB) |
-| `PRINTJOBS_TTL_MS` | Spool-job retention: age limit, swept periodically | `1209600000` (14 days) |
+| `PRINTJOBS_TTL_MS` | Spool-job retention: age limit, swept periodically and at boot | `2592000000` (30 days) |
+| `AUDIT_TTL_MS` | Audit-trail retention: rows older than this are pruned (a 5000-row cap bounds size on busy systems) | `2592000000` (30 days) |
 | `TRUSTED_USER_HEADER` | Edge-injected identity header (e.g. the header Pangolin sets). Stamps sessions with the user's identity (console, assist prompts, audit, History). Only safe when the container is reachable solely through the edge | – |
 | `ASSIST_ENABLED` | Remote assist: viewers of a share link may request control | `true` |
 | `ASSIST_MAX_MS` | Remote assist: maximum control-lease duration | `1800000` (30 min) |
@@ -522,7 +523,8 @@ The admin editor grows three tabs next to Systems (one PIN, one token):
 - **Audit** — who did what to which session, when: console actions,
   assist lifecycle (request / grant / deny / revoke / break-glass),
   maintenance transitions, replay-link minting. Append-only, bounded
-  (5000 entries), lives in the SQLite DB.
+  (5000 entries), lives in the SQLite DB; rows older than `AUDIT_TTL_MS`
+  (30 days) are pruned on a periodic sweep and at boot.
 
 Sessions are also maintenance control: the same tab starts and stops
 [windows](#maintenance-windows) per system or gateway-wide.
@@ -530,12 +532,14 @@ Sessions are also maintenance control: the same tab starts and stops
 ## Maintenance windows
 
 A maintenance window blocks *new* sessions on a system (or gateway-wide)
-while leaving running ones alone: the menu entry shows a MAINTENANCE line
-with the message, and a connect attempt is refused with the reason. With a
-deadline (minutes), the live sessions get banner warnings at T-10, T-5 and
-T-1 minutes and are ended at the bell — the host-backup / IPL ritual
-without having to walk anyone off. Window state is runtime-only by design:
-a gateway restart clears it, which is the safe failure direction. Every
+and asks everyone signed on to sign out immediately — they can sign back
+in when the window ends. The menu entry shows a MAINTENANCE line with the
+message, and a connect attempt is refused with the reason. With a
+deadline (minutes), the live sessions get banner reminders at T-10, T-5
+and T-1 minutes and any left running are ended at the bell — the
+host-backup / IPL ritual without having to walk anyone off. Window state
+is runtime-only by design: a gateway restart clears it, which is the safe
+failure direction. Every
 transition is audited.
 
 ## Remote assist
@@ -591,7 +595,10 @@ points), cell diffs, OIA states, statuses, named keys with their origin,
 notice and assist events — as one JSON frame per line on the data volume,
 with SQLite metadata. Retention mirrors the spool store: newest
 `RECORDINGS_MAX_COUNT` recordings, `RECORDINGS_MAX_BYTES` total,
-`RECORDINGS_TTL_MS` age, drop-oldest.
+`RECORDINGS_TTL_MS` age, drop-oldest. A restart also cleans up after a
+crash: recordings left live by a dead writer are finalized (aged from the
+file's last write) and files with no metadata row are removed, and one
+retention sweep runs at boot so nothing stale waits for the next tick.
 
 **A replay contains exactly what a view-only mirror would have seen —
 nothing more.** Password fields are blanked by the wire encoder *before*

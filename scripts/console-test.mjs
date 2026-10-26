@@ -5,9 +5,10 @@
 //
 // Usage: npm run build && npm run test:console
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { WebSocket } from 'ws';
 
 const MOCK_PORT = 18073;
@@ -497,7 +498,7 @@ async function main() {
         IBM_I_CODEPAGE: 'cp037',
         ADMIN_PIN,
         TRUSTED_USER_HEADER: IDENTITY_HEADER,
-        ASSIST_CONSENT_TIMEOUT_MS: '1500',
+        ASSIST_CONSENT_TIMEOUT_MS: '5000',
         SESSION_GRACE_MS: '20000',
         WEB5250_DB: join(dataDir, db),
         ...extra
@@ -523,7 +524,7 @@ async function main() {
   deb.sock.send(JSON.stringify({ t: 'ctrlrequest' }));
   check(
     'deny policy declines the unanswered request',
-    await waitFor(() => deb.has((m) => m.t === 'ctrlreply' && m.ok === false && m.reason === 'timeout'), 6000)
+    await waitFor(() => deb.has((m) => m.t === 'ctrlreply' && m.ok === false && m.reason === 'timeout'), 9000)
   );
   check('deny policy grants nothing', !deb.has((m) => m.t === 'ctrlreply' && m.ok === true));
   check('deny timeout is audited', (await auditOf(HTTP_PORT + 1, g2.auth)).some((e) => e.action === 'assist.timeout'));
@@ -543,7 +544,7 @@ async function main() {
   adm.sock.send(JSON.stringify({ t: 'ctrlrequest' }));
   check(
     'allow policy auto-grants the unanswered request',
-    await waitFor(() => adm.has((m) => m.t === 'ctrlreply' && m.ok === true), 6000),
+    await waitFor(() => adm.has((m) => m.t === 'ctrlreply' && m.ok === true), 9000),
     JSON.stringify(adm.msgs.filter((m) => m.t === 'ctrlreply'))
   );
   check('auto-grant is audited', (await auditOf(HTTP_PORT + 3, g3.auth)).some((e) => e.action === 'assist.auto-grant'));
@@ -577,6 +578,118 @@ async function main() {
   );
   vera.sock.close();
   vera2.sock.close();
+
+  // ---------------------------------------------------- 9. storage retention
+  // Everything on the data volume ages out at 30 days by default: audit rows,
+  // recording rows/files, spool-job files. Seed a DB with data the way a
+  // 40-day-old crashed instance would have left it and check the boot sweep.
+  console.log('\n9. Storage retention (30-day default)');
+  {
+    const DAY = 24 * 60 * 60 * 1000;
+    const old = Date.now() - 40 * DAY;
+    const fresh = Date.now() - 60 * 1000;
+    const retDb = join(dataDir, 'retention.db');
+    const oldEndedId = 'a'.repeat(32); // ended long ago: row + file swept
+    const oldLiveId = 'b'.repeat(32); // crash-orphaned live row, stale file
+    const freshLiveId = 'c'.repeat(32); // crash-orphaned live row, fresh file
+    const orphanId = 'd'.repeat(32); // file with no metadata row at all
+    const seed = new DatabaseSync(retDb);
+    seed.exec(`
+      CREATE TABLE IF NOT EXISTS audit (
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts     INTEGER NOT NULL,
+        actor  TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT ''
+      );
+      CREATE TABLE IF NOT EXISTS recordings (
+        id              TEXT PRIMARY KEY,
+        system_id       INTEGER NOT NULL,
+        system_name     TEXT NOT NULL,
+        dev_name        TEXT,
+        identity        TEXT,
+        signed_on_user  TEXT,
+        started_at      INTEGER NOT NULL,
+        ended_at        INTEGER,
+        bytes           INTEGER NOT NULL DEFAULT 0,
+        frames          INTEGER NOT NULL DEFAULT 0,
+        seq             INTEGER NOT NULL
+      );
+    `);
+    const insAudit = seed.prepare('INSERT INTO audit (ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)');
+    insAudit.run(old, 'seed', 'assist.grant', 'OLD', 'past the TTL');
+    insAudit.run(fresh, 'seed', 'assist.grant', 'KEEP', 'inside the TTL');
+    const insRec = seed.prepare(
+      'INSERT INTO recordings (id, system_id, system_name, started_at, ended_at, seq) VALUES (?, 7, ?, ?, ?, ?)'
+    );
+    insRec.run(oldEndedId, 'OLDENDED', old, old, 1);
+    insRec.run(oldLiveId, 'OLDLIVE', old, null, 2);
+    insRec.run(freshLiveId, 'FRESHLIVE', fresh, null, 3);
+    seed.close();
+
+    const recDir = join(dataDir, 'recordings');
+    mkdirSync(recDir, { recursive: true });
+    for (const [id, ts] of [
+      [oldEndedId, old],
+      [oldLiveId, old],
+      [freshLiveId, fresh],
+      [orphanId, fresh]
+    ]) {
+      const file = join(recDir, `${id}.jsonl`);
+      writeFileSync(file, '{"t":"screen"}\n');
+      utimesSync(file, new Date(ts), new Date(ts));
+    }
+    // Spool files recover from disk by name+mtime, so they exercise the
+    // printer TTL without any DB seeding.
+    const jobDir = join(dataDir, 'printjobs', '7');
+    mkdirSync(jobDir, { recursive: true });
+    const oldJob = join(jobDir, `${'e'.repeat(32)}.txt`);
+    const freshJob = join(jobDir, `${'f'.repeat(32)}.txt`);
+    for (const [file, ts] of [[oldJob, old], [freshJob, fresh]]) {
+      writeFileSync(file, 'SPOOL REPORT\n');
+      utimesSync(file, new Date(ts), new Date(ts));
+    }
+
+    const RET_PORT = HTTP_PORT + 5;
+    procs.push(
+      spawn(process.execPath, ['dist/server.js'], {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          PORT: String(RET_PORT),
+          IBM_I_HOST: '127.0.0.1',
+          IBM_I_PORT: String(MOCK_PORT),
+          ADMIN_PIN,
+          WEB5250_DB: retDb
+        }
+      })
+    );
+    check('retention gateway healthy', await waitHealthy(RET_PORT));
+
+    const after = new DatabaseSync(retDb);
+    const auditDetails = new Set(
+      after.prepare('SELECT detail FROM audit').all().map((r) => String(r.detail))
+    );
+    check('audit rows past the TTL are pruned at boot', !auditDetails.has('past the TTL'));
+    check('audit rows inside the TTL survive', auditDetails.has('inside the TTL'));
+    const recIds = new Map(
+      after.prepare('SELECT id, ended_at FROM recordings').all().map((r) => [String(r.id), r.ended_at])
+    );
+    check('TTL-expired recording row is swept', !recIds.has(oldEndedId));
+    check('crash-orphaned stale recording is finalized then swept', !recIds.has(oldLiveId));
+    check(
+      'crash-orphaned fresh recording is finalized, not swept',
+      recIds.has(freshLiveId) && recIds.get(freshLiveId) !== null,
+      JSON.stringify([...recIds])
+    );
+    after.close();
+    check('kept recording file survives its sweep', existsSync(join(recDir, `${freshLiveId}.jsonl`)));
+    check('recording file with no metadata row is removed', !existsSync(join(recDir, `${orphanId}.jsonl`)));
+    check('recording file of a swept row is removed', !existsSync(join(recDir, `${oldEndedId}.jsonl`)));
+    check('TTL-expired spool job file is swept at boot', !existsSync(oldJob));
+    check('fresh spool job file survives', existsSync(freshJob));
+  }
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   cleanup();

@@ -57,6 +57,8 @@ export interface Config {
   printjobsMaxBytes: number;
   /** Print-job retention: age limit, swept periodically. */
   printjobsTtlMs: number;
+  /** Audit-log retention: rows older than this are pruned on a periodic sweep. */
+  auditTtlMs: number;
   /**
    * Edge-injected identity header (e.g. the header Pangolin sets after
    * authenticating). When set, its value stamps every session as the
@@ -159,13 +161,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ibmPrinterMode: env.IBM_I_PRINTER_MODE === 'raw' ? 'raw' : 'text',
     printjobsMaxCount: clampInt(env.PRINTJOBS_MAX_COUNT, 1, 10000, 200),
     printjobsMaxBytes: clampInt(env.PRINTJOBS_MAX_BYTES, 1024, 16 * 1024 * 1024 * 1024, 100 * 1024 * 1024),
-    printjobsTtlMs: clampInt(env.PRINTJOBS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 14 * 24 * 60 * 60 * 1000),
+    printjobsTtlMs: clampInt(env.PRINTJOBS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000),
+    auditTtlMs: clampInt(env.AUDIT_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000),
     // HTTP header names arrive case-insensitively; normalize once here.
     trustedUserHeader: env.TRUSTED_USER_HEADER?.trim().toLowerCase() || null,
     assistEnabled: bool(env.ASSIST_ENABLED, true),
     assistMaxMs: clampInt(env.ASSIST_MAX_MS, 10_000, 24 * 60 * 60 * 1000, 30 * 60 * 1000),
     assistIdleMs: clampInt(env.ASSIST_IDLE_MS, 10_000, 24 * 60 * 60 * 1000, 5 * 60 * 1000),
-    assistConsentMs: clampInt(env.ASSIST_CONSENT_TIMEOUT_MS, 1_000, 24 * 60 * 60 * 1000, 30_000),
+    assistConsentMs: clampInt(env.ASSIST_CONSENT_TIMEOUT_MS, 5_000, 24 * 60 * 60 * 1000, 30_000),
     assistConsentDefault: env.ASSIST_CONSENT_DEFAULT?.trim().toLowerCase() === 'deny' ? 'deny' : 'allow',
     adminAssistBreakglass: bool(env.ADMIN_ASSIST_BREAKGLASS, false),
     recordingsMaxCount: clampInt(env.RECORDINGS_MAX_COUNT, 1, 10000, 200),

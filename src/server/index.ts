@@ -35,7 +35,7 @@ const printers = new Printers(cfg, systems);
 printers.start();
 // Console plumbing: audit trail, maintenance windows, session recordings,
 // and the admin PIN/token store (shared by the API and WS break-glass).
-const audit = new Audit(cfg.dbPath);
+const audit = new Audit(cfg.dbPath, cfg.auditTtlMs);
 const maintenance = new Maintenance(audit);
 const recordings = new Recordings(cfg);
 recordings.start();
@@ -357,6 +357,11 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(
     `menu: ${systems.list().length} system(s) configured (db: ${cfg.dbPath})` +
       `, admin ${cfg.adminPin ? 'enabled' : 'disabled (set ADMIN_PIN to enable)'}`
+  );
+  console.log(
+    `[assist] consent ${cfg.assistConsentMs} ms then ${cfg.assistConsentDefault.toUpperCase()}, ` +
+      `lease ${cfg.assistMaxMs} ms (idle ${cfg.assistIdleMs} ms), ` +
+      `break-glass ${cfg.adminAssistBreakglass ? 'ON' : 'off'}`
   );
 });
 

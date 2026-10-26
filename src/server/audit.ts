@@ -3,6 +3,8 @@
 // lifecycle (request/grant/deny/revoke/break-glass), and replay-link minting.
 // The point is accountability: the admin can already do everything the edge
 // lets it - the audit trail is what makes each use answerable after the fact.
+// Retention is two-sided: a row cap bounds size on a busy system, a TTL
+// bounds age on a quiet one (30 days by default, AUDIT_TTL_MS).
 import { DatabaseSync } from 'node:sqlite';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -21,8 +23,11 @@ const MAX_ROWS = 5000;
 
 export class Audit {
   private readonly db: DatabaseSync;
+  private readonly ttlMs: number;
+  private readonly sweepTimer: NodeJS.Timeout;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, ttlMs: number) {
+    this.ttlMs = ttlMs;
     const file = dbPath === ':memory:' ? ':memory:' : dbPath;
     if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
     // No journal_mode pragma here: Systems opens the same file first and
@@ -39,6 +44,9 @@ export class Audit {
         detail TEXT NOT NULL DEFAULT ''
       )
     `);
+    this.sweepExpired();
+    this.sweepTimer = setInterval(() => this.sweepExpired(), 15 * 60 * 1000);
+    this.sweepTimer.unref();
   }
 
   log(actor: string, action: string, target = '', detail = ''): void {
@@ -50,6 +58,12 @@ export class Audit {
     if (Number(row.m) % 500 === 0 && Number(row.m) > MAX_ROWS) {
       this.db.prepare('DELETE FROM audit WHERE id <= ?').run(Number(row.m) - MAX_ROWS);
     }
+  }
+
+  /** Drop rows past the TTL (boot + every 15 min); the insert prune stays. */
+  private sweepExpired(): void {
+    const res = this.db.prepare('DELETE FROM audit WHERE ts < ?').run(Date.now() - this.ttlMs);
+    if (Number(res.changes) > 0) console.log(`[audit] retention: pruned ${Number(res.changes)} row(s) past the TTL`);
   }
 
   list(opts: { limit?: number; action?: string; target?: string } = {}): AuditEntry[] {

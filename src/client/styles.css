@@ -1061,7 +1061,7 @@ button.primary { border-color: var(--green); color: var(--green); }
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
 }
 .assist-ask p { margin: 0 0 0.3rem; color: var(--text); }
-.assist-ask small { color: var(--dim); }
+.assist-ask small { display: block; color: var(--dim); }
 .assist-ask-actions { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
 
 /* REC control (top bar): dim while a recording can be started, red while

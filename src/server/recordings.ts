@@ -10,7 +10,9 @@
 //
 // Retention mirrors the print-job store: newest N recordings, total bytes,
 // and a TTL, drop-oldest, swept periodically. Live recordings (no endedAt
-// yet) are never swept - their writer still owns the file.
+// yet) are never swept - their writer still owns the file; a restart finds
+// no surviving writer, so boot finalizes the rows a crash left live and the
+// TTL applies from there.
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -101,8 +103,55 @@ export class Recordings {
   }
 
   start(): void {
+    // Crash leftovers first, then one sweep right away: retention must not
+    // wait up to 15 minutes to clean what a restart can see is already stale.
+    this.finalizeCrashOrphans();
+    this.sweep();
     this.sweepTimer = setInterval(() => this.sweep(), 15 * 60 * 1000);
     this.sweepTimer.unref();
+  }
+
+  /**
+   * A hard crash leaves two kinds of garbage no sweep can normally touch:
+   * live rows (their writer died before finish()), which the sweep exempts,
+   * and files whose metadata row was already deleted (a failed removal).
+   * No session survives a restart, so every live row at boot is orphaned —
+   * end it at the file's last write and let the sweep age it out; rowless
+   * files are invisible in every list, so they are simply removed.
+   */
+  private finalizeCrashOrphans(): void {
+    const rows = this.db
+      .prepare('SELECT id, started_at FROM recordings WHERE ended_at IS NULL')
+      .all() as unknown as { id: string; started_at: number }[];
+    for (const r of rows) {
+      let ended = Number(r.started_at);
+      try {
+        ended = Math.max(ended, fs.statSync(this.fileFor(String(r.id))).mtimeMs);
+      } catch {
+        /* the file was never written */
+      }
+      this.db.prepare('UPDATE recordings SET ended_at = ? WHERE id = ? AND ended_at IS NULL').run(ended, String(r.id));
+    }
+    if (rows.length > 0) console.log(`[recording] finalized ${rows.length} recording(s) orphaned by a crash`);
+    let known: Set<string>;
+    try {
+      known = new Set(this.list().map((m) => m.id));
+    } catch {
+      return;
+    }
+    let files: fs.Dirent[];
+    try {
+      files = fs.readdirSync(this.root, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    let dropped = 0;
+    for (const f of files) {
+      if (!f.isFile() || known.has(f.name.replace(/\.jsonl$/, '')) || !f.name.endsWith('.jsonl')) continue;
+      fs.rmSync(path.join(this.root, f.name), { force: true });
+      dropped++;
+    }
+    if (dropped > 0) console.log(`[recording] removed ${dropped} recording file(s) with no metadata row`);
   }
 
   fileFor(id: string): string {

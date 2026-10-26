@@ -70,8 +70,8 @@ export class Maintenance {
       systemId,
       'warn',
       deadlineAt
-        ? `${runtime.message} — sessions on this system end at ${fmtTime(deadlineAt)}. Please sign off before then.`
-        : `${runtime.message} — new sessions are blocked until further notice.`
+        ? `${runtime.message} — please sign out now. Any sessions still running will be ended at ${fmtTime(deadlineAt)}; you can sign back in when maintenance ends.`
+        : `${runtime.message} — please sign out now; new sign-ons are blocked until maintenance ends.`
     );
     if (deadlineAt) {
       const until = deadlineAt - Date.now();
@@ -80,7 +80,11 @@ export class Maintenance {
         if (delay > 0) {
           runtime.timers.push(
             setTimeout(() => {
-              this.notifyScope(systemId, level, `${runtime.message} — sessions end in ${offset / 60000} min.`);
+              this.notifyScope(
+                systemId,
+                level,
+                `${runtime.message} — please sign out now; any sessions left running are ended in ${offset / 60000} min.`
+              );
             }, delay)
           );
         }
@@ -88,7 +92,11 @@ export class Maintenance {
       runtime.timers.push(
         setTimeout(() => {
           const doomed = this.scope(systemId);
-          this.notifyScope(systemId, 'urgent', `${runtime.message} — ending sessions now.`);
+          this.notifyScope(
+            systemId,
+            'urgent',
+            `${runtime.message} — ending sessions now. You can sign back in when maintenance ends.`
+          );
           for (const s of doomed) s.end();
           this.audit.log('admin', 'maintenance.drain', this.targetOf(systemId), `${doomed.length} session(s) ended`);
         }, until)

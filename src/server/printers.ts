@@ -82,6 +82,8 @@ export class Printers {
   start(): void {
     this.recoverJobs();
     this.sync();
+    // Recovered files age out now, not on the first 15-minute tick.
+    this.sweepExpired();
     this.sweepTimer = setInterval(() => this.sweepExpired(), 15 * 60 * 1000);
     this.sweepTimer.unref();
   }
