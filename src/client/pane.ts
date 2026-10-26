@@ -172,9 +172,9 @@ export class SessionPane {
   private assistAskEl: HTMLDivElement | null = null;
   /** This browser's edge identity (hello 'you'), for naming key events. */
   myIdentity: string | null = null;
-  /** Session recording is on (system opt-in): REC indicator + pause. */
+  /** Recording: active now / available to start (system opt-in). */
   recording = false;
-  recPaused = false;
+  recAvailable = false;
   /** Server-side banners (maintenance, assist): stacked, dismissible. */
   private noticeEl: HTMLDivElement;
 
@@ -462,7 +462,7 @@ export class SessionPane {
     this.assistAskEl = null;
     this.noticeEl.replaceChildren();
     this.recording = false;
-    this.recPaused = false;
+    this.recAvailable = false;
     this.services.onRecordState(this);
     this.hostPopup = null;
     this.renderHostMenu();
@@ -536,7 +536,7 @@ export class SessionPane {
         if (typeof msg.systemId === 'number') this.systemId = msg.systemId;
         this.myIdentity = typeof msg.you === 'string' && msg.you ? msg.you : null;
         this.recording = msg.recording === true;
-        this.recPaused = false;
+        this.recAvailable = msg.recordingAllowed === true;
         this.services.onRecordState(this);
         const assist = msg.assist as { holder?: unknown; expiresAt?: unknown } | null | undefined;
         this.ctrlGranted = false;
@@ -694,14 +694,8 @@ export class SessionPane {
         break;
       }
       case 'recstate': {
-        // Pause/resume by the owner; recording:false means the console
-        // removed the recording - the indicator goes away entirely.
-        if (msg.recording === false) {
-          this.recording = false;
-          this.recPaused = false;
-        } else {
-          this.recPaused = msg.paused === true;
-        }
+        // Owner start/stop, or the console removing a live recording.
+        this.recording = msg.recording === true;
         this.services.onRecordState(this);
         break;
       }
@@ -879,10 +873,10 @@ export class SessionPane {
     }, Math.max(5000, Math.min(ttlMs, 60000)));
   }
 
-  /** Owner gesture: pause / resume this session's recording. */
-  toggleRecordingPause(): void {
-    if (!this.recording) return;
-    this.send({ t: 'recpause', on: !this.recPaused });
+  /** Owner gesture: start / stop this session's recording. */
+  toggleRecording(): void {
+    if (this.recording) this.send({ t: 'recstop' });
+    else if (this.recAvailable) this.send({ t: 'recstart' });
   }
 
   // ----------------------------------------------------------------- OIA

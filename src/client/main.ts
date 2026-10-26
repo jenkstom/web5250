@@ -467,12 +467,8 @@ const paneServices: PaneServices = {
     fitPanes();
   },
   onRecordState(pane) {
-    if (pane !== activePane) {
-      // A pane going away (cleanup) must clear the indicator even unfocused.
-      if (pane.recording) return;
-      if (!activePane?.recording) updateRecButton();
-      return;
-    }
+    // The button always mirrors the focused pane; an unfocused pane's
+    // change (cleanup, console removal) just triggers that same repaint.
     updateRecButton();
   },
   onAutoEnd(reason, detail) {
@@ -1226,16 +1222,17 @@ if (!autoLaunch && !shareView) {
 function updateRecButton(): void {
   const btn = $('btn-rec');
   const p = activePane;
-  if (!p?.recording) {
+  if (!p?.recording && !p?.recAvailable) {
     btn.classList.add('hidden');
     return;
   }
   btn.classList.remove('hidden');
-  btn.textContent = p.recPaused ? 'REC paused' : '● REC';
-  btn.classList.toggle('paused', p.recPaused);
+  btn.textContent = p.recording ? '● REC' : 'REC';
+  btn.title = p.recording ? 'Recording — click to stop' : 'Start recording this session';
+  btn.classList.toggle('recording', p.recording);
 }
 $('btn-rec').addEventListener('click', () => {
-  activePane?.toggleRecordingPause();
+  activePane?.toggleRecording();
 });
 
 // Spool: host-printed jobs (printer sessions). The button hides itself

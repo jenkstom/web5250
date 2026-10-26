@@ -1064,9 +1064,10 @@ button.primary { border-color: var(--green); color: var(--green); }
 .assist-ask small { color: var(--dim); }
 .assist-ask-actions { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
 
-/* REC indicator (top bar) */
-#btn-rec { color: var(--err); }
-#btn-rec.paused { color: var(--dim); }
+/* REC control (top bar): dim while a recording can be started, red while
+   one is running. */
+#btn-rec { color: var(--dim); }
+#btn-rec.recording { color: var(--err); }
 
 /* Menu rows under maintenance */
 .menu-row.maint .row-name { text-decoration: line-through; color: var(--dim); }

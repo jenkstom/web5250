@@ -120,9 +120,12 @@ export class HostSession {
   readonly graceMs: number;
   readonly client: Tn5250Client;
   readonly automation: Automation | null = null;
-  /** Session recorder (system recording enabled); null otherwise. The
+  /** Active session recorder; null while nothing is being recorded. The
    * console can stop it (recording removed by the administrator). */
   recorder: Recorder | null = null;
+  /** Recording is configured for this system: the owner may start one. */
+  recordingAllowed = false;
+  private readonly recordings: Recordings | undefined;
   /** IBM i user profile, captured from the sign-on screen's Enter. */
   signedOnUser: string | null = null;
   /** Edge identity of the current owning front-end (TRUSTED_USER_HEADER). */
@@ -161,6 +164,7 @@ export class HostSession {
     this.cfg = cfg;
     this.audit = svcs?.audit;
     this.adminAuth = svcs?.adminAuth;
+    this.recordings = svcs?.recordings;
     this.identity = svcs?.identity ?? null;
     this.clientIp = svcs?.clientIp ?? null;
     // Connection parameters resolve in order: explicit URL overrides
@@ -256,18 +260,9 @@ export class HostSession {
     this.client.onScreenChange = () => this.onScreenChange();
 
     // Recording is a property of the system entry (like the printer session):
-    // opt-in per system in the admin editor. Sessions without a menu system
-    // (custom hosts) are never recorded.
-    this.recorder =
-      system?.recording && svcs?.recordings
-        ? svcs.recordings.createRecorder({
-            systemId: system.id,
-            systemName: system.name,
-            devName: this.devName,
-            identity: this.identity
-          })
-        : null;
-    if (this.recorder) console.log(`[ws] recording session ${this.devName ?? ''} (system ${system!.name})`);
+    // opt-in per system in the admin editor. It is *available*, never
+    // automatic — nothing is captured until the owner starts it (startRecording).
+    this.recordingAllowed = Boolean(system?.recording) && Boolean(svcs?.recordings);
 
     registerSession(this);
   }
@@ -436,6 +431,35 @@ export class HostSession {
     console.log(`[ws] recording stopped by the console (session ${this.devName ?? ''})`);
     for (const f of this.frontends) f.send('recstate', { recording: false });
     for (const v of this.viewers) v.send('recstate', { recording: false });
+  }
+
+  /**
+   * The owner clicked REC: begin capturing now. A full snapshot is written
+   * immediately so the replay seeks correctly even though the recording
+   * starts mid-session (the broadcast loop alone only snapshots on screen
+   * structure changes). Audited; mirrored to every client's indicator.
+   */
+  startRecording(): void {
+    if (this.recorder || !this.recordingAllowed || !this.recordings) return;
+    this.recorder = this.recordings.createRecorder({
+      systemId: this.systemId!,
+      systemName: this.systemName!,
+      devName: this.devName,
+      identity: this.identity
+    });
+    this.recorder.snapshot(screenPayload(this.screen));
+    console.log(`[ws] recording started by the user (session ${this.devName ?? ''})`);
+    this.audit?.log(this.identity ?? 'user', 'recording.start', this.devName ?? '', this.systemName ?? '');
+    for (const f of this.frontends) f.send('recstate', { recording: true });
+    for (const v of this.viewers) v.send('recstate', { recording: true });
+  }
+
+  /** The owner clicked REC again (console removal audits recording.delete
+   * instead and calls stopRecording() directly). */
+  stopRecordingByOwner(): void {
+    if (!this.recorder) return;
+    this.stopRecording();
+    this.audit?.log(this.identity ?? 'user', 'recording.stop', this.devName ?? '', '');
   }
 
   // ---------------------------------------------------------- remote assist
@@ -742,6 +766,7 @@ export class GatewaySession {
       graceMs: this.core.graceMs,
       you: this.identity,
       recording: Boolean(this.core.recorder),
+      recordingAllowed: this.core.recordingAllowed,
       assist: this.core.controllerView,
       signedOnUser: this.core.signedOnUser,
       rows: this.core.screen.rows,
@@ -857,9 +882,10 @@ export class GatewaySession {
       this.core.revokeControl(this);
       return;
     }
-    if (t === 'recpause') {
-      // Recording indicator / pause belongs to the owner alone.
-      if (this.core.recorder) this.core.recorder.setPaused(msg.on === true);
+    if (t === 'recstart' || t === 'recstop') {
+      // Recording start/stop belongs to the owner alone.
+      if (t === 'recstart') this.core.startRecording();
+      else this.core.stopRecordingByOwner();
       return;
     }
     if (t === 'ping') {

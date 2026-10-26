@@ -574,8 +574,10 @@ Only set it when the container is reachable solely through the edge.
 
 ## Session recording & replay
 
-A system with **Recording** enabled in the admin editor records every
-session on it: the gateway stores exactly the outbound wire stream — full
+A system with **Recording** enabled in the admin editor lets its users
+record sessions. Nothing is captured by default: the owner clicks the
+top-bar **REC** button to start and clicks it again to stop. While a
+recording runs, the gateway stores exactly the outbound wire stream — full
 screen snapshots (one per host screen; these are the player's seek
 points), cell diffs, OIA states, statuses, named keys with their origin,
 notice and assist events — as one JSON frame per line on the data volume,
@@ -586,10 +588,8 @@ with SQLite metadata. Retention mirrors the spool store: newest
 **A replay contains exactly what a view-only mirror would have seen —
 nothing more.** Password fields are blanked by the wire encoder *before*
 the recorder runs; keys typed into hidden fields leave no recoverable
-trace. Recording is per-system opt-in; users see a **● REC** marker in the
-top bar and can pause their own recording (the pause itself is recorded,
-so the gap is visible, not hidden). Recording indicator and pause are
-owner-only — mirrors cannot touch them.
+trace. Recording is per-system opt-in and owner-only — mirrors cannot
+start or stop one — and every start, stop and console removal is audited.
 
 - **Users** replay their own finished sessions from the top-bar
   **History** button (needs `TRUSTED_USER_HEADER`, which is what makes

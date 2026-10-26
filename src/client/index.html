@@ -21,7 +21,7 @@
         </span>
         <button id="btn-systems" class="ghost hidden" type="button" title="End this session and pick another system">Systems</button>
         <button id="btn-history" class="ghost hidden" type="button" title="Your recorded sessions (play them back)">History</button>
-        <button id="btn-rec" class="ghost hidden rec-btn" type="button" title="This session is being recorded — click to pause / resume">● REC</button>
+        <button id="btn-rec" class="ghost hidden rec-btn" type="button" title="Start recording this session">REC</button>
         <button id="btn-spool" class="ghost hidden" type="button" title="Spool files printed from the host (printer session)">Spool<span id="spool-count" class="hidden"></span></button>
         <button id="btn-diag" class="ghost hidden" type="button" title="Copy session diagnostics (raw 5250 stream + parsed state) for a bug report">Diag</button>
         <button id="btn-keys" class="ghost" type="button" title="Keyboard mappings">Keys</button>
@@ -157,9 +157,9 @@
                     <option value="raw">raw — store host print transform bytes</option>
                   </select>
                   <label for="f-recording">Recording</label>
-                  <span class="check"><input id="f-recording" type="checkbox" /> <em>record sessions
-                    on this system for replay (users see a ● REC marker and can pause their own
-                    recording; passwords are never captured)</em></span>
+                  <span class="check"><input id="f-recording" type="checkbox" /> <em>let users record their
+                    sessions for replay (a REC control starts and stops the recording — nothing is
+                    recorded until the user starts it; passwords are never captured)</em></span>
                 </div>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">

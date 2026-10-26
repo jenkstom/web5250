@@ -237,12 +237,11 @@ export class Recordings {
 
 /**
  * The pseudo-front-end: everything the broadcast loop would send a viewer is
- * serialized here instead, one JSON frame per line. Pause stops event capture
- * (screen, keys, oia) but records the state change itself, so the player can
- * show the gap honestly.
+ * serialized here instead, one JSON frame per line. A recording starts and
+ * ends with the owner's REC control (or console removal); every frame it
+ * writes is real captured traffic.
  */
 export class Recorder {
-  private paused = false;
   private closed = false;
   private frames = 0;
   private bytes = 0;
@@ -268,21 +267,15 @@ export class Recorder {
     this.store.noteSignedOnUser(this.id, user);
   }
 
-  setPaused(on: boolean): void {
-    if (this.paused === on || this.closed) return;
-    this.paused = on;
-    this.write({ t: 'recstate', paused: on });
-  }
-
   /** Full screen state - the frame a player can seek to. */
   snapshot(payload: Record<string, unknown>): void {
-    if (this.paused || this.closed) return;
+    if (this.closed) return;
     this.lastCursorKey = JSON.stringify(payload.cursor ?? null); // snapshots carry the cursor
     this.write({ t: 'screen', ...payload });
   }
 
   delta(payload: Record<string, unknown>, cursor: [number, number] | null): void {
-    if (this.paused || this.closed) return;
+    if (this.closed) return;
     const key = JSON.stringify(cursor);
     if (key !== this.lastCursorKey) {
       this.lastCursorKey = key;
@@ -292,17 +285,16 @@ export class Recorder {
   }
 
   oia(oia: Record<string, unknown>): void {
-    if (this.paused || this.closed) return;
+    if (this.closed) return;
     const key = JSON.stringify(oia);
     if (key === this.lastOia) return;
     this.lastOia = key;
     this.write({ t: 'oia', ...oia });
   }
 
-  /** status | key | notice | ctrl lifecycle events (always captured). */
+  /** status | key | notice | ctrl lifecycle events. */
   event(kind: string, body: Record<string, unknown>): void {
     if (this.closed) return;
-    if (this.paused && kind !== 'recstate') return;
     this.write({ t: kind, ...body });
   }
 

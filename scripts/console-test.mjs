@@ -156,7 +156,19 @@ async function main() {
   console.log('\n2. Identity, sign-on capture, session list');
   const owner = await openClient(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}&devname=CONSOLE`, 'alice');
   check('hello carries the edge identity', owner.hello?.you === 'alice', JSON.stringify(owner.hello?.you));
-  check('hello reports the session is recorded', owner.hello?.recording === true, JSON.stringify(owner.hello?.recording));
+  check(
+    'hello offers recording without starting it',
+    owner.hello?.recording === false && owner.hello?.recordingAllowed === true,
+    JSON.stringify(owner.hello?.recording)
+  );
+
+  // Recording is owner-initiated: start it before the sign-on typing so the
+  // replay captures the whole flow.
+  owner.sock.send(JSON.stringify({ t: 'recstart' }));
+  check(
+    'owner starts the recording (REC on)',
+    await waitFor(() => owner.has((m) => m.t === 'recstate' && m.recording === true), 5000)
+  );
 
   check(
     'sign-on screen arrives',
@@ -385,10 +397,30 @@ async function main() {
 
   // ------------------------------------------------ 6b. recording removal
   console.log('\n6b. Console removes recordings (live and finished)');
-  // Live first: carol connects on the recorded system and the console
-  // deletes her recording while it is still being written.
+  // Live first: carol connects, starts and stops her own recording (that
+  // finalizes one), starts again, and the console deletes it while live.
   const carol = await openClient(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}&devname=DELREC`, 'carol');
-  check('carol session is recorded', carol.hello?.recording === true, JSON.stringify(carol.hello?.recording));
+  check(
+    'carol can record but is not recorded yet',
+    carol.hello?.recording === false && carol.hello?.recordingAllowed === true,
+    JSON.stringify(carol.hello?.recording)
+  );
+  carol.sock.send(JSON.stringify({ t: 'recstart' }));
+  carol.sock.send(JSON.stringify({ t: 'recstop' }));
+  check(
+    'owner stop clears the REC state',
+    await waitFor(() => carol.has((m) => m.t === 'recstate' && m.recording === false), 5000)
+  );
+  let stoppedRec = null;
+  check(
+    'stopped recording finalizes in the list',
+    await waitFor(async () => {
+      const rows = (await (await fetch(`${http}/api/admin/recordings`, { headers: H })).json()).recordings;
+      stoppedRec = rows.find((r) => r.identity === 'carol' && r.endedAt !== null) ?? null;
+      return stoppedRec !== null;
+    }, 8000)
+  );
+  carol.sock.send(JSON.stringify({ t: 'recstart' }));
   let liveRec = null;
   check(
     'live recording appears in the console list',
@@ -437,7 +469,7 @@ async function main() {
   const actions = new Set((audit.entries ?? []).map((e) => e.action));
   check(
     'audit records console, assist, maintenance and replay actions',
-    ['session.signal', 'assist.request', 'assist.grant', 'assist.revoked', 'maintenance.on', 'maintenance.drain', 'replay.link', 'replay.revoke', 'recording.delete'].every((a) =>
+    ['session.signal', 'assist.request', 'assist.grant', 'assist.revoked', 'maintenance.on', 'maintenance.drain', 'replay.link', 'replay.revoke', 'recording.delete', 'recording.start', 'recording.stop'].every((a) =>
       actions.has(a)
     ),
     JSON.stringify([...actions])
