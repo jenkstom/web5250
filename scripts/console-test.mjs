@@ -619,7 +619,10 @@ async function main() {
     `);
     const insAudit = seed.prepare('INSERT INTO audit (ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)');
     insAudit.run(old, 'seed', 'assist.grant', 'OLD', 'past the TTL');
-    insAudit.run(fresh, 'seed', 'assist.grant', 'KEEP', 'inside the TTL');
+    // 105 rows inside the TTL: a full 100-row page, a 5-row second page.
+    for (let i = 0; i < 105; i++) {
+      insAudit.run(fresh - i, 'seed', 'assist.grant', 'KEEP', i === 0 ? 'inside the TTL' : `bulk ${i}`);
+    }
     const insRec = seed.prepare(
       'INSERT INTO recordings (id, system_id, system_name, started_at, ended_at, seq) VALUES (?, 7, ?, ?, ?, ?)'
     );
@@ -689,6 +692,37 @@ async function main() {
     check('recording file of a swept row is removed', !existsSync(join(recDir, `${oldEndedId}.jsonl`)));
     check('TTL-expired spool job file is swept at boot', !existsSync(oldJob));
     check('fresh spool job file survives', existsSync(freshJob));
+
+    // Audit pagination over the same seeded rows (105 inside the TTL).
+    const retAuth = (await (
+      await fetch(`http://127.0.0.1:${RET_PORT}/api/admin/auth`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pin: ADMIN_PIN })
+      })
+    ).json()).token;
+    const auditPage = async (offset) =>
+      await (
+        await fetch(`http://127.0.0.1:${RET_PORT}/api/admin/audit?limit=100&offset=${offset}`, {
+          headers: { authorization: `Bearer ${retAuth}` }
+        })
+      ).json();
+    const p1 = await auditPage(0);
+    const p2 = await auditPage(100);
+    const p3 = await auditPage(200);
+    check('audit pagination: total counts all rows in the TTL window', p1.total === 105, JSON.stringify(p1.total));
+    check('audit pagination: page 1 is full', p1.entries.length === 100);
+    check(
+      'audit pagination: newest first (ids descending)',
+      p1.entries.every((e, i, a) => i === 0 || a[i - 1].id > e.id)
+    );
+    const page1Ids = new Set(p1.entries.map((e) => e.id));
+    check(
+      'audit pagination: page 2 holds the rest, no overlap',
+      p2.entries.length === 5 && p2.entries.every((e) => !page1Ids.has(e.id)),
+      JSON.stringify(p2.entries.length)
+    );
+    check('audit pagination: past-the-end page is empty', p3.entries.length === 0 && p3.total === 105);
   }
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);

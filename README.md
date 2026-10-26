@@ -331,7 +331,7 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | `POST /api/admin/systems/<id>/maintenance` | token | `{on, message, deadlineMs?}` window for one system |
 | `POST /api/admin/maintenance` | token | the same, gateway-wide |
 | `GET /api/admin/maintenance` | token | current windows |
-| `GET /api/admin/audit` | token | recent audit trail (`?limit=`) |
+| `GET /api/admin/audit` | token | audit trail, newest first, paged (`?limit=&offset=`, body carries `total`) |
 | `GET /api/admin/recordings` | token | recording metadata, newest first |
 | `GET /api/admin/recordings/<id>/download` | token | raw JSONL event stream (attachment) |
 | `POST /api/admin/recordings/<id>/link` | token | mint a replay link |
@@ -524,7 +524,9 @@ The admin editor grows three tabs next to Systems (one PIN, one token):
   assist lifecycle (request / grant / deny / revoke / break-glass),
   maintenance transitions, replay-link minting. Append-only, bounded
   (5000 entries), lives in the SQLite DB; rows older than `AUDIT_TTL_MS`
-  (30 days) are pruned on a periodic sweep and at boot.
+  (30 days) are pruned on a periodic sweep and at boot. The tab pages
+  100 entries at a time — Prev / Next with a page counter, Refresh back
+  to the newest page.
 
 Sessions are also maintenance control: the same tab starts and stops
 [windows](#maintenance-windows) per system or gateway-wide.

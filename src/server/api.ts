@@ -450,8 +450,13 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       run: ({ res, req, deps }) => {
         const url = new URL(req.url ?? '/', 'http://internal');
         const limit = Number.parseInt(url.searchParams.get('limit') ?? '100', 10);
+        const offset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10);
         json(res, 200, {
-          entries: deps.audit.list({ limit: Number.isFinite(limit) ? limit : 100 })
+          entries: deps.audit.list({
+            limit: Number.isFinite(limit) ? limit : 100,
+            offset: Number.isFinite(offset) ? offset : 0
+          }),
+          total: deps.audit.count()
         });
       }
     },

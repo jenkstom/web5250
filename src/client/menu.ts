@@ -1033,13 +1033,29 @@ interface AuditRow {
   detail: string;
 }
 
+const AUDIT_PAGE_SIZE = 100;
+let auditPage = 0; // 0-based; clamped to the fetched total on every render
+
 async function refreshAudit(): Promise<void> {
   let rows: AuditRow[] = [];
+  let total = 0;
   try {
-    const res = await adminCall('GET', 'api/admin/audit?limit=150');
+    const res = await adminCall(
+      'GET',
+      `api/admin/audit?limit=${AUDIT_PAGE_SIZE}&offset=${auditPage * AUDIT_PAGE_SIZE}`
+    );
     if (!res.ok) throw new Error(String(res.status));
-    rows = ((await res.json()) as { entries: AuditRow[] }).entries ?? [];
+    const body = (await res.json()) as { entries?: AuditRow[]; total?: number };
+    rows = body.entries ?? [];
+    total = body.total ?? rows.length;
   } catch {
+    return;
+  }
+  // Rows can be pruned between fetches; land on the last page that exists.
+  const pages = Math.max(1, Math.ceil(total / AUDIT_PAGE_SIZE));
+  if (auditPage > pages - 1) {
+    auditPage = pages - 1;
+    void refreshAudit();
     return;
   }
   $('audit-list').replaceChildren(
@@ -1062,6 +1078,14 @@ async function refreshAudit(): Promise<void> {
       return li;
     })
   );
+  const pager = $('audit-pager');
+  pager.classList.toggle('hidden', total <= AUDIT_PAGE_SIZE);
+  if (total > AUDIT_PAGE_SIZE) {
+    ($('audit-page-label') as HTMLElement).textContent =
+      `Page ${auditPage + 1} of ${pages} · ${total} entries`;
+    ($('audit-prev') as HTMLButtonElement).disabled = auditPage === 0;
+    ($('audit-next') as HTMLButtonElement).disabled = auditPage >= pages - 1;
+  }
 }
 
 // -------------------------------------------------- export / import config
@@ -1286,7 +1310,21 @@ function initAdmin(): void {
     b.addEventListener('click', () => switchAdminTab((b as HTMLElement).dataset.tab ?? 'systems'));
   }
   $('recordings-refresh').addEventListener('click', () => void refreshRecordings());
-  $('audit-refresh').addEventListener('click', () => void refreshAudit());
+  // Refresh shows the newest page again; Prev/Next walk the fetched total.
+  $('audit-refresh').addEventListener('click', () => {
+    auditPage = 0;
+    void refreshAudit();
+  });
+  $('audit-prev').addEventListener('click', () => {
+    if (auditPage > 0) {
+      auditPage--;
+      void refreshAudit();
+    }
+  });
+  $('audit-next').addEventListener('click', () => {
+    auditPage++; // an overshoot is clamped (and re-fetched) by refreshAudit
+    void refreshAudit();
+  });
 
   // Escape closes the admin overlay from anywhere: focus often stays outside
   // it (on the ADMIN button that opened it, or on the page body), so a

@@ -1119,6 +1119,10 @@ button.primary { border-color: var(--green); color: var(--green); }
 .audit-row .who { color: var(--green); min-width: 9ch; overflow: hidden; text-overflow: ellipsis; }
 .audit-row .act { color: var(--warn); white-space: nowrap; }
 .audit-row .tgt { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.pager { display: inline-flex; gap: 0.6rem; align-items: center; }
+.pager button:disabled { opacity: 0.4; cursor: default; }
+.pager button:disabled:hover { background: none; }
+#audit-page-label { color: var(--dim); font-size: 0.82rem; white-space: nowrap; }
 
 /* Session history modal */
 #history-card {

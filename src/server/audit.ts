@@ -66,8 +66,9 @@ export class Audit {
     if (Number(res.changes) > 0) console.log(`[audit] retention: pruned ${Number(res.changes)} row(s) past the TTL`);
   }
 
-  list(opts: { limit?: number; action?: string; target?: string } = {}): AuditEntry[] {
+  list(opts: { limit?: number; offset?: number; action?: string; target?: string } = {}): AuditEntry[] {
     const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+    const offset = Math.max(0, Math.floor(opts.offset ?? 0));
     const where: string[] = [];
     const args: (number | string)[] = [];
     if (opts.action) {
@@ -81,8 +82,8 @@ export class Audit {
     const sql =
       `SELECT id, ts, actor, action, target, detail FROM audit` +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-      ` ORDER BY id DESC LIMIT ?`;
-    const rows = this.db.prepare(sql).all(...args, limit) as unknown as Record<string, unknown>[];
+      ` ORDER BY id DESC LIMIT ? OFFSET ?`;
+    const rows = this.db.prepare(sql).all(...args, limit, offset) as unknown as Record<string, unknown>[];
     return rows.map((r) => ({
       id: Number(r.id),
       ts: Number(r.ts),
@@ -91,5 +92,22 @@ export class Audit {
       target: String(r.target),
       detail: String(r.detail)
     }));
+  }
+
+  /** Rows matching the same filters as list() — the pagination total. */
+  count(opts: { action?: string; target?: string } = {}): number {
+    const where: string[] = [];
+    const args: (number | string)[] = [];
+    if (opts.action) {
+      where.push('action = ?');
+      args.push(opts.action);
+    }
+    if (opts.target) {
+      where.push('target = ?');
+      args.push(opts.target);
+    }
+    const sql = `SELECT COUNT(*) AS n FROM audit` + (where.length ? ` WHERE ${where.join(' AND ')}` : '');
+    const row = this.db.prepare(sql).get(...args) as unknown as { n: number };
+    return Number(row.n);
   }
 }
