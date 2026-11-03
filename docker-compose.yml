@@ -43,6 +43,13 @@ services:
       WEB5250_TRACE: ${WEB5250_TRACE:-}
       # PIN for the admin editor in the connection menu (empty = admin disabled).
       ADMIN_PIN: ${ADMIN_PIN:-}
+      # Directory service (optional): menu entries + automatic sign-on from
+      # your own host/account database via a small read-only microservice.
+      # See docs/directory-service.md (a runnable reference service ships as
+      # docs/directory-service.mjs) and add any DIRECTORY_TEMPLATE_* vars you
+      # need. Empty DIRECTORY_URL = feature off.
+      DIRECTORY_URL: ${DIRECTORY_URL:-}
+      DIRECTORY_TOKEN: ${DIRECTORY_TOKEN:-}
       # SQLite system catalog; the named volume persists admin edits.
       WEB5250_DB: /data/web5250.db
     ports:

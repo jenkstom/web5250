@@ -55,6 +55,14 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   a lockout after repeated failures; tokens expire after 8 hours. Proxy
   credentials are only ever served to the authenticated editor — the public
   menu list shows no more than a "SOCKS5" marker.
+- **Directory systems**: menu entries and **automatic sign-on** served from
+  your own database of hosts and accounts through a tiny read-only
+  microservice (`DIRECTORY_URL`, [docs/directory-service.md](docs/directory-service.md)
+  + [OpenAPI spec](docs/directory-service-openapi.yaml)). Entries are
+  materialized from a `DIRECTORY_TEMPLATE_*` template (proxy, code page,
+  printer, …) and re-synced on a timer; a user picking one is signed on
+  with the entry's stored credential — fetched at session start, typed
+  server-side, never written to disk and never sent to the browser.
 - **Browser UX**: canvas renderer with IBM Plex Mono, complete 5250 key
   interception (F1–F24 incl. Shift+F1–F12 → PF13–PF24), field exit, insert
   mode, roll keys, SysReq/Attn, Reset, on-screen keypad for touch devices,
@@ -255,6 +263,12 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `SESSION_GRACE_MS` | How long a session with no attached browser stays alive and re-attachable (`?attach=<token>`, reload resume, pop-out); `0` = strict legacy teardown on socket close | `300000` |
 | `AUTO_SIGNON_USER` | User profile for `?auto=1` automated data-entry launches (server-held; required together with `AUTO_SIGNON_PASSWORD`, otherwise auto upgrades are refused) | – |
 | `AUTO_SIGNON_PASSWORD` | Its password — never leaves the server or crosses the WebSocket | – |
+| `DIRECTORY_URL` | Base URL of a [directory service](#directory-systems-menu--automatic-sign-on-from-your-database) microservice; menu entries + per-entry sign-on credentials (see [docs/directory-service.md](docs/directory-service.md)). Unset = feature off | – |
+| `DIRECTORY_TOKEN` | Bearer token the directory service requires | – |
+| `DIRECTORY_SYNC_INTERVAL_MS` | Directory re-sync cadence (clamped 15 s–24 h) | `300000` |
+| `DIRECTORY_TIMEOUT_MS` | Per-request timeout for directory service calls | `5000` |
+| `DIRECTORY_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for the directory service TLS certificate | `true` |
+| `DIRECTORY_TEMPLATE_*` | Connection settings every directory entry inherits — `NAME`/`DESCRIPTION` (`{name}`/`{host}` patterns), `PORT`, `SSL`, `TERM_TYPE`, `CODEPAGE`, `DEV_PREFIX`, `PROXY_HOST/PORT/USER/PASSWORD`, `PRINTER_ENABLED/DEVNAME/MODE`, `RECORDING`; entries may override `port`/`ssl` per row | port 23, else the gateway defaults |
 | `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
 | `SHOW_DIAG_BUTTON` | Show the `Diag` button in the top bar (copies raw 5250 session diagnostics to the clipboard for bug reports) | `false` |
 | `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
@@ -705,6 +719,36 @@ that never appears (30 s) produce `session-end` with `signon-failed` /
 `timeout`, and an unconfigured gateway (`AUTO_SIGNON_*` unset) refuses the
 WebSocket upgrade outright. Set `FRAME_ANCESTORS` to restrict which origins
 may embed the app at all.
+
+## Directory systems (menu + automatic sign-on from your database)
+
+> Full guide: [docs/directory-service.md](docs/directory-service.md) ·
+> API contract: [docs/directory-service-openapi.yaml](docs/directory-service-openapi.yaml) ·
+> runnable reference service: [docs/directory-service.mjs](docs/directory-service.mjs).
+
+If you keep your 5250 hosts and their accounts in a database, point web5250
+at a small read-only microservice in front of it (`DIRECTORY_URL`) and the
+gateway will
+
+1. list every host on the connection menu — materialized from a
+   `DIRECTORY_TEMPLATE_*` template so the proxy, code page, terminal model,
+   printer and recording settings are set once for all of them (marked
+   `· directory` on the menu), and
+2. sign users on automatically when they pick one — the entry's
+   username/password is fetched at session start, typed into the host's
+   sign-on screen by the same server-side automation `?auto=1` uses, and
+   forgotten. Credentials never touch the gateway's SQLite file or the
+   browser; entries without a stored credential open on the normal manual
+   sign-on screen (marked plainly, no `· auto sign-on`).
+
+The list re-syncs on a timer (`DIRECTORY_SYNC_INTERVAL_MS`, default 5 min)
+and on demand from the admin editor's **Sync directory** button; rows are
+matched by entry id, so live sessions, printer devices and deep links
+survive every sync. Directory rows list after the manual ones, are
+overwritten by each sync (edit the database or the template, not the row),
+re-appear after an admin delete, and are excluded from export/import —
+they are derived data. Syncs and failures land in the Audit tab
+(`directory.sync` / `directory.error`).
 
 ## Connecting to IBM i
 

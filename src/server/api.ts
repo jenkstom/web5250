@@ -22,6 +22,8 @@
 //   POST   /api/admin/systems/<id>/maintenance  window on/off  (Bearer token)
 //   POST   /api/admin/maintenance           gateway-wide window (Bearer token)
 //   GET    /api/admin/maintenance           current windows    (Bearer token)
+//   GET    /api/admin/directory             directory service status (Bearer token)
+//   POST   /api/admin/directory/sync        pull entries from the directory now
 //   GET    /api/admin/audit                 recent audit trail (Bearer token)
 //   GET    /api/admin/recordings            recording metadata (Bearer token)
 //   GET    /api/admin/recordings/<id>/download  JSONL download (Bearer token)
@@ -52,6 +54,7 @@ import { Ebcdic } from './tn5250/ebcdic.ts';
 import type { Config } from './config.ts';
 import type { Systems, SystemRow } from './systems.ts';
 import type { Printers } from './printers.ts';
+import type { Directory } from './directory.ts';
 import type { Audit } from './audit.ts';
 import type { Maintenance } from './maintenance.ts';
 import type { Recordings } from './recordings.ts';
@@ -85,6 +88,8 @@ export interface ApiDeps {
   maintenance: Maintenance;
   recordings: Recordings;
   adminAuth: AdminAuth;
+  /** Directory service integration (menu entries + auto sign-on). */
+  directory: Directory;
   /** Fires after any admin mutation that changed the systems list. */
   onSystemsChanged: () => void;
 }
@@ -107,9 +112,15 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
   /** Menu-safe projection: no proxy or printer-infrastructure details. */
   const publicSystem = (s: SystemRow): Record<string, unknown> => {
     const {
-      proxyHost, proxyPort, proxyUser, proxyPass, printerDeviceName, ...pub
+      proxyHost, proxyPort, proxyUser, proxyPass, printerDeviceName,
+      directoryRef, directoryAutoSignOn, ...pub
     } = s;
-    return { ...pub, viaProxy: Boolean(proxyHost), maintenance: deps.maintenance.maintenanceOf(s.id) };
+    return {
+      ...pub,
+      viaProxy: Boolean(proxyHost),
+      autoSignOn: Boolean(s.directory && directoryAutoSignOn),
+      maintenance: deps.maintenance.maintenanceOf(s.id)
+    };
   };
 
   /** System id/name pairs for stamping job rows (jobs keep arriving after
@@ -122,7 +133,7 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       method: 'GET',
       re: /(?:^|\/)api\/meta\/?$/,
       auth: false,
-      run: ({ res }) => {
+      run: ({ res, deps }) => {
         json(res, 200, {
           adminEnabled: cfg.adminPin !== null,
           allowCustomHost: cfg.allowCustomHost,
@@ -130,6 +141,7 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           assistEnabled: cfg.assistEnabled,
           breakglass: cfg.adminAssistBreakglass,
           identityHeader: cfg.trustedUserHeader !== null,
+          directory: deps.directory.enabled,
           termTypes: TERM_TYPES,
           codePages: Ebcdic.availablePages(),
           defaults: {
@@ -282,8 +294,10 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       }
     },
     {
-      // Export: the full catalog as a download document (ids/positions are
-      // re-assigned on import; the array order is the menu order).
+      // Export: the manual catalog as a download document (ids/positions are
+      // re-assigned on import; the array order is the menu order). Directory
+      // rows are derived from the directory service and excluded - they come
+      // back on its next sync; the count notes how many were left out.
       method: 'GET',
       re: /(?:^|\/)api\/admin\/config\/?$/,
       auth: true,
@@ -298,13 +312,21 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           'cache-control': 'no-store',
           'content-disposition': `attachment; filename="${name}"`
         });
+        const all = systems.list();
+        const manual = all.filter((s) => s.directory === null);
         res.end(
           JSON.stringify(
             {
               kind: 'web5250-systems',
               version: 1,
               exportedAt: stamp.toISOString(),
-              systems: systems.list().map(({ id: _id, position: _pos, ...system }) => system)
+              directoryRowsExcluded: all.length - manual.length,
+              systems: manual.map(
+                ({
+                  id: _id, position: _pos, directory: _d, directoryRef: _dr,
+                  directoryAutoSignOn: _da, ...system
+                }) => system
+              )
             },
             null,
             2
@@ -458,6 +480,39 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           }),
           total: deps.audit.count()
         });
+      }
+    },
+    {
+      // ------------------------------------------------------ directory
+      // Console view of the directory integration (never credentials).
+      method: 'GET',
+      re: /(?:^|\/)api\/admin\/directory\/?$/,
+      auth: true,
+      run: ({ res, deps }) => json(res, 200, { directory: deps.directory.statusView() })
+    },
+    {
+      // Pull the entry list from the directory service right now (the timer
+      // does the same thing on its own schedule).
+      method: 'POST',
+      re: /(?:^|\/)api\/admin\/directory\/sync\/?$/,
+      auth: true,
+      run: ({ res, req, deps }) => {
+        if (!deps.directory.enabled) {
+          json(res, 503, { error: 'The directory service is not configured (set DIRECTORY_URL)' });
+          return;
+        }
+        void deps.directory
+          .syncNow()
+          .then(() => {
+            deps.audit.log(
+              actor(req),
+              'directory.sync',
+              'manual',
+              JSON.stringify(deps.directory.lastCounts ?? {})
+            );
+            json(res, 200, { directory: deps.directory.statusView() });
+          })
+          .catch(() => json(res, 500, { error: 'directory sync failed' }));
       }
     },
     {

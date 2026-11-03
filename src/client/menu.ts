@@ -30,6 +30,10 @@ export interface MenuSystem {
   proxyPass?: string | null;
   printerDeviceName?: string | null;
   printerMode?: 'text' | 'raw';
+  /** True: this row is materialized from the directory service (it re-syncs). */
+  directory?: boolean | null;
+  /** True: the directory holds a sign-on credential (sessions sign on alone). */
+  autoSignOn?: boolean;
 }
 
 interface Meta {
@@ -40,6 +44,8 @@ interface Meta {
   /** Admin break-glass takeover available (ADMIN_ASSIST_BREAKGLASS). */
   breakglass?: boolean;
   identityHeader?: boolean;
+  /** Directory service integration configured (DIRECTORY_URL). */
+  directory?: boolean;
   termTypes: string[];
   codePages: string[];
   defaults: { port: number; ssl: boolean; termType: string; codePage: string; devPrefix: string };
@@ -149,6 +155,16 @@ function maintLabel(s: MenuSystem): string {
   return m.deadlineAt ? ` · MAINTENANCE until ${new Date(m.deadlineAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ' · MAINTENANCE';
 }
 
+/** Suffix flags a system row carries on its sub-line (menu + pane picker). */
+function rowFlags(s: MenuSystem): string {
+  let out = '';
+  if (s.viaProxy) out += ' · SOCKS5';
+  if (s.printerEnabled) out += ' · printer';
+  if (s.directory) out += ' · directory';
+  if (s.autoSignOn) out += ' · auto sign-on';
+  return out;
+}
+
 function render(): void {
   const list = $('menu-list');
   list.innerHTML = '';
@@ -175,7 +191,7 @@ function render(): void {
     sub.className = 'row-sub';
     sub.textContent =
       `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'} · ${s.termType} · ${s.codePage}` +
-      `${s.viaProxy ? ' · SOCKS5' : ''}${s.printerEnabled ? ' · printer' : ''}${maintLabel(s)}`;
+      rowFlags(s) + maintLabel(s);
     main.appendChild(sub);
 
     li.append(num, main);
@@ -466,7 +482,8 @@ class PanePicker {
         }
         const sub = document.createElement('span');
         sub.className = 'row-sub';
-        sub.textContent = `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'}${s.viaProxy ? ' · SOCKS5' : ''}`;
+        sub.textContent =
+          `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'}${rowFlags(s)}`;
         main.appendChild(sub);
         li.append(num, main);
         li.addEventListener('click', () => (this.selected === i ? this.connectTo(i) : this.select(i)));
@@ -568,6 +585,8 @@ function showPinPane(): void {
 function showEditorPane(): void {
   $('admin-pin').classList.add('hidden');
   $('admin-editor').classList.remove('hidden');
+  // Directory controls appear only when the integration is configured.
+  $('admin-dirsync').classList.toggle('hidden', meta?.directory !== true);
   switchAdminTab('systems');
   void refreshAdminList();
 }
@@ -621,7 +640,8 @@ async function refreshAdminList(): Promise<void> {
       `${s.host}:${s.port}${s.ssl ? ' · TLS' : ''} · ${s.termType} · ${s.codePage}` +
       (s.viaProxy || s.proxyHost ? ' · SOCKS5' : '') +
       (s.printerEnabled || s.printerDeviceName ? ' · printer' : '') +
-      (s.devPrefix ? ` · ${s.devPrefix}` : '');
+      (s.devPrefix ? ` · ${s.devPrefix}` : '') +
+      (s.directory ? ' · directory (re-synced)' : '');
     nm.append(b, small);
 
     const edit = document.createElement('button');
@@ -672,8 +692,36 @@ async function deleteSystem(s: MenuSystem, btn: HTMLButtonElement): Promise<void
     btn.disabled = false;
     btn.dataset.armed = '';
     btn.textContent = 'Del';
+  } else if (s.directory) {
+    transferNote(
+      'Deleted — but directory systems return on the next sync. Remove the entry in the directory service (or its database) instead.'
+    );
   }
   await refreshAdminList();
+}
+
+/** Pull the entry list from the directory service now (admin button). */
+async function syncDirectoryNow(): Promise<void> {
+  const btn = $<HTMLButtonElement>('admin-dirsync');
+  btn.disabled = true;
+  try {
+    const res = await adminCall('POST', 'api/admin/directory/sync');
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as {
+      directory?: {
+        lastCounts?: { added: number; updated: number; removed: number; total: number };
+      };
+    };
+    const c = data.directory?.lastCounts;
+    transferNote(
+      c ? `Directory synced — +${c.added} added, ~${c.updated} updated, -${c.removed} removed (${c.total} entries).` : 'Directory synced.'
+    );
+    await refreshAdminList();
+  } catch {
+    transferNote('Directory sync failed — see the gateway log (or the Audit tab).');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ------------------------------------------------- console: tabs & sessions
@@ -1156,6 +1204,9 @@ async function importConfigFile(file: File): Promise<void> {
 
 function fillForm(s: MenuSystem | null): void {
   const d = meta?.defaults;
+  // Directory rows are editable, but the note says what happens on the next
+  // sync; manual rows (and the add form) show nothing.
+  $('admin-dirnote').classList.toggle('hidden', !s?.directory);
   const termSel = $<HTMLSelectElement>('f-term');
   const cpSel = $<HTMLSelectElement>('f-cp');
   if (termSel.options.length === 0) {
@@ -1298,6 +1349,7 @@ function initAdmin(): void {
   // file and replaces the whole list (armed first — it is destructive).
   $('admin-export').addEventListener('click', () => void exportConfig());
   $('admin-import').addEventListener('click', pickImportFile);
+  $('admin-dirsync').addEventListener('click', () => void syncDirectoryNow());
   $('admin-import-file').addEventListener('change', () => {
     const input = $<HTMLInputElement>('admin-import-file');
     const f = input.files?.[0];

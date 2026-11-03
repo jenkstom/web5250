@@ -84,6 +84,43 @@ export interface Config {
   recordingsMaxBytes: number;
   /** Session-recording retention: age limit, swept periodically. */
   recordingsTtlMs: number;
+  /** Directory service base URL (DIRECTORY_URL); null = the feature is off. */
+  directoryUrl: string | null;
+  /** Bearer token the directory service requires (DIRECTORY_TOKEN). */
+  directoryToken: string | null;
+  /** How often the entry list is re-synced into the connection menu. */
+  directorySyncMs: number;
+  /** Per-request timeout for directory service calls. */
+  directoryTimeoutMs: number;
+  /** Enforce CA validation on the directory service TLS certificate. */
+  directoryTlsRejectUnauthorized: boolean;
+  /** Connection settings every directory entry inherits (DIRECTORY_TEMPLATE_*). */
+  directoryTemplate: DirectoryTemplate;
+}
+
+/**
+ * The template every directory entry is materialized with: all connection
+ * settings a SystemInput carries, with name/description as {name}/{host}
+ * substitution patterns. The directory itself only ever supplies identity
+ * (its entry id), reachability (host, and optionally port/TLS) and - at
+ * session start, never in the menu - the sign-on credential.
+ */
+export interface DirectoryTemplate {
+  name: string;
+  description: string;
+  port: number;
+  ssl: boolean;
+  termType: string;
+  codePage: string;
+  devPrefix: string | null;
+  proxyHost: string | null;
+  proxyPort: number | null;
+  proxyUser: string | null;
+  proxyPass: string | null;
+  printerEnabled: boolean;
+  printerDeviceName: string | null;
+  printerMode: 'text' | 'raw';
+  recording: boolean;
 }
 
 const bool = (v: string | undefined, def: boolean): boolean => {
@@ -121,6 +158,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (adminPin !== null && adminPin.length < 4) {
     throw new Error('ADMIN_PIN must be at least 4 characters (or empty to disable administration)');
   }
+
+  // Directory service (optional): menu entries + auto sign-on credentials
+  // served by a small HTTPS microservice in front of an existing database.
+  const directoryUrl = env.DIRECTORY_URL?.trim() || null;
+  const directoryToken = env.DIRECTORY_TOKEN?.trim() || null;
+  if (directoryUrl !== null && !/^https?:\/\//i.test(directoryUrl)) {
+    throw new Error('DIRECTORY_URL must be an http(s) URL (e.g. https://directory.internal:8443)');
+  }
+  if (directoryUrl !== null && directoryToken === null) {
+    console.warn(
+      '[config] DIRECTORY_URL set without DIRECTORY_TOKEN - the directory service will be called unauthenticated'
+    );
+  }
+  const dirTerm = (env.DIRECTORY_TEMPLATE_TERM_TYPE ?? termType).toUpperCase();
+  if (directoryUrl !== null && !(TERM_TYPES as readonly string[]).includes(dirTerm)) {
+    throw new Error(
+      `DIRECTORY_TEMPLATE_TERM_TYPE=${dirTerm} is not supported. Available: ${TERM_TYPES.join(', ')}`
+    );
+  }
+  const dirCp = (env.DIRECTORY_TEMPLATE_CODEPAGE ?? codePage).toLowerCase();
+  if (directoryUrl !== null && !Ebcdic.availablePages().includes(dirCp)) {
+    throw new Error(
+      `DIRECTORY_TEMPLATE_CODEPAGE=${dirCp} is not supported. Available: ${Ebcdic.availablePages().join(', ')}`
+    );
+  }
+  const dirProxyHost = env.DIRECTORY_TEMPLATE_PROXY_HOST?.trim() || null;
   return {
     port: int(env.PORT, 8080),
     host: env.HOST ?? '0.0.0.0',
@@ -178,7 +241,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       64 * 1024 * 1024 * 1024,
       500 * 1024 * 1024
     ),
-    recordingsTtlMs: clampInt(env.RECORDINGS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000)
+    recordingsTtlMs: clampInt(env.RECORDINGS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000),
+    directoryUrl,
+    directoryToken,
+    directorySyncMs: clampInt(env.DIRECTORY_SYNC_INTERVAL_MS, 15_000, 24 * 60 * 60 * 1000, 300_000),
+    directoryTimeoutMs: clampInt(env.DIRECTORY_TIMEOUT_MS, 1_000, 30_000, 5_000),
+    directoryTlsRejectUnauthorized: bool(env.DIRECTORY_TLS_REJECT_UNAUTHORIZED, true),
+    directoryTemplate: {
+      name: env.DIRECTORY_TEMPLATE_NAME?.trim() || '{name}',
+      description: env.DIRECTORY_TEMPLATE_DESCRIPTION ?? '',
+      port: int(env.DIRECTORY_TEMPLATE_PORT, 23),
+      ssl: bool(env.DIRECTORY_TEMPLATE_SSL, false),
+      termType: dirTerm,
+      codePage: dirCp,
+      devPrefix:
+        env.DIRECTORY_TEMPLATE_DEV_PREFIX === undefined || env.DIRECTORY_TEMPLATE_DEV_PREFIX.trim() === ''
+          ? null
+          : env.DIRECTORY_TEMPLATE_DEV_PREFIX.trim().toUpperCase(),
+      proxyHost: dirProxyHost,
+      proxyPort: dirProxyHost ? int(env.DIRECTORY_TEMPLATE_PROXY_PORT, 1080) : null,
+      proxyUser: env.DIRECTORY_TEMPLATE_PROXY_USER?.trim() || null,
+      proxyPass: env.DIRECTORY_TEMPLATE_PROXY_PASSWORD ?? null,
+      printerEnabled: bool(env.DIRECTORY_TEMPLATE_PRINTER_ENABLED, false),
+      printerDeviceName: env.DIRECTORY_TEMPLATE_PRINTER_DEVNAME?.trim().toUpperCase() || null,
+      printerMode: env.DIRECTORY_TEMPLATE_PRINTER_MODE === 'raw' ? 'raw' : 'text',
+      recording: bool(env.DIRECTORY_TEMPLATE_RECORDING, false)
+    }
   };
 }
 
