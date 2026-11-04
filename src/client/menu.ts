@@ -772,13 +772,26 @@ function stopConsolePoll(): void {
 
 async function refreshSettings(): Promise<void> {
   const status = $('settings-signonpin-status');
+  const input = $<HTMLInputElement>('f-signonpin');
   try {
     const res = await adminCall('GET', 'api/admin/settings');
     if (!res.ok) throw new Error(String(res.status));
     const data = (await res.json()) as { signOnPin?: boolean };
-    status.textContent = data.signOnPin
-      ? 'A protection PIN is set — users are asked for it before an automatic sign-on.'
-      : 'No protection PIN — systems with a sign-on account sign on automatically.';
+    if (data.signOnPin) {
+      // The field is write-only (the gateway keeps a hash, never the PIN),
+      // so this line is the state's only display - and the placeholder must
+      // not read like "no PIN configured" while one is.
+      status.textContent =
+        'A protection PIN IS set — users are asked for it once per page before an ' +
+        'automatic sign-on. The field never shows it (stored hashed): type a new ' +
+        'PIN and Save to change it, or Clear protection to turn it off.';
+      input.placeholder = '(a PIN is set — type a new one to change it)';
+    } else {
+      status.textContent =
+        'No protection PIN — every system with a sign-on account signs on ' +
+        'automatically, without asking anyone.';
+      input.placeholder = '(not set)';
+    }
   } catch {
     status.textContent = 'settings unavailable — close and reopen the Admin console';
   }

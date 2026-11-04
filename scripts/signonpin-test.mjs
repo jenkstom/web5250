@@ -277,7 +277,20 @@ async function main() {
   await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
 
   // Arm the gate through the admin UI itself (the way admins do it): what
-  // the Settings tab saves must be exactly what the dialog accepts.
+  // the Settings tab saves must be exactly what the dialog accepts - and the
+  // tab must not tell two stories (status "set" vs a "no protection"
+  // placeholder) about whether a PIN is configured.
+  const settingsStatus = () => page.textContent('#settings-signonpin-status') ?? '';
+  const settingsPlaceholder = () => page.getAttribute('#f-signonpin', 'placeholder') ?? '';
+  const savePinViaUi = async () => {
+    await page.fill('#f-signonpin', SIGNON_PIN);
+    await page.click('#settings-save');
+    await page.waitForFunction(
+      () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('IS set'),
+      undefined,
+      { timeout: 5000 }
+    );
+  };
   await http('PUT', 'api/admin/settings', { signOnPin: null }, token); // start clean
   await page.click('#menu-admin-btn');
   await page.waitForSelector('#admin-pin-input', { timeout: 5000 });
@@ -285,14 +298,24 @@ async function main() {
   await page.keyboard.press('Enter');
   await page.waitForSelector('#admin-editor:not(.hidden)', { timeout: 5000 });
   await page.click('#admin-tabs button[data-tab="settings"]');
-  await page.fill('#f-signonpin', SIGNON_PIN);
-  await page.click('#settings-save');
   await page.waitForFunction(
-    () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('set'),
+    () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('No protection PIN'),
     undefined,
     { timeout: 5000 }
   );
-  check('PIN armed via the Settings tab', true);
+  check('unarmed: status says no PIN', (await settingsStatus()).includes('No protection PIN'));
+  check('unarmed: placeholder says not set', (await settingsPlaceholder()).includes('not set'));
+  await savePinViaUi();
+  check('armed: status says a PIN is set', (await settingsStatus()).includes('IS set'));
+  check('armed: placeholder no longer claims no protection', !(await settingsPlaceholder()).includes('no protection'));
+  await page.click('#settings-clear');
+  await page.waitForFunction(
+    () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('No protection PIN'),
+    undefined,
+    { timeout: 5000 }
+  );
+  check('Clear protection disarms immediately', true);
+  await savePinViaUi(); // re-arm for the dialog flow below
   await page.click('#admin-close');
   await sleep(300); // the menu re-render behind the modal settles
 
