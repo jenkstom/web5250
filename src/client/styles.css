@@ -512,8 +512,6 @@ button.primary { border-color: var(--green); color: var(--green); }
   inset: 0;
   z-index: 90;
   display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 1rem;
   overflow: auto;
   background:
@@ -522,6 +520,11 @@ button.primary { border-color: var(--green); color: var(--green); }
 #menu.hidden { display: none; }
 
 #menu-frame {
+  /* margin:auto centers like align-items:center would, but collapses to the
+     top when the list outgrows the viewport - flex centering there pushes the
+     first rows into an unreachable negative scroll offset. Same trick as
+     .sys-menu-frame below. */
+  margin: auto;
   position: relative;
   width: min(94vw, 46rem);
   border: 6px double #2f4a3b;

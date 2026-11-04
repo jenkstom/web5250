@@ -37,6 +37,7 @@
     "test:console": "node scripts/console-test.mjs",
     "test:directory": "node scripts/directory-test.mjs",
     "test:signonpin": "node scripts/signonpin-test.mjs",
+    "test:menuscale": "node scripts/menu-scale-test.mjs",
     "test:help": "node scripts/help-test.mjs"
   },
   "dependencies": {

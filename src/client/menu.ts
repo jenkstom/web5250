@@ -226,6 +226,10 @@ function render(): void {
   } else {
     empty.classList.add('hidden');
   }
+  // Keep the selection cursor on screen when the list outgrows the panel
+  // (arrows past the fold, a typed number jumping far down). Nearest-edge
+  // only: an already-visible selection never scrolls.
+  list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
 
   $<HTMLInputElement>('menu-option').value = systems.length ? String(selected + 1) : '';
 }
@@ -412,7 +416,7 @@ class PanePicker {
     this.option.autocapitalize = 'off';
     this.option.spellcheck = false;
     this.option.inputMode = 'numeric';
-    this.option.maxLength = 2;
+    this.option.maxLength = 3;
     this.option.setAttribute('aria-label', 'System number');
     label.append(this.option);
     const go = document.createElement('button');
@@ -524,6 +528,9 @@ class PanePicker {
     } else {
       this.emptyEl.classList.add('hidden');
     }
+    // Same scroll-follow as the landing menu: the cursor stays visible when
+    // the picker's list outgrows the pane.
+    this.listEl.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
     this.option.value = this.rows.length ? String(this.selected + 1) : '';
   }
 
