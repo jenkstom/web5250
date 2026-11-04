@@ -117,6 +117,20 @@ export function loadMeta(): Promise<Meta | null> {
   return metaPromise;
 }
 
+/**
+ * Whether the sign-on protection PIN is armed, read fresh from /api/meta -
+ * the page-lifetime cache in loadMeta() can predate an admin arming or
+ * clearing the PIN (another browser, or this page's own admin console), and
+ * the connect-time gate must not act on a stale answer.
+ */
+export async function signOnPinArmed(): Promise<boolean> {
+  try {
+    return (await fetchMeta()).signOnPin === true;
+  } catch {
+    return false; // unreachable gateway: the connect itself will say so
+  }
+}
+
 /** Show the menu and (re)load its data. Called on first start and whenever a session ends. */
 export async function showMenu(callback: (s: MenuSystem) => void): Promise<void> {
   onSelect = callback;
@@ -785,6 +799,10 @@ async function saveSettingsPin(): Promise<void> {
     return;
   }
   $<HTMLInputElement>('f-signonpin').value = '';
+  // The rest of this page may have cached an unarmed /api/meta (loadMeta is
+  // per-page-lifetime) - drop it so the gate and the chrome re-read.
+  meta = null;
+  metaPromise = null;
   await refreshSettings();
 }
 
@@ -797,6 +815,8 @@ async function clearSettingsPin(): Promise<void> {
     return;
   }
   $<HTMLInputElement>('f-signonpin').value = '';
+  meta = null;
+  metaPromise = null;
   await refreshSettings();
 }
 

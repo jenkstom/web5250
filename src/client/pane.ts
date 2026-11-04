@@ -12,6 +12,7 @@ import {
   displayName,
   loadMeta,
   promptSignOnPin,
+  signOnPinArmed,
   signOnTicketFor,
   ADMIN_TOKEN_KEY,
   type MenuSystem
@@ -427,8 +428,9 @@ export class SessionPane {
    */
   private async signOnGate(): Promise<string | null | undefined> {
     if (!this.target.system?.autoSignOn) return null;
-    const meta = await loadMeta();
-    if (!meta?.signOnPin) return null;
+    // Fresh read: the page-load /api/meta cache can predate the admin
+    // arming the PIN, and asking a stale question means no prompt at all.
+    if (!(await signOnPinArmed())) return null;
     const pin = await promptSignOnPin();
     if (pin === undefined || pin === null) return pin;
     // A remembered PIN still needs a fresh ticket per connection (they are

@@ -340,6 +340,23 @@ async function main() {
   check('unarmed again: automatic sign-on restored', await waitFor(s.term, signedOnStored, 8000, 'stored sign-on'));
   s.sock.close();
 
+  // The reported bug: a page that loaded while the gate was unarmed cached
+  // signOnPin=false; arming afterwards left it connecting with no prompt (and
+  // no automatic sign-on). The connect-time gate must ask /api/meta fresh.
+  console.log('\nD. A page that predates arming still gets the dialog');
+  const browser2 = await chromium.launch({ executablePath, args: ['--no-sandbox'] });
+  const page2 = await (await browser2.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+  await page2.goto(`http://127.0.0.1:${HTTP_PORT}/`, { waitUntil: 'domcontentloaded' });
+  await page2.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
+  const rearm = await http('PUT', 'api/admin/settings', { signOnPin: SIGNON_PIN }, token);
+  check('re-arm after the page loaded', rearm.status === 200);
+  const row2 = page2.locator('.menu-row', { hasText: 'PINNED' });
+  await row2.click();
+  await row2.click();
+  await page2.waitForSelector('#signon-pin-modal:not(.hidden)', { timeout: 5000 });
+  check('stale page still prompts after arming', true);
+  await browser2.close();
+
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   cleanup();
   process.exit(failures === 0 ? 0 : 1);
