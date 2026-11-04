@@ -308,6 +308,18 @@ async function main() {
   await savePinViaUi();
   check('armed: status says a PIN is set', (await settingsStatus()).includes('IS set'));
   check('armed: placeholder no longer claims no protection', !(await settingsPlaceholder()).includes('no protection'));
+  // The reported bug: emptying the field and saving must CLEAR the PIN (the
+  // system editor's convention), not error with "enter a PIN".
+  await page.fill('#f-signonpin', '');
+  await page.click('#settings-save');
+  await page.waitForFunction(
+    () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('No protection PIN'),
+    undefined,
+    { timeout: 5000 }
+  );
+  check('empty field + Save disarms', true);
+  check('empty save raises no error', ((await page.textContent('#settings-error')) ?? '').trim() === '');
+  await savePinViaUi(); // re-arm for the button check
   await page.click('#settings-clear');
   await page.waitForFunction(
     () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('No protection PIN'),

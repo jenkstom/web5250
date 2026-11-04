@@ -420,7 +420,7 @@ const adminPages: HelpPage[] = [
       ),
       ul(
         `The PIN is stored as a hash only and never displayed again - to change it, type the new one and Save`,
-        `Clear protection turns the gate off`,
+        `Leave the field empty and Save (or press Clear protection) to turn the gate off - the same convention as the system editor's sign-on fields`,
         `Unattended ?auto=1 launches on the shared AUTO_SIGNON_* account are never asked`,
         `Arming and clearing the gate is recorded in the {{audit trail|a-audit}}`
       ),

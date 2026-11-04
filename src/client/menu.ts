@@ -784,7 +784,8 @@ async function refreshSettings(): Promise<void> {
       status.textContent =
         'A protection PIN IS set — users are asked for it once per page before an ' +
         'automatic sign-on. The field never shows it (stored hashed): type a new ' +
-        'PIN and Save to change it, or Clear protection to turn it off.';
+        'PIN and Save to change it, or leave it empty and Save (or Clear ' +
+        'protection) to turn it off.';
       input.placeholder = '(a PIN is set — type a new one to change it)';
     } else {
       status.textContent =
@@ -800,12 +801,11 @@ async function refreshSettings(): Promise<void> {
 async function saveSettingsPin(): Promise<void> {
   const errEl = $('settings-error');
   errEl.textContent = '';
+  // House convention (the system editor's sign-on fields): an empty field
+  // plus Save clears the setting - the Clear protection button is just a
+  // shortcut for the same thing.
   const pin = $<HTMLInputElement>('f-signonpin').value.trim();
-  if (!pin) {
-    errEl.textContent = 'Enter a PIN (4 to 64 characters), or use Clear protection to turn it off.';
-    return;
-  }
-  const res = await adminCall('PUT', 'api/admin/settings', { signOnPin: pin });
+  const res = await adminCall('PUT', 'api/admin/settings', pin ? { signOnPin: pin } : { signOnPin: null });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     errEl.textContent = err.error ?? `save failed (${res.status})`;
@@ -814,20 +814,6 @@ async function saveSettingsPin(): Promise<void> {
   $<HTMLInputElement>('f-signonpin').value = '';
   // The rest of this page may have cached an unarmed /api/meta (loadMeta is
   // per-page-lifetime) - drop it so the gate and the chrome re-read.
-  meta = null;
-  metaPromise = null;
-  await refreshSettings();
-}
-
-async function clearSettingsPin(): Promise<void> {
-  $('settings-error').textContent = '';
-  const res = await adminCall('PUT', 'api/admin/settings', { signOnPin: null });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    $('settings-error').textContent = err.error ?? `clear failed (${res.status})`;
-    return;
-  }
-  $<HTMLInputElement>('f-signonpin').value = '';
   meta = null;
   metaPromise = null;
   await refreshSettings();
@@ -1470,7 +1456,10 @@ function initAdmin(): void {
   $('recordings-refresh').addEventListener('click', () => void refreshRecordings());
   // Settings tab: arm or disarm the automatic sign-on protection PIN.
   $('settings-save').addEventListener('click', () => void saveSettingsPin());
-  $('settings-clear').addEventListener('click', () => void clearSettingsPin());
+  $('settings-clear').addEventListener('click', () => {
+    $<HTMLInputElement>('f-signonpin').value = '';
+    void saveSettingsPin();
+  });
   // Refresh shows the newest page again; Prev/Next walk the fetched total.
   $('audit-refresh').addEventListener('click', () => {
     auditPage = 0;
