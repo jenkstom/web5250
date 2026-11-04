@@ -55,6 +55,13 @@ export interface SessionQuery {
   view?: string;
   /** ?auto=1 automated data-entry launch parameters. */
   auto?: AutoQuery;
+  /**
+   * Per-system sign-on credential: either fetched from the directory service
+   * at upgrade time (`source: 'directory'`) or the system row's stored pair
+   * from the admin editor (`source: 'system'`). Never from the URL; held in
+   * memory only for the sign-on automation.
+   */
+  signOnCredentials?: { user: string; password: string; source?: 'directory' | 'system' };
 }
 
 export interface AutoQuery {
@@ -148,6 +155,8 @@ export class HostSession {
   private recLastPopup = '';
   /** When the grace period, if armed, runs out (0 = not detached). */
   private graceEndsAt = 0;
+  /** Banner raised during setup, waiting for the first front-end. */
+  private pendingNotice: { level: string; message: string } | null = null;
 
   // Remote assist: at most one controller lease, plus one pending request.
   controller: GatewaySession | null = null;
@@ -234,19 +243,26 @@ export class HostSession {
     // should not run PC commands), and only to controlling front-ends -
     // read-only mirrors never get windows opened on them.
     this.client.onPcCommand = (command) => this.handlePcCommand(command);
-    // ?auto=1 launch: sign on with the configured assumed-identity account
-    // and pre-fill the initial program's screen. The HTTP layer refuses
-    // auto upgrades without AUTO_SIGNON_USER/AUTO_SIGNON_PASSWORD, so both
-    // are present whenever query.auto is set.
-    if (query.auto && cfg.autoSignOnUser && cfg.autoSignOnPassword) {
+    // Auto sign-on, from whichever source configured one: a per-system
+    // credential (directory entry fetched at upgrade time, or the stored pair
+    // from the admin editor) or the shared AUTO_SIGNON_* account (?auto=1
+    // data-entry launches - the HTTP layer refuses those without the
+    // configured pair, so both are present whenever query.auto is set).
+    // Input pre-fill only applies to ?auto=1.
+    const signOn =
+      query.signOnCredentials ??
+      (query.auto && cfg.autoSignOnUser && cfg.autoSignOnPassword
+        ? { user: cfg.autoSignOnUser, password: cfg.autoSignOnPassword }
+        : null);
+    if (signOn) {
       this.automation = new Automation(
         this.client,
         {
-          user: cfg.autoSignOnUser,
-          password: cfg.autoSignOnPassword,
-          input: query.auto.input,
-          inputEnter: query.auto.inputEnter,
-          inputDelayMs: query.auto.inputDelayMs
+          user: signOn.user,
+          password: signOn.password,
+          input: query.auto?.input,
+          inputEnter: query.auto?.inputEnter ?? true,
+          inputDelayMs: query.auto?.inputDelayMs ?? 500
         },
         {
           onEnd: (reason, detail) => {
@@ -256,7 +272,9 @@ export class HostSession {
           onChange: () => this.onScreenChange()
         }
       );
-      console.log(`[ws] auto-launch session (sign-on user ${cfg.autoSignOnUser})`);
+      console.log(
+        `[ws] auto-sign-on session (${query.signOnCredentials?.source ?? 'configured'} account ${signOn.user})`
+      );
     }
     this.client.onScreenChange = () => this.onScreenChange();
 
@@ -432,6 +450,25 @@ export class HostSession {
     for (const f of this.frontends) f.sendNotice(level, message);
     for (const v of this.viewers) v.sendNotice(level, message);
     this.recorder?.event('notice', { level, message });
+  }
+
+  /**
+   * Banner for the first front-end: queued when raised during session setup
+   * (before any browser is attached) - e.g. a directory system whose sign-on
+   * credential could not be fetched, so the user lands on the manual sign-on
+   * screen and needs to know why.
+   */
+  queueNotice(level: string, message: string): void {
+    if (this.frontends.length > 0 || this.viewers.length > 0) this.notifyAll(level, message);
+    else this.pendingNotice = { level, message };
+  }
+
+  /** Delivered by the owning front-end's start() once hello is out. */
+  flushPendingNotice(): void {
+    const n = this.pendingNotice;
+    if (!n) return;
+    this.pendingNotice = null;
+    this.notifyAll(n.level, n.message);
   }
 
   /**
@@ -823,6 +860,7 @@ export class GatewaySession {
       rows: this.core.screen.rows,
       cols: this.core.screen.cols
     });
+    this.core.flushPendingNotice();
     if (this.core.markStarted()) {
       if (this.core.automation) {
         this.send('auto', { phase: 'started' });

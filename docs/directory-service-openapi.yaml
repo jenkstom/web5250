@@ -1,0 +1,298 @@
+openapi: 3.1.0
+info:
+  title: web5250 Directory Service
+  version: 1.0.0
+  summary: Serves 5250 host entries and sign-on credentials to a web5250 gateway.
+  description: |
+    A tiny read-only microservice that sits in front of an existing database
+    of IBM i / AS/400 hosts and their accounts, so the web5250 gateway never
+    touches that database directly.
+
+    The gateway uses exactly two data calls:
+
+    * `GET /v1/entries` — the connection-menu list (no credentials). Fetched
+      at boot and then every `DIRECTORY_SYNC_INTERVAL_MS` (default 300 s).
+      Array order is the menu order; directory rows list after manual ones.
+    * `GET /v1/entries/{id}/credentials` — the sign-on credential for one
+      entry. Fetched exactly once per session, at WebSocket-upgrade time
+      (default timeout 5 s), held in memory only for the sign-on automation,
+      and never persisted by the gateway or sent to the browser.
+
+    Behaviour the gateway relies on (implement accordingly):
+
+    * **`id` is the sync key.** Rows in the gateway's menu are matched by id
+      across syncs; re-using an id for a different host silently re-points the
+      existing menu row. ids must be stable and unique per host entry.
+    * **`autoSignOn` is a promise.** When true the menu shows "auto sign-on"
+      and users expect sessions to sign on unattended. It is derived from
+      whether a credential exists (e.g. `password IS NOT NULL`).
+    * **`GET …/credentials` returning 404 (or 204)** means "no credential is
+      stored for this entry": the gateway opens the session on the manual
+      sign-on screen. Use it for hosts in the menu that have no stored
+      account, not for outages.
+    * Transient failures are tolerated: a failed list fetch keeps the
+      last-good menu rows; a failed credential fetch still opens the session
+      (manual sign-on, with a banner explaining why).
+    * Entries that fail validation (bad host, oversized name, duplicate id)
+      are skipped individually — one bad row must not break the whole list.
+
+    Security model:
+
+    * Authenticate every `/v1/entries*` call: `Authorization: Bearer <token>`
+      with a long random token shared with the gateway
+      (`DIRECTORY_TOKEN`). Return **401** for a missing token and **403**
+      for a wrong one.
+    * Serve TLS (recommended: internal CA or self-signed + the gateway's
+      `DIRECTORY_TLS_REJECT_UNAUTHORIZED=false`), or plain HTTP only on a
+      loopback/socket-protected network — credentials cross this interface
+      in cleartext JSON.
+    * The service is **read-only**. It offers no write endpoints; keep it
+      that way unless you add their auth yourselves.
+    * Optionally rate-limit (429) — the gateway calls the list endpoint once
+      per sync interval and the credentials endpoint once per session start.
+
+    A complete reference implementation (Node 22, `node:sqlite`, ~150 lines)
+    is in `docs/directory-service.md`.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://directory.internal:8443
+    description: Example — internal TLS endpoint reachable only by the gateway
+  - url: http://127.0.0.1:8088
+    description: Example — loopback-only plaintext (same-host gateway)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: entries
+    description: Connection-menu entries (no credentials).
+  - name: credentials
+    description: Per-entry sign-on credentials, fetched at session start.
+  - name: operational
+    description: Liveness probe.
+
+paths:
+  /v1/entries:
+    get:
+      tags: [entries]
+      operationId: listEntries
+      summary: List every host entry for the connection menu
+      description: |
+        Returns every entry the gateway should show on its connection menu.
+        The array order defines the menu order (after the gateway's manual
+        rows). No pagination is required — the gateway reads the whole list
+        (it rejects responses above 4 MiB) and typical deployments carry tens
+        to a few hundred hosts. `ETag`/`If-None-Match` are permitted but not
+        used by the gateway; `Cache-Control: no-store` is recommended.
+      responses:
+        "200":
+          description: The entry list. `entries` may be empty (the gateway
+            removes its directory menu rows in that case).
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: '`no-store` recommended — credentials-adjacent data.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: "#/components/schemas/Entry" }
+              examples:
+                typical:
+                  summary: Two hosts, one with a stored credential
+                  value:
+                    entries:
+                      - id: "as400-prod-01"
+                        name: "PROD"
+                        description: "Production LPAR"
+                        host: "10.20.30.40"
+                        port: 992
+                        ssl: true
+                        autoSignOn: true
+                      - id: "as400-dev-02"
+                        name: "DEV"
+                        host: "10.20.30.41"
+                        autoSignOn: false
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /v1/entries/{id}/credentials:
+    get:
+      tags: [credentials]
+      operationId: getEntryCredentials
+      summary: Sign-on credential for one entry
+      description: |
+        Called by the gateway once per session start (a user picked the
+        entry on the connection menu). The returned pair is typed into the
+        host's sign-on screen server-side and then forgotten. Respond fast —
+        the session's WebSocket upgrade waits for this call (the gateway
+        times out after `DIRECTORY_TIMEOUT_MS`, default 5 s, and degrades to
+        manual sign-on).
+
+        Return **404** (or **204**) when no credential is stored for the
+        entry: the gateway then opens the session on the manual sign-on
+        screen. Return 401/403/429/5xx only for genuine faults.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/EntryId" }
+      responses:
+        "200":
+          description: The credential. `username` is uppercased by the
+            gateway; `password` is used verbatim.
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: '`no-store` required — this is a secret.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Credentials" }
+              examples:
+                typical:
+                  value: { username: "WEBUSER", password: "hunter2-example" }
+        "204":
+          description: No credential stored for this entry (gateway opens the
+            manual sign-on screen).
+        "404":
+          description: No credential stored for this entry — or the entry id
+            is unknown. Both are treated as "manual sign-on".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /healthz:
+    get:
+      tags: [operational]
+      operationId: health
+      summary: Liveness probe (no authentication)
+      security: []
+      responses:
+        "200":
+          description: Service is up and its database is readable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: ok }
+        "503":
+          description: Up but the backing database is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        A long random token shared out-of-band with the gateway
+        (`DIRECTORY_TOKEN`). Compare in constant time.
+
+  responses:
+    Unauthorized:
+      description: "No Authorization: Bearer header on an endpoint that requires one."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The token is wrong, or this caller may not read credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many requests; the gateway retries on its next cycle.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerError:
+      description: Unexpected failure. The gateway keeps its last-good state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    EntryId:
+      type: string
+      pattern: "^[A-Za-z0-9._:-]{1,64}$"
+      description: |
+        Stable, unique key for one host entry. The gateway matches menu rows
+        by this value across syncs; never recycle an id for a different host.
+      examples: ["as400-prod-01"]
+
+    Entry:
+      type: object
+      required: [id, name, host, autoSignOn]
+      additionalProperties: false
+      description: |
+        One connection-menu entry. The gateway materializes it with its
+        `DIRECTORY_TEMPLATE_*` settings (proxy, code page, terminal model,
+        printer, recording); only `host` — and optionally `port`/`ssl` — come
+        from the entry. Credentials never appear here.
+      properties:
+        id: { $ref: "#/components/schemas/EntryId" }
+        name:
+          type: string
+          maxLength: 40
+          description: Menu label. Falls back to `host` when empty.
+        description:
+          type: string
+          maxLength: 120
+          description: Second line on the menu row — shown when the gateway's
+            `DIRECTORY_TEMPLATE_DESCRIPTION` pattern is empty, or wherever it
+            puts `{description}`.
+        host:
+          type: string
+          maxLength: 253
+          description: Hostname or IP the gateway connects to (TN5250).
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Overrides the template's port when present.
+        ssl:
+          type: boolean
+          description: Overrides the template's TLS setting when present.
+        autoSignOn:
+          type: boolean
+          description: True when `GET /v1/entries/{id}/credentials` will
+            return a pair (drives the menu's "auto sign-on" marker).
+
+    Credentials:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 10
+          description: IBM i user profile (10 characters, A-Z 0-9 and # $ @ _).
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Account password, verbatim.
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable, log-safe message (never a secret).

@@ -160,7 +160,18 @@
                   <span class="check"><input id="f-recording" type="checkbox" /> <em>let users record their
                     sessions for replay (a REC control starts and stops the recording — nothing is
                     recorded until the user starts it; passwords are never captured)</em></span>
+                  <label for="f-signuser">Sign-on user</label>
+                  <input id="f-signuser" maxlength="10" autocapitalize="characters" placeholder="(manual sign-on)"
+                         title="IBM i user profile signed on automatically when this system is opened. Leave both sign-on fields empty for the normal sign-on screen." />
+                  <label for="f-signpass">Sign-on password</label>
+                  <input id="f-signpass" type="password" maxlength="128" autocomplete="new-password"
+                         title="Its password — stored in the gateway catalog (like the proxy password) and typed server-side at sign-on; it never reaches the browser." />
                 </div>
+                <p id="admin-dirnote" class="admin-note hidden" role="status">
+                  Directory-managed system — every field here comes from the directory service
+                  template, and the next sync overwrites manual edits. Change the entry (or the
+                  <code>DIRECTORY_TEMPLATE_*</code> environment) instead.
+                </p>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">
                   <button id="admin-save" type="submit" class="primary">Save</button>
@@ -170,10 +181,12 @@
               <p id="admin-transfer-note" class="admin-note hidden" role="status"></p>
               <div class="admin-actions" id="admin-list-actions">
                 <button id="admin-add" type="button">Add system</button>
+                <button id="admin-dirsync" type="button" class="hidden"
+                        title="Pull the entry list from the directory service right now (it also re-syncs on a timer)">Sync directory</button>
                 <button id="admin-export" type="button"
-                        title="Download every system (with proxy and printer settings) as a JSON file">Export</button>
+                        title="Download every manual system (with proxy and printer settings) as a JSON file — directory systems are served by the directory service and excluded">Export</button>
                 <button id="admin-import" type="button"
-                        title="Upload a JSON export — replaces the whole system list">Import</button>
+                        title="Upload a JSON export — replaces the whole manual system list">Import</button>
               </div>
               <input id="admin-import-file" type="file" accept=".json,application/json"
                      class="hidden" tabindex="-1" aria-hidden="true" />

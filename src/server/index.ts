@@ -18,6 +18,7 @@ import { loadConfig } from './config.ts';
 import { HostSession, type SessionQuery, type AutoQuery } from './gateway.ts';
 import { getSession, getSessionByShare, allSessions } from './sessions.ts';
 import { Systems } from './systems.ts';
+import { Directory } from './directory.ts';
 import { Printers } from './printers.ts';
 import { Audit } from './audit.ts';
 import { Maintenance } from './maintenance.ts';
@@ -40,12 +41,20 @@ const maintenance = new Maintenance(audit);
 const recordings = new Recordings(cfg);
 recordings.start();
 const adminAuth = new AdminAuth(cfg);
+// Directory service (optional): menu entries + sign-on credentials from a
+// microservice in front of an existing host/credential database. Off unless
+// DIRECTORY_URL is set; the sync keeps the menu's directory rows current.
+const directory = new Directory(cfg, systems, {
+  audit,
+  onSystemsChanged: () => printers.sync()
+});
 const api = createApiHandler(cfg, systems, {
   printers,
   audit,
   maintenance,
   recordings,
   adminAuth,
+  directory,
   onSystemsChanged: () => printers.sync()
 });
 
@@ -168,90 +177,138 @@ server.on('upgrade', (req, socket, head) => {
     const fwd = req.headers['x-forwarded-for'];
     const clientIp = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]?.trim();
     const identity = identityOf(req);
+    // The directory credential lookup is asynchronous: everything after the
+    // upgrade runs in its own task, with a dead-socket backstop.
+    void openSession(ws, query, system, identity, clientIp ?? null).catch(() => ws.terminate());
+  });
+});
 
-    // ?view=<share token>: attach this socket as a read-only mirror of a
-    // running session. Any number of viewers may watch at once (locally or
-    // remotely - the link is just a URL to this origin); none of them can
-    // type, evict the controlling front-end or keep the session alive past
-    // its grace - until the owner grants one a remote-assist lease.
-    if (query.view) {
-      const core = getSessionByShare(query.view);
-      if (!core || core.isDestroyed) {
-        console.log(`[ws] view refused: unknown or expired share token`);
-        ws.send(
-          JSON.stringify({
-            t: 'status',
-            status: 'error',
-            detail: 'This shared session is no longer available (it ended or the server restarted).'
-          })
-        );
-        ws.close(1000, 'unknown session');
-        return;
-      }
-      console.log(
-        `[ws] viewer${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
-          `${core.devName ?? 'no device'} (mirror of ${core.sessionInfo.host}:${core.sessionInfo.port})`
-      );
-      wireSocket(ws, core.attachViewer(ws, identity));
-      return;
-    }
-
-    // ?attach=<token>: bind this socket to an already-running host session
-    // (pop-out window, reload re-attach). A second attach takes the session
-    // over from the first front-end, which is told with status 'detached'.
-    if (query.attach) {
-      const core = getSession(query.attach);
-      if (!core || core.isDestroyed) {
-        console.log(`[ws] attach refused: unknown or expired session token`);
-        // Upgrade anyway and say why - the browser shows a real message
-        // instead of a bare close.
-        ws.send(
-          JSON.stringify({
-            t: 'status',
-            status: 'error',
-            detail: 'This session is no longer available (it ended or the grace period expired).'
-          })
-        );
-        ws.close(1000, 'unknown session');
-        return;
-      }
-      const target = { host: core.sessionInfo.host, port: core.sessionInfo.port };
-      console.log(
-        `[ws] attach${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
-          `${target.host}:${target.port} (${core.devName ?? 'no device'})`
-      );
-      wireSocket(ws, core.attach(ws, identity));
-      return;
-    }
-
-    // Maintenance windows block *new* sessions on the affected systems (an
-    // existing session keeps running - it is banner'd and drained at the
-    // deadline instead). Watching and re-attaching stay allowed above.
-    const blocked = maintenance.blocked(query.systemId);
-    if (blocked) {
-      console.log(`[ws] session refused: maintenance on ${query.systemId ?? 'the gateway'}`);
+/**
+ * Post-upgrade session wiring for a fresh (non-attach, non-view) socket:
+ * resolves a directory system's sign-on credential, then opens the session.
+ */
+async function openSession(
+  ws: import('ws').WebSocket,
+  query: SessionQuery,
+  system: import('./systems.ts').SystemRow | undefined,
+  identity: string | null,
+  clientIp: string | null
+): Promise<void> {
+  // ?view=<share token>: attach this socket as a read-only mirror of a
+  // running session. Any number of viewers may watch at once (locally or
+  // remotely - the link is just a URL to this origin); none of them can
+  // type, evict the controlling front-end or keep the session alive past
+  // its grace - until the owner grants one a remote-assist lease.
+  if (query.view) {
+    const core = getSessionByShare(query.view);
+    if (!core || core.isDestroyed) {
+      console.log(`[ws] view refused: unknown or expired share token`);
       ws.send(
         JSON.stringify({
           t: 'status',
           status: 'error',
-          detail: `This system is in maintenance${blocked.deadlineAt ? ` until ${new Date(blocked.deadlineAt).toLocaleTimeString()}` : ''}: ${blocked.message}`
+          detail: 'This shared session is no longer available (it ended or the server restarted).'
         })
       );
-      ws.close(1000, 'maintenance');
+      ws.close(1000, 'unknown session');
       return;
     }
-
-    const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
     console.log(
-      `[ws] session open${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
-        `${target.host}:${target.port}`
+      `[ws] viewer${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
+        `${core.devName ?? 'no device'} (mirror of ${core.sessionInfo.host}:${core.sessionInfo.port})`
     );
-    wireSocket(
-      ws,
-      new HostSession(cfg, query, system, { identity, clientIp, audit, recordings, adminAuth }).attach(ws, identity)
+    wireSocket(ws, core.attachViewer(ws, identity));
+    return;
+  }
+
+  // ?attach=<token>: bind this socket to an already-running host session
+  // (pop-out window, reload re-attach). A second attach takes the session
+  // over from the first front-end, which is told with status 'detached'.
+  if (query.attach) {
+    const core = getSession(query.attach);
+    if (!core || core.isDestroyed) {
+      console.log(`[ws] attach refused: unknown or expired session token`);
+      // Upgrade anyway and say why - the browser shows a real message
+      // instead of a bare close.
+      ws.send(
+        JSON.stringify({
+          t: 'status',
+          status: 'error',
+          detail: 'This session is no longer available (it ended or the grace period expired).'
+        })
+      );
+      ws.close(1000, 'unknown session');
+      return;
+    }
+    const target = { host: core.sessionInfo.host, port: core.sessionInfo.port };
+    console.log(
+      `[ws] attach${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${core.systemName ? ` [${core.systemName}]` : ''} -> ` +
+        `${target.host}:${target.port} (${core.devName ?? 'no device'})`
     );
+    wireSocket(ws, core.attach(ws, identity));
+    return;
+  }
+
+  // Maintenance windows block *new* sessions on the affected systems (an
+  // existing session keeps running - it is banner'd and drained at the
+  // deadline instead). Watching and re-attaching stay allowed above.
+  const blocked = maintenance.blocked(query.systemId);
+  if (blocked) {
+    console.log(`[ws] session refused: maintenance on ${query.systemId ?? 'the gateway'}`);
+    ws.send(
+      JSON.stringify({
+        t: 'status',
+        status: 'error',
+        detail: `This system is in maintenance${blocked.deadlineAt ? ` until ${new Date(blocked.deadlineAt).toLocaleTimeString()}` : ''}: ${blocked.message}`
+      })
+    );
+    ws.close(1000, 'maintenance');
+    return;
+  }
+
+  // Directory system: resolve its sign-on credential right before the
+  // session starts. A definitive "no credential" (null) opens the manual
+  // sign-on screen; a failed lookup does the same but says why - the
+  // terminal stays usable either way. The credential lives in memory for
+  // the sign-on automation only; it is never stored or sent to the browser.
+  // Manually-configured systems may carry their own stored pair (admin
+  // editor) - the same automatic sign-on, sourced from the catalog.
+  let signOnCredentials: { user: string; password: string; source: 'directory' | 'system' } | undefined;
+  let signOnIssue: string | null = null;
+  if (system?.directoryRef && directory.enabled) {
+    try {
+      const cred = await directory.credentials(system.directoryRef);
+      if (cred) signOnCredentials = { user: cred.username, password: cred.password, source: 'directory' };
+    } catch (e) {
+      signOnIssue = String((e as Error).message ?? e);
+      console.log(`[ws] directory sign-on unavailable for ${system.name}: ${signOnIssue}`);
+      audit.log(identity ?? 'user', 'directory.error', system.directoryRef, signOnIssue);
+    }
+  }
+  if (!signOnCredentials && system?.signOnUser && system?.signOnPassword) {
+    signOnCredentials = { user: system.signOnUser, password: system.signOnPassword, source: 'system' };
+  }
+
+  const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
+  console.log(
+    `[ws] session open${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
+      `${target.host}:${target.port}`
+  );
+  const core = new HostSession(cfg, { ...query, signOnCredentials }, system, {
+    identity,
+    clientIp,
+    audit,
+    recordings,
+    adminAuth
   });
-});
+  if (signOnIssue) {
+    core.queueNotice(
+      'warn',
+      `Automatic sign-on is unavailable (${signOnIssue}). Sign on with your own account.`
+    );
+  }
+  wireSocket(ws, core.attach(ws, identity));
+}
 
 /** Shared per-socket wiring: messages in, detach (not destroy) on close. */
 function wireSocket(ws: import('ws').WebSocket, session: import('./gateway.ts').GatewaySession): void {
@@ -358,6 +415,14 @@ server.listen(cfg.port, cfg.host, () => {
     `menu: ${systems.list().length} system(s) configured (db: ${cfg.dbPath})` +
       `, admin ${cfg.adminPin ? 'enabled' : 'disabled (set ADMIN_PIN to enable)'}`
   );
+  if (cfg.directoryUrl) {
+    console.log(
+      `[directory] ${cfg.directoryUrl} (${cfg.directoryToken ? 'bearer auth' : 'NO AUTH TOKEN'}, ` +
+        `sync ${Math.round(cfg.directorySyncMs / 1000)}s, template ${cfg.directoryTemplate.termType}/${cfg.directoryTemplate.codePage}` +
+        `${cfg.directoryTemplate.proxyHost ? `/SOCKS5 ${cfg.directoryTemplate.proxyHost}` : ''})`
+    );
+    directory.start();
+  }
   console.log(
     `[assist] consent ${cfg.assistConsentMs} ms then ${cfg.assistConsentDefault.toUpperCase()}, ` +
       `lease ${cfg.assistMaxMs} ms (idle ${cfg.assistIdleMs} ms), ` +
@@ -367,6 +432,7 @@ server.listen(cfg.port, cfg.host, () => {
 
 function shutdown(): void {
   clearInterval(pingInterval);
+  directory.stop();
   // Tear every host session down (releases the devices on the IBM i side)
   // before the sockets go away - printer sessions included (their devices
   // must go not-available so the host writer stops targeting them).

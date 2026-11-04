@@ -1,6 +1,6 @@
 {
   "name": "web5250",
-  "version": "1.1.4",
+  "version": "1.2.1",
   "description": "Web-to-5250 (TN5250) terminal gateway for IBM i / AS/400, designed to run behind the Pangolin reverse proxy",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,8 @@
     "test:list": "node scripts/list-nav-test.mjs",
     "test:printer": "node scripts/printer-test.mjs",
     "test:printer-real": "node scripts/printer-real-test.mjs",
-    "test:console": "node scripts/console-test.mjs"
+    "test:console": "node scripts/console-test.mjs",
+    "test:directory": "node scripts/directory-test.mjs"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

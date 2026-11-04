@@ -36,9 +36,34 @@ export interface SystemRow {
   /** Record every session on this system for later replay (opt-in). */
   recording: boolean;
   position: number;
+  /**
+   * Directory marker: 'directory' on rows materialized from the directory
+   * service, null on manual (admin-created) rows. Directory rows keep their
+   * id across syncs (live sessions and printer config survive) but their
+   * connection settings are overwritten by every sync - edit the directory,
+   * not the row.
+   */
+  directory: string | null;
+  /** The directory entry id this row was materialized from. */
+  directoryRef: string | null;
+  /** The directory holds a sign-on credential for this entry. */
+  directoryAutoSignOn: boolean;
+  /**
+   * Manually-configured sign-on account (admin editor): sessions on this
+   * system sign on automatically, like directory systems do. Stored in the
+   * catalog (the proxy password's trust model: PIN-gated admin view only,
+   * stripped from the public menu list). Both set or both null.
+   */
+  signOnUser: string | null;
+  signOnPassword: string | null;
 }
 
-export type SystemInput = Omit<SystemRow, 'id' | 'position'>;
+/** Payload shape for manual create/update: connection settings only (the
+ *  directory marker columns are server-controlled, never input). */
+export type SystemInput = Omit<
+  SystemRow,
+  'id' | 'position' | 'directory' | 'directoryRef' | 'directoryAutoSignOn'
+>;
 
 export type MutationResult = { ok: true; row: SystemRow } | { ok: false; error: string };
 export type ValidationResult = { ok: true; value: SystemInput } | { ok: false; error: string };
@@ -120,6 +145,18 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
   }
   const recording = r.recording === true || r.recording === 'true' || r.recording === 1 || r.recording === '1';
 
+  // Manual sign-on account: both halves or neither. The user profile follows
+  // the IBM i rules (same charset as a device prefix); the password rides
+  // along like the proxy password does.
+  const signOnUser = str(r.signOnUser, 10).toUpperCase();
+  const signOnPassword = str(r.signOnPassword, 128);
+  if (!signOnUser !== !signOnPassword) {
+    return { ok: false, error: 'Sign-on needs both a user and a password (empty both for the manual sign-on screen)' };
+  }
+  if (signOnUser && !PREFIX_RE.test(signOnUser)) {
+    return { ok: false, error: 'Sign-on user may only contain A-Z 0-9 # $ @ _ (max 10 chars)' };
+  }
+
   return {
     ok: true,
     value: {
@@ -138,7 +175,9 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       printerEnabled,
       printerDeviceName: printerDeviceName ? printerDeviceName.toUpperCase() : null,
       printerMode,
-      recording
+      recording,
+      signOnUser: signOnUser || null,
+      signOnPassword: signOnPassword || null
     }
   };
 }
@@ -161,6 +200,11 @@ interface Row {
   printer_device_name: string | null;
   printer_mode: string;
   recording: number;
+  directory: string | null;
+  directory_ref: string | null;
+  directory_autosignon: number;
+  sign_on_user: string | null;
+  sign_on_password: string | null;
   position: number;
 }
 
@@ -182,8 +226,37 @@ const mapRow = (r: Row): SystemRow => ({
   printerDeviceName: r.printer_device_name ?? null,
   printerMode: r.printer_mode === 'raw' ? 'raw' : 'text',
   recording: Number(r.recording ?? 0) !== 0,
+  directory: r.directory ?? null,
+  directoryRef: r.directory_ref ?? null,
+  directoryAutoSignOn: Number(r.directory_autosignon ?? 0) !== 0,
+  signOnUser: r.sign_on_user ?? null,
+  signOnPassword: r.sign_on_password ?? null,
   position: Number(r.position)
 });
+
+/** True when every connection-relevant field of a row matches an input. */
+function sameShape(row: SystemRow, input: SystemInput): boolean {
+  return (
+    row.name === input.name &&
+    row.description === input.description &&
+    row.host === input.host &&
+    row.port === input.port &&
+    row.ssl === input.ssl &&
+    row.termType === input.termType &&
+    row.codePage === input.codePage &&
+    row.devPrefix === input.devPrefix &&
+    row.proxyHost === input.proxyHost &&
+    row.proxyPort === input.proxyPort &&
+    row.proxyUser === input.proxyUser &&
+    row.proxyPass === input.proxyPass &&
+    row.printerEnabled === input.printerEnabled &&
+    row.printerDeviceName === input.printerDeviceName &&
+    row.printerMode === input.printerMode &&
+    row.recording === input.recording &&
+    row.signOnUser === input.signOnUser &&
+    row.signOnPassword === input.signOnPassword
+  );
+}
 
 export class Systems {
   private readonly db: DatabaseSync;
@@ -237,6 +310,17 @@ export class Systems {
     // Databases from before session recording: recording stays off until an
     // admin opts the system in.
     addColumn('recording', 'INTEGER NOT NULL DEFAULT 0');
+    // Databases from before the directory service: existing rows are manual.
+    addColumn('directory', 'TEXT');
+    addColumn('directory_ref', 'TEXT');
+    addColumn('directory_autosignon', 'INTEGER NOT NULL DEFAULT 0');
+    // Databases from before per-system sign-on accounts: no stored credential.
+    addColumn('sign_on_user', 'TEXT');
+    addColumn('sign_on_password', 'TEXT');
+    // One row per directory entry: the sync's upsert key.
+    this.db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS systems_directory_ref ON systems(directory, directory_ref)'
+    );
 
     if (this.list().length === 0) {
       const seed = validateSystemInput(
@@ -291,7 +375,7 @@ export class Systems {
          term_type = ?, code_page = ?, dev_prefix = ?,
          proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
          printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
-         recording = ?,
+         recording = ?, sign_on_user = ?, sign_on_password = ?,
          updated_at = datetime('now') WHERE id = ?`
       )
       .run(
@@ -311,6 +395,8 @@ export class Systems {
         input.printerDeviceName,
         input.printerMode,
         input.recording ? 1 : 0,
+        input.signOnUser,
+        input.signOnPassword,
         id
       );
     return { ok: true, row: this.get(id)! };
@@ -324,11 +410,13 @@ export class Systems {
   }
 
   /**
-   * Import: replace the whole catalog with the given systems. Accepts an
-   * export document ({kind, version, systems: [...]}) or a bare array. Every
-   * row validates before anything changes; the swap is one transaction with
-   * menu positions following the array order, so a bad file leaves the
-   * existing configuration untouched.
+   * Import: replace the *manual* catalog with the given systems. Directory
+   * rows are derived from the directory service and survive an import - the
+   * next sync would re-create them anyway. Accepts an export document
+   * ({kind, version, systems: [...]}) or a bare array. Every row validates
+   * before anything changes; the swap is one transaction with menu positions
+   * following the array order (manual rows first, directory rows after), so a
+   * bad file leaves the existing configuration untouched.
    */
   replaceAll(raw: unknown, cfg: Config): { ok: true; rows: SystemRow[] } | { ok: false; error: string } {
     const arr = Array.isArray(raw)
@@ -343,14 +431,16 @@ export class Systems {
       if (!v.ok) return { ok: false, error: `System ${i + 1}: ${v.error}` };
       inputs.push(v.value!);
     }
+    const dirRows = this.list().filter((r) => r.directory !== null);
     this.db.exec('BEGIN');
     try {
-      this.db.exec('DELETE FROM systems');
+      this.db.exec('DELETE FROM systems WHERE directory IS NULL');
       const stmt = this.db.prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, recording, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         printer_enabled, printer_device_name, printer_mode, recording,
+         sign_on_user, sign_on_password, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       inputs.forEach((input, i) =>
         stmt.run(
@@ -370,8 +460,14 @@ export class Systems {
           input.printerDeviceName,
           input.printerMode,
           input.recording ? 1 : 0,
+          input.signOnUser,
+          input.signOnPassword,
           i + 1
         )
+      );
+      // Directory rows follow the imported manual ones, in their own order.
+      dirRows.forEach((row, i) =>
+        this.db.prepare('UPDATE systems SET position = ? WHERE id = ?').run(inputs.length + i + 1, row.id)
       );
       this.db.exec('COMMIT');
     } catch (e) {
@@ -379,6 +475,120 @@ export class Systems {
       throw e;
     }
     return { ok: true, rows: this.list() };
+  }
+
+  /**
+   * Directory sync: reconcile the menu's directory rows with the entry list
+   * the directory service just served. Rows keep their id across syncs (a
+   * live session's system stays addressable); entries that vanished are
+   * removed; manual rows are never touched. Directory rows always sit after
+   * the manual ones, in directory order. Returns what changed (for logging).
+   */
+  syncDirectory(entries: { ref: string; autoSignOn: boolean; input: SystemInput }[]): {
+    added: number;
+    updated: number;
+    removed: number;
+  } {
+    const existing = this.list().filter((r) => r.directory !== null);
+    const byRef = new Map(existing.map((r) => [r.directoryRef!, r]));
+    const seen = new Set<string>();
+    let added = 0;
+    let updated = 0;
+    let removed = 0;
+    const manual = this.list().filter((r) => r.directory === null);
+
+    this.db.exec('BEGIN');
+    try {
+      for (const e of entries) {
+        if (seen.has(e.ref)) continue; // a broken directory may repeat ids
+        seen.add(e.ref);
+        const row = byRef.get(e.ref);
+        if (!row) {
+          this.insertDirectory(e.ref, e.autoSignOn, e.input, manual.length + seen.size);
+          added++;
+        } else if (!sameShape(row, e.input) || row.directoryAutoSignOn !== e.autoSignOn) {
+          this.db
+            .prepare(
+              `UPDATE systems SET name = ?, description = ?, host = ?, port = ?, ssl = ?,
+               term_type = ?, code_page = ?, dev_prefix = ?,
+               proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
+               printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
+               recording = ?, directory_autosignon = ?, position = ?, updated_at = datetime('now')
+               WHERE id = ?`
+            )
+            .run(
+              e.input.name,
+              e.input.description,
+              e.input.host,
+              e.input.port,
+              e.input.ssl ? 1 : 0,
+              e.input.termType,
+              e.input.codePage,
+              e.input.devPrefix,
+              e.input.proxyHost,
+              e.input.proxyPort,
+              e.input.proxyUser,
+              e.input.proxyPass,
+              e.input.printerEnabled ? 1 : 0,
+              e.input.printerDeviceName,
+              e.input.printerMode,
+              e.input.recording ? 1 : 0,
+              e.autoSignOn ? 1 : 0,
+              manual.length + seen.size,
+              row.id
+            );
+          updated++;
+        } else {
+          // Unchanged content, but keep the directory's order authoritative.
+          this.db
+            .prepare('UPDATE systems SET position = ? WHERE id = ?')
+            .run(manual.length + seen.size, row.id);
+        }
+      }
+      for (const row of existing) {
+        if (!seen.has(row.directoryRef!)) {
+          this.db.prepare('DELETE FROM systems WHERE id = ?').run(row.id);
+          removed++;
+        }
+      }
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+    return { added, updated, removed };
+  }
+
+  private insertDirectory(ref: string, autoSignOn: boolean, input: SystemInput, position: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
+         proxy_host, proxy_port, proxy_user, proxy_pass,
+         printer_enabled, printer_device_name, printer_mode, recording,
+         directory, directory_ref, directory_autosignon, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'directory', ?, ?, ?)`
+      )
+      .run(
+        input.name,
+        input.description,
+        input.host,
+        input.port,
+        input.ssl ? 1 : 0,
+        input.termType,
+        input.codePage,
+        input.devPrefix,
+        input.proxyHost,
+        input.proxyPort,
+        input.proxyUser,
+        input.proxyPass,
+        input.printerEnabled ? 1 : 0,
+        input.printerDeviceName,
+        input.printerMode,
+        input.recording ? 1 : 0,
+        ref,
+        autoSignOn ? 1 : 0,
+        position
+      );
   }
 
   /** Swap a system with its neighbour in menu order (dir: 'up' | 'down'). */
@@ -402,8 +612,9 @@ export class Systems {
       .prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, recording, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         printer_enabled, printer_device_name, printer_mode, recording,
+         sign_on_user, sign_on_password, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -422,6 +633,8 @@ export class Systems {
         input.printerDeviceName,
         input.printerMode,
         input.recording ? 1 : 0,
+        input.signOnUser,
+        input.signOnPassword,
         Number(max.m) + 1
       );
     return this.get(Number(res.lastInsertRowid))!;
