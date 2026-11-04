@@ -436,7 +436,8 @@ export class SessionPane {
     // A remembered PIN still needs a fresh ticket per connection (they are
     // single-use). A rejection here means the PIN changed since it was
     // proven - connect without automatic sign-on; the next page asks again.
-    return (await signOnTicketFor(pin)) ?? null;
+    const result = await signOnTicketFor(pin);
+    return 'ticket' in result ? result.ticket : null;
   }
 
   /** connect() continues here once the sign-on protection gate answered. */

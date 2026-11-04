@@ -1504,21 +1504,25 @@ let signOnPinPrompt: Promise<string | null | undefined> | null = null;
 let signOnPinResolve: ((v: string | null | undefined) => void) | null = null;
 
 /**
- * Exchange the protection PIN for a single-use sign-on ticket. Null = the
- * gateway rejected it (wrong PIN, or the admin changed it mid-page).
+ * Exchange the protection PIN for a single-use sign-on ticket. On rejection
+ * returns the gateway's reason ("PIN is not valid", "Too many attempts -
+ * locked for Ns", ...) verbatim - callers show it instead of guessing, so a
+ * lockout never masquerades as a wrong PIN.
  */
-export async function signOnTicketFor(pin: string): Promise<string | null> {
+export async function signOnTicketFor(
+  pin: string
+): Promise<{ ticket: string } | { error: string }> {
   try {
     const res = await fetch(api('api/signon-ticket'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pin })
     });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { ticket?: string };
-    return data.ticket ?? null;
+    const data = (await res.json().catch(() => ({}))) as { ticket?: string; error?: string };
+    if (res.ok && data.ticket) return { ticket: data.ticket };
+    return { error: data.error ?? `PIN check failed (${res.status})` };
   } catch {
-    return null; // unreachable gateway: the connect itself will say so
+    return { error: 'network error - is the gateway reachable?' };
   }
 }
 
@@ -1554,14 +1558,17 @@ function settleSignOnPin(value: string | null | undefined): void {
 async function submitSignOnPin(): Promise<void> {
   const input = $<HTMLInputElement>('signon-pin-input');
   const errEl = $('signon-pin-error');
-  const pin = input.value;
+  // Trimmed like the Settings tab's Save, so the two compare the same string.
+  const pin = input.value.trim();
   if (!pin) {
     errEl.textContent = 'Enter the protection PIN, or choose Sign on myself.';
     return;
   }
-  const ticket = await signOnTicketFor(pin);
-  if (ticket === null) {
-    errEl.textContent = 'PIN is not valid';
+  const result = await signOnTicketFor(pin);
+  if (!('ticket' in result)) {
+    // The gateway's own words: "PIN is not valid" vs "Too many attempts -
+    // locked for Ns" (a lockout refuses even the right PIN - wait it out).
+    errEl.textContent = result.error;
     input.select();
     return;
   }

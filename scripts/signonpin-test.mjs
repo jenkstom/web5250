@@ -276,6 +276,26 @@ async function main() {
   await page.goto(`http://127.0.0.1:${HTTP_PORT}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
 
+  // Arm the gate through the admin UI itself (the way admins do it): what
+  // the Settings tab saves must be exactly what the dialog accepts.
+  await http('PUT', 'api/admin/settings', { signOnPin: null }, token); // start clean
+  await page.click('#menu-admin-btn');
+  await page.waitForSelector('#admin-pin-input', { timeout: 5000 });
+  await page.fill('#admin-pin-input', ADMIN_PIN);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#admin-editor:not(.hidden)', { timeout: 5000 });
+  await page.click('#admin-tabs button[data-tab="settings"]');
+  await page.fill('#f-signonpin', SIGNON_PIN);
+  await page.click('#settings-save');
+  await page.waitForFunction(
+    () => (document.getElementById('settings-signonpin-status')?.textContent ?? '').includes('set'),
+    undefined,
+    { timeout: 5000 }
+  );
+  check('PIN armed via the Settings tab', true);
+  await page.click('#admin-close');
+  await sleep(300); // the menu re-render behind the modal settles
+
   await openPinned();
   await page.waitForSelector('#signon-pin-modal:not(.hidden)', { timeout: 5000 });
   check('opening the system asks for the PIN', true);
@@ -324,6 +344,28 @@ async function main() {
   await sleep(1500);
   check('remembered PIN: no second dialog', await page.isHidden('#signon-pin-modal'));
   check('remembered PIN: reconnects', await waitConnected());
+
+  // A lockout refuses even the right PIN - and the dialog must say THAT,
+  // not "PIN is not valid" (the reported bug).
+  for (let i = 0; i < 5; i++) await http('POST', 'api/signon-ticket', { pin: '0000' });
+  await page.evaluate(() => sessionStorage.clear());
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#menu:not(.hidden) .menu-row', { timeout: 10000 });
+  await openPinned();
+  await page.waitForSelector('#signon-pin-modal:not(.hidden)', { timeout: 5000 });
+  await page.fill('#signon-pin-input', SIGNON_PIN); // the CORRECT pin, but locked
+  await page.click('#signon-pin-ok');
+  await page.waitForFunction(
+    () => (document.getElementById('signon-pin-error')?.textContent ?? '') !== '',
+    undefined,
+    { timeout: 5000 }
+  );
+  const lockMsg = (await page.textContent('#signon-pin-error')) ?? '';
+  check(
+    'lockout says so (not "not valid")',
+    lockMsg.includes('Too many attempts') && !lockMsg.includes('not valid'),
+    lockMsg
+  );
   await browser.close();
 
   // ------------------------------------------------ C. lockout + disarm round trip
