@@ -74,6 +74,13 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   contents are blanked server-side so **passwords never reach the browser**.
   The terminal always **fits its window** (and its split pane), re-fitting
   as the layout changes.
+- **Built-in manuals**: a retro AS/400-style hypertext help system —
+  green-screen panels, turquoise links, Tab-cycled selection cursor — with a
+  **user guide** (Help button on the selection panel, `?` key, or the `?`
+  button on any terminal pane) and an **admin guide** (Help in the console
+  toolbar). Pages cross-link like the 5250's own help, every page ends with
+  a topic index, and navigation backtracks like a browser (Backspace /
+  Alt+← to go back, Alt+→ forward, Esc to exit).
 - **STRPCCMD opens URIs in the browser**: when a host program runs
   `STRPCCMD PCCMD('start https://…')` (the PC-command escape real emulators
   implement), the gateway extracts the http(s) URI — it never appears on

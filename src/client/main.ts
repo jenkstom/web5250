@@ -14,6 +14,7 @@ import { buildKeypad } from './keypad.ts';
 import { initSpool, spoolVisible, closeSpool } from './spool.ts';
 import { initPlayer } from './player.ts';
 import { initHistory, openHistory, historyVisible, closeHistory } from './history.ts';
+import { helpVisible } from './help/help.ts';
 import {
   closePanePickers,
   fetchSystems,
@@ -1109,7 +1110,7 @@ const ctxOpen = (): boolean => !$('ctx-menu').classList.contains('hidden');
 const copyFallbackOpen = (): boolean => !$('copy-fallback').classList.contains('hidden');
 const uiSurfaceOpen = (): boolean =>
   menuVisible() || ctxOpen() || copyFallbackOpen() || spoolVisible() || historyVisible() ||
-  !$('keys-modal').classList.contains('hidden');
+  helpVisible() || !$('keys-modal').classList.contains('hidden');
 
 const sendKey: SendKey = (k, ch) => {
   activePane?.sendKey(k, ch);

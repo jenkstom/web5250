@@ -5,6 +5,7 @@
 // keys / a number + Enter, or by tapping. The admin editor (PIN-gated on the
 // server via ADMIN_PIN) manages that list: add, edit, delete, reorder.
 import { recheckSpool } from './spool.ts';
+import { openHelp } from './help/help.ts';
 export interface MenuSystem {
   id: number;
   name: string;
@@ -252,6 +253,9 @@ export function initMenu(): void {
     } else if (e.key === 'a' || e.key === 'A') {
       e.preventDefault();
       openAdmin();
+    } else if (e.key === '?') {
+      e.preventDefault();
+      openHelp('user');
     } else if (e.key === 'Escape') {
       option.value = systems.length ? String(selected + 1) : '';
     }
@@ -283,12 +287,16 @@ export function initMenu(): void {
     } else if (e.key === 'a' || e.key === 'A') {
       e.preventDefault();
       openAdmin();
+    } else if (e.key === '?') {
+      e.preventDefault();
+      openHelp('user');
     } else if (e.key === 'Escape') {
       hideMenu();
     }
   });
 
   $('menu-go').addEventListener('click', () => connectTo(selected));
+  $('menu-help-btn').addEventListener('click', () => openHelp('user'));
   $('menu-admin-btn').addEventListener('click', openAdmin);
 
   // Split view: the shell lays the current page out into split panes in
@@ -1325,6 +1333,7 @@ async function submitPin(): Promise<void> {
 function initAdmin(): void {
   $('admin-cancel').addEventListener('click', closeAdmin);
   $('admin-close').addEventListener('click', closeAdmin);
+  $('admin-help').addEventListener('click', () => openHelp('admin'));
   $('admin-logout').addEventListener('click', () => {
     adminToken = null;
     localStorage.removeItem(ADMIN_TOKEN_KEY);

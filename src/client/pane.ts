@@ -9,6 +9,7 @@
 // targets).
 import { Terminal, type OiaState } from './term.ts';
 import { displayName, loadMeta, ADMIN_TOKEN_KEY, type MenuSystem } from './menu.ts';
+import { openHelp } from './help/help.ts';
 
 export interface SessionTarget {
   system?: MenuSystem;
@@ -232,6 +233,7 @@ export class SessionPane {
         services.onSplitPane(this, 'v')
       ),
       btn('pane-menubtn', '☰', 'Pick a system for this pane', () => services.openSystemMenu(this)),
+      btn('pane-helpbtn', '?', 'Open the user guide', () => openHelp('user')),
       this.shareBtn,
       this.popBtn,
       btn('pane-closebtn', '×', 'Close this pane (an active session is asked for and then ended)', () =>
