@@ -36,6 +36,9 @@ export class Tn5250Client {
   private sock: net.Socket | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private connectTimer: NodeJS.Timeout | null = null;
+  private negPulseTimer: NodeJS.Timeout | null = null;
+  private negStartedAt = 0;
+  private rxBytes = 0;
   private destroyed = false;
   private recordsSeen = 0;
   /** Bounded protocol capture for the server logs (first records of a session). */
@@ -57,7 +60,8 @@ export class Tn5250Client {
     this.telnet = new Telnet5250(opts.termType, opts.deviceName, {
       onRecord: (rec) => this.handleRecord(rec),
       onNegotiated: () => this.setStatus('negotiating'),
-      onWarn: (msg) => this.warn(`telnet: ${msg}`)
+      onWarn: (msg) => this.warn(`telnet: ${msg}`),
+      onDiag: (line) => this.diag(`[tn5250 ${opts.deviceName ?? '-'}] ${line}`)
     });
     this.parser = new Parser5250(
       this.screen,
@@ -126,6 +130,7 @@ export class Tn5250Client {
   connect(): void {
     if (this.destroyed) return;
     const timeout = this.opts.connectTimeoutMs ?? 15000;
+    this.negStartedAt = Date.now();
 
     this.connectTimer = setTimeout(() => {
       if (this.status === 'connecting') {
@@ -180,15 +185,38 @@ export class Tn5250Client {
     socket.setNoDelay(true);
     socket.on('error', (err) => {
       if (this.destroyed) return;
+      if (this.recordsSeen === 0) this.diagNegSummary(`error: ${err.message}`);
       this.setStatus('error', err.message);
       this.destroy();
     });
     socket.on('close', () => {
       if (this.destroyed) return;
+      if (this.recordsSeen === 0) this.diagNegSummary('closed by host');
       this.setStatus('closed');
       this.destroy();
     });
-    socket.on('data', (chunk: Buffer) => this.telnet.receive(chunk));
+    socket.on('data', (chunk: Buffer) => {
+      this.rxBytes += chunk.length;
+      this.telnet.receive(chunk);
+    });
+    // The transport line anchors the diagnostics export: for a session that
+    // never gets past "negotiating" it names the exact path that went quiet
+    // (which proxy, TLS or not, which host:port).
+    const via = this.opts.proxy
+      ? `socks5 via ${this.opts.proxy.host}:${this.opts.proxy.port}`
+      : this.opts.ssl
+        ? 'tls'
+        : 'direct';
+    this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] transport ${via} -> ${this.opts.host}:${this.opts.port} up, negotiating`);
+    // A stuck negotiation has no timeout of its own (the connect timer only
+    // covers the connecting state); pulse the diagnostics buffer so a
+    // mid-hang export states how long and how silent it has been.
+    this.negPulseTimer = setInterval(() => {
+      if (this.status !== 'negotiating' || this.destroyed) return;
+      this.diag(
+        `[tn5250 ${this.opts.deviceName ?? '-'}] negotiating still: ${Math.round((Date.now() - this.negStartedAt) / 1000)}s, rx=${this.rxBytes}B, records=${this.recordsSeen}`
+      );
+    }, 30000);
     if (ready === null) {
       this.clearConnectTimer();
       this.setStatus('negotiating');
@@ -198,6 +226,13 @@ export class Tn5250Client {
         this.setStatus('negotiating');
       });
     }
+  }
+
+  /** Closing line when the session dies before any 5250 record arrived. */
+  private diagNegSummary(what: string): void {
+    const secs = Math.round((Date.now() - this.negStartedAt) / 1000);
+    const silent = this.rxBytes === 0 ? ' (nothing was ever received)' : '';
+    this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] ${what} after ${secs}s - rx=${this.rxBytes}B, records=0${silent}`);
   }
 
   private clearConnectTimer(): void {
@@ -212,7 +247,16 @@ export class Tn5250Client {
       const pc = this.parser.parse(rec);
       this.capture(rec);
       this.recordsSeen++;
-      if (this.status !== 'connected') this.setStatus('connected');
+      if (this.status !== 'connected') {
+        if (this.negPulseTimer) {
+          clearInterval(this.negPulseTimer);
+          this.negPulseTimer = null;
+        }
+        this.diag(
+          `[tn5250 ${this.opts.deviceName ?? '-'}] first record after ${Math.round((Date.now() - this.negStartedAt) / 1000)}s (rx=${this.rxBytes}B)`
+        );
+        this.setStatus('connected');
+      }
       if (pc) {
         // STRPCCMD: the parser already erased the carrier block from the
         // buffer and no screen change is broadcast - the command text must
@@ -247,6 +291,7 @@ export class Tn5250Client {
     this.destroyed = true;
     this.clearConnectTimer();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.negPulseTimer) clearInterval(this.negPulseTimer);
     this.sock?.destroy();
     if (this.status !== 'error' && this.status !== 'closed') this.setStatus('closed');
   }

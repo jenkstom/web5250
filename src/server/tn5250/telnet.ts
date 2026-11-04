@@ -21,6 +21,13 @@ export interface TelnetCallbacks {
   /** Non-fatal protocol surprise (logged upstream). */
   onWarn?: (msg: string) => void;
   /**
+   * Negotiation-phase traffic, one line per direction (raw hex, bounded):
+   * everything that flows before the first record. A session stuck at
+   * "negotiating" exports these lines, so "the host said nothing" is
+   * distinguishable from "the host said something unexpected".
+   */
+  onDiag?: (line: string) => void;
+  /**
    * The host asked for DEVNAME again after we already sent one - the
    * RFC 2877 name-collision signal (it re-asks until the client offers an
    * unused name). Only fires when deviceNameRetry is disabled.
@@ -60,6 +67,10 @@ export class Telnet5250 {
   private devNameSent = false;
   negotiated = false;
 
+  // Bounded pre-record traffic capture: a DEVNAME collision loop would
+  // otherwise fill the diagnostics buffer with repeated exchanges.
+  private negDiagLines = 0;
+
   constructor(
     termType: string,
     deviceName: string | null,
@@ -82,6 +93,7 @@ export class Telnet5250 {
   /** Feed raw socket data. */
   receive(chunk: Buffer): void {
     if (this.trace) console.log('[tn5250 rx]', chunk.toString('hex'));
+    if (!this.negotiated) this.diagTraffic('rx', chunk);
     for (let i = 0; i < chunk.length; i++) {
       const b = chunk[i];
 
@@ -257,9 +269,27 @@ export class Telnet5250 {
   private send(data: Buffer | number[]): void {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     if (this.trace) console.log('[tn5250 tx]', buf.toString('hex'));
+    if (!this.negotiated) this.diagTraffic('tx', buf);
     if (this.sock && !this.sock.destroyed) {
       this.sock.write(buf);
     }
+  }
+
+  /**
+   * One pre-first-record traffic line for the diagnostics export, capped in
+   * line count and hex length (the record that completes negotiation is
+   * fully captured by the regular rx#N logging that starts right after).
+   */
+  private diagTraffic(dir: 'rx' | 'tx', buf: Buffer): void {
+    const cap = 48;
+    if (this.negDiagLines >= cap) {
+      if (this.negDiagLines === cap) this.cb.onDiag?.('neg ... further negotiation traffic not logged');
+      this.negDiagLines++;
+      return;
+    }
+    this.negDiagLines++;
+    const hex = buf.subarray(0, 64).toString('hex') + (buf.length > 64 ? '...' : '');
+    this.cb.onDiag?.(`neg ${dir} ${hex}`);
   }
 
   /** Raw telnet heartbeat (IAC NOP) - keeps idle sessions alive. */

@@ -311,6 +311,7 @@ const userPages: HelpPage[] = [
     blocks: [
       keys(
         ['Connection failed', 'The host was unreachable: wrong address, host down, or the proxy path is broken. Try Reconnect once; then tell the administrator'],
+        ['Stuck on Negotiating', 'The connection opened but no screen data came back - usually the proxy path to the host. If the Diag button is shown, send its export: it records whether the host answered at all'],
         ['Sign-on failed', 'On {{auto sign-on|u-signon}} systems the stored account was rejected - report it. On manual systems: check user/password, Caps Lock'],
         ['Keyboard dead, X II', 'Input error - press Reset ({{Ctrl+R|u-keyboard}})'],
         ['Keyboard dead, X SYSTEM', 'The host is processing - wait for the status to clear'],
