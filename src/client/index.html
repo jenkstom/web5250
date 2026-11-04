@@ -117,6 +117,7 @@
                 <button type="button" data-tab="sessions">Sessions</button>
                 <button type="button" data-tab="recordings">Recordings</button>
                 <button type="button" data-tab="audit">Audit</button>
+                <button type="button" data-tab="settings">Settings</button>
               </div>
               <div id="admin-tab-systems">
                 <ul id="admin-list"></ul>
@@ -231,7 +232,48 @@
                 </div>
                 <ul id="audit-list"></ul>
               </div>
+
+              <div id="admin-tab-settings" class="hidden">
+                <p class="admin-lead">Gateway-wide settings.</p>
+                <div class="panel-title small">AUTOMATIC SIGN-ON PROTECTION</div>
+                <p class="admin-lead">An optional shared PIN in front of automatic sign-on.
+                  While it is set, users must enter it once per page before a system signs
+                  them on automatically; a missing or wrong PIN still connects — it just
+                  opens the normal sign-on screen. Unattended <code>?auto=1</code> launches
+                  on the shared server account are never asked.</p>
+                <div class="admin-fields">
+                  <label for="f-signonpin">Protection PIN</label>
+                  <input id="f-signonpin" type="password" maxlength="64" autocomplete="new-password"
+                         placeholder="(no protection — automatic sign-on without a PIN)"
+                         title="Shared PIN users must enter before a system signs them on automatically. Clear Protection turns it back off." />
+                </div>
+                <p id="settings-signonpin-status" class="admin-note" role="status"></p>
+                <p id="settings-error" class="admin-error" role="alert"></p>
+                <div class="admin-actions">
+                  <button id="settings-save" type="button" class="primary">Save</button>
+                  <button id="settings-clear" type="button" class="ghost">Clear protection</button>
+                </div>
+              </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="signon-pin-modal" class="hidden">
+        <div id="signon-pin-card">
+          <div class="panel-title">AUTOMATIC SIGN-ON</div>
+          <p class="admin-lead">This system can sign you on automatically, and the
+            administrator protects that with a PIN. Enter it to sign on automatically,
+            or continue to the normal sign-on screen.</p>
+          <div class="admin-fields">
+            <label for="signon-pin-input">Protection PIN</label>
+            <input id="signon-pin-input" type="password" autocomplete="off" />
+          </div>
+          <p id="signon-pin-error" class="admin-error" role="alert"></p>
+          <div class="admin-actions">
+            <button id="signon-pin-ok" type="button" class="primary">Sign on automatically</button>
+            <button id="signon-pin-skip" type="button" class="ghost">Sign on myself</button>
+            <button id="signon-pin-cancel" type="button" class="ghost">Cancel</button>
           </div>
         </div>
       </div>

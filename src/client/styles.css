@@ -1124,6 +1124,29 @@ button.primary { border-color: var(--green); color: var(--green); }
 .pager button:disabled:hover { background: none; }
 #audit-page-label { color: var(--dim); font-size: 0.82rem; white-space: nowrap; }
 
+/* ------------------------------------------------- sign-on PIN modal ----- */
+/* Shown before a connection when the system signs on automatically and the
+   admin armed the protection PIN: prove it, sign on yourself, or cancel. */
+#signon-pin-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(4, 8, 6, 0.85);
+}
+#signon-pin-modal.hidden { display: none; }
+
+#signon-pin-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  width: min(92vw, 30rem);
+  padding-bottom: 1.1rem;
+}
+
 /* Session history modal */
 #history-card {
   background: var(--panel);

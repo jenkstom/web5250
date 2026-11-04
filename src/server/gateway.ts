@@ -62,6 +62,12 @@ export interface SessionQuery {
    * memory only for the sign-on automation.
    */
   signOnCredentials?: { user: string; password: string; source?: 'directory' | 'system' };
+  /**
+   * Single-use ticket from POST /api/signon-ticket (?signonticket=<hex>):
+   * the user's proof of the sign-on protection PIN, when the admin set one.
+   * Absent/invalid simply skips automatic sign-on (the session still opens).
+   */
+  signOnTicket?: string;
 }
 
 export interface AutoQuery {

@@ -108,10 +108,18 @@ const userPages: HelpPage[] = [
           `credential never reaches your browser, and password fields are always blanked on screen.`
       ),
       p(`What you see: a short Connecting phase while the sign-on is typed, then your initial program's screen.`),
+      h('The protection PIN'),
+      p(
+        `The administrator can protect automatic sign-on with a shared PIN. When one is set, opening an ` +
+          `auto sign-on system asks for it first: enter the PIN to sign on automatically (asked once per ` +
+          `page - later panes and reconnects don't ask again), or choose Sign on myself to land on the ` +
+          `normal sign-on screen. Cancel goes back to the system selection without connecting.`
+      ),
       h('When something goes wrong'),
       ul(
         `Sign-on failed - the host rejected the stored account. Tell the administrator; the session closes by itself.`,
         `A banner "Automatic sign-on is unavailable" - the directory could not be reached, so the normal sign-on screen appears instead. Sign on with your own account.`,
+        `A banner "Automatic sign-on was skipped" - the protection PIN was not entered; sign on with your own account.`,
         `No marker on the menu row - the system simply expects you to sign on manually.`
       ),
       p(`Related: {{the system selection panel|u-menu}}, {{troubleshooting|u-trouble}}.`)
@@ -334,7 +342,8 @@ const adminPages: HelpPage[] = [
       p(
         `The console manages the {{system list|a-systems}}, live {{sessions|a-sessions}} and ` +
           `{{maintenance windows|a-maintenance}}, {{recordings|a-recordings}} and the ` +
-          `{{audit trail|a-audit}} - plus {{config transfer|a-transfer}}.`
+          `{{audit trail|a-audit}} - plus {{gateway settings|a-settings}} and ` +
+          `{{config transfer|a-transfer}}.`
       ),
       h('Signing on'),
       ul(
@@ -392,7 +401,30 @@ const adminPages: HelpPage[] = [
       p(
         `The password is typed server-side into the sign-on screen and never reaches the browser; a ` +
           `rejected sign-on ends the session with "Sign-on failed".`
-      )
+      ),
+      p(`The optional {{protection PIN|a-settings}} gates these sign-ons behind a shared secret.`)
+    ]
+  },
+  {
+    id: 'a-settings',
+    title: 'Settings',
+    subtitle: 'Gateway-wide settings',
+    blocks: [
+      h('Automatic sign-on protection'),
+      p(
+        `Set a shared PIN and every automatic sign-on ({{stored accounts|a-signon}} and ` +
+          `{{directory|a-directory}} credentials) waits for the user to prove it first - asked once per ` +
+          `page. A user who doesn't know the PIN (or chooses Sign on myself) still connects; they just ` +
+          `get the normal sign-on screen. Leave it unset and automatic sign-on works as before, with no ` +
+          `extra question.`
+      ),
+      ul(
+        `The PIN is stored as a hash only and never displayed again - to change it, type the new one and Save`,
+        `Clear protection turns the gate off`,
+        `Unattended ?auto=1 launches on the shared AUTO_SIGNON_* account are never asked`,
+        `Arming and clearing the gate is recorded in the {{audit trail|a-audit}}`
+      ),
+      p(`Related: {{security notes|a-security}}.`)
     ]
   },
   {

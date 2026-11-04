@@ -50,6 +50,8 @@ interface Meta {
   identityHeader?: boolean;
   /** Directory service integration configured (DIRECTORY_URL). */
   directory?: boolean;
+  /** The sign-on protection PIN is armed (prompt before automatic sign-on). */
+  signOnPin?: boolean;
   termTypes: string[];
   codePages: string[];
   defaults: { port: number; ssl: boolean; termType: string; codePage: string; devPrefix: string };
@@ -317,6 +319,7 @@ export function initMenu(): void {
   });
 
   initAdmin();
+  initSignOnPinPrompt();
 }
 
 // ---------------------------------------------------------- pane pickers
@@ -748,12 +751,61 @@ function stopConsolePoll(): void {
   sessionsTimer = undefined;
 }
 
+// ---------------------------------------------------------- settings tab
+// Gateway-wide settings. Today: the sign-on protection PIN, the optional
+// shared gate in front of automatic sign-on (promptSignOnPin is the user
+// side of the same setting).
+
+async function refreshSettings(): Promise<void> {
+  const status = $('settings-signonpin-status');
+  try {
+    const res = await adminCall('GET', 'api/admin/settings');
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as { signOnPin?: boolean };
+    status.textContent = data.signOnPin
+      ? 'A protection PIN is set — users are asked for it before an automatic sign-on.'
+      : 'No protection PIN — systems with a sign-on account sign on automatically.';
+  } catch {
+    status.textContent = 'settings unavailable — close and reopen the Admin console';
+  }
+}
+
+async function saveSettingsPin(): Promise<void> {
+  const errEl = $('settings-error');
+  errEl.textContent = '';
+  const pin = $<HTMLInputElement>('f-signonpin').value.trim();
+  if (!pin) {
+    errEl.textContent = 'Enter a PIN (4 to 64 characters), or use Clear protection to turn it off.';
+    return;
+  }
+  const res = await adminCall('PUT', 'api/admin/settings', { signOnPin: pin });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    errEl.textContent = err.error ?? `save failed (${res.status})`;
+    return;
+  }
+  $<HTMLInputElement>('f-signonpin').value = '';
+  await refreshSettings();
+}
+
+async function clearSettingsPin(): Promise<void> {
+  $('settings-error').textContent = '';
+  const res = await adminCall('PUT', 'api/admin/settings', { signOnPin: null });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    $('settings-error').textContent = err.error ?? `clear failed (${res.status})`;
+    return;
+  }
+  $<HTMLInputElement>('f-signonpin').value = '';
+  await refreshSettings();
+}
+
 function switchAdminTab(tab: string): void {
   stopConsolePoll();
   for (const b of $('admin-tabs').querySelectorAll('button')) {
     b.classList.toggle('active', (b as HTMLElement).dataset.tab === tab);
   }
-  for (const t of ['systems', 'sessions', 'recordings', 'audit']) {
+  for (const t of ['systems', 'sessions', 'recordings', 'audit', 'settings']) {
     $(`admin-tab-${t}`).classList.toggle('hidden', t !== tab);
   }
   if (tab === 'sessions') {
@@ -764,6 +816,8 @@ function switchAdminTab(tab: string): void {
     void refreshRecordings();
   } else if (tab === 'audit') {
     void refreshAudit();
+  } else if (tab === 'settings') {
+    void refreshSettings();
   }
 }
 
@@ -1381,6 +1435,9 @@ function initAdmin(): void {
     b.addEventListener('click', () => switchAdminTab((b as HTMLElement).dataset.tab ?? 'systems'));
   }
   $('recordings-refresh').addEventListener('click', () => void refreshRecordings());
+  // Settings tab: arm or disarm the automatic sign-on protection PIN.
+  $('settings-save').addEventListener('click', () => void saveSettingsPin());
+  $('settings-clear').addEventListener('click', () => void clearSettingsPin());
   // Refresh shows the newest page again; Prev/Next walk the fetched total.
   $('audit-refresh').addEventListener('click', () => {
     auditPage = 0;
@@ -1408,6 +1465,109 @@ function initAdmin(): void {
       if (e.key !== 'Escape' || $('admin-modal').classList.contains('hidden')) return;
       e.stopPropagation();
       closeAdmin();
+    },
+    true
+  );
+}
+
+// ------------------------------------------------- sign-on PIN prompt ----
+// The user side of the sign-on protection PIN (the admin Settings tab arms
+// it). A connection that would sign on automatically asks first: prove the
+// PIN, sign on yourself, or cancel. A proven PIN is kept in memory for this
+// page only (never sessionStorage/localStorage) so later panes and
+// reconnects don't nag again; the proof travels as a single-use ticket on
+// the WebSocket URL - the PIN itself never rides a URL.
+
+/** A PIN proven this page load; null until the user enters a correct one. */
+let signOnPinVerified: string | null = null;
+let signOnPinPrompt: Promise<string | null | undefined> | null = null;
+let signOnPinResolve: ((v: string | null | undefined) => void) | null = null;
+
+/**
+ * Exchange the protection PIN for a single-use sign-on ticket. Null = the
+ * gateway rejected it (wrong PIN, or the admin changed it mid-page).
+ */
+export async function signOnTicketFor(pin: string): Promise<string | null> {
+  try {
+    const res = await fetch(api('api/signon-ticket'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { ticket?: string };
+    return data.ticket ?? null;
+  } catch {
+    return null; // unreachable gateway: the connect itself will say so
+  }
+}
+
+/**
+ * Ask for the sign-on protection PIN. Resolves with the verified PIN,
+ * null for "sign on myself" (connect, but no automatic sign-on), or
+ * undefined when cancelled (abort the connection). Concurrent callers
+ * (a grid page booting several panes) share one dialog.
+ */
+export function promptSignOnPin(): Promise<string | null | undefined> {
+  if (signOnPinVerified !== null) return Promise.resolve(signOnPinVerified);
+  signOnPinPrompt ??= new Promise((resolve) => {
+    signOnPinResolve = resolve;
+    const input = $<HTMLInputElement>('signon-pin-input');
+    input.value = '';
+    $('signon-pin-error').textContent = '';
+    $('signon-pin-modal').classList.remove('hidden');
+    window.setTimeout(() => input.focus(), 0);
+  });
+  return signOnPinPrompt;
+}
+
+function settleSignOnPin(value: string | null | undefined): void {
+  if (!signOnPinResolve) return;
+  $('signon-pin-modal').classList.add('hidden');
+  if (typeof value === 'string') signOnPinVerified = value;
+  signOnPinPrompt = null; // a later "sign on myself" asks again
+  const resolve = signOnPinResolve;
+  signOnPinResolve = null;
+  resolve(value);
+}
+
+async function submitSignOnPin(): Promise<void> {
+  const input = $<HTMLInputElement>('signon-pin-input');
+  const errEl = $('signon-pin-error');
+  const pin = input.value;
+  if (!pin) {
+    errEl.textContent = 'Enter the protection PIN, or choose Sign on myself.';
+    return;
+  }
+  const ticket = await signOnTicketFor(pin);
+  if (ticket === null) {
+    errEl.textContent = 'PIN is not valid';
+    input.select();
+    return;
+  }
+  input.value = '';
+  settleSignOnPin(pin);
+}
+
+function initSignOnPinPrompt(): void {
+  $('signon-pin-ok').addEventListener('click', () => void submitSignOnPin());
+  $('signon-pin-skip').addEventListener('click', () => settleSignOnPin(null));
+  $('signon-pin-cancel').addEventListener('click', () => settleSignOnPin(undefined));
+  const input = $<HTMLInputElement>('signon-pin-input');
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void submitSignOnPin();
+    }
+  });
+  // Escape cancels the pending connection question (capture phase, swallowed
+  // so nothing underneath - menu or pane - reacts to the same press).
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Escape' || $('signon-pin-modal').classList.contains('hidden')) return;
+      e.stopPropagation();
+      settleSignOnPin(undefined);
     },
     true
   );

@@ -8,7 +8,14 @@
 // layout, focus and what "Systems" means (which pane the shared system menu
 // targets).
 import { Terminal, type OiaState } from './term.ts';
-import { displayName, loadMeta, ADMIN_TOKEN_KEY, type MenuSystem } from './menu.ts';
+import {
+  displayName,
+  loadMeta,
+  promptSignOnPin,
+  signOnTicketFor,
+  ADMIN_TOKEN_KEY,
+  type MenuSystem
+} from './menu.ts';
 import { openHelp } from './help/help.ts';
 
 export interface SessionTarget {
@@ -128,6 +135,11 @@ export class SessionPane {
   readonly term: Terminal;
   target: SessionTarget = {};
   token: string | null = null;
+  /**
+   * Monotonic connect serial: the sign-on PIN gate can pause a connect, and
+   * its answer only opens a socket if no newer connect superseded it.
+   */
+  private connectSeq = 0;
   /** Share token: builds the ?view= mirror link anyone can open read-only. */
   shareToken: string | null = null;
   systemId: number | null = null;
@@ -403,8 +415,40 @@ export class SessionPane {
     // A mirror window is chrome-free: the pane header's split/pick/pop/close
     // controls make no sense for a session this page cannot drive.
     this.barEl.classList.toggle('hidden', this.viewOnly);
+    void this.openSocket();
+  }
 
-    const sock = new WebSocket(this.wsUrl());
+  /**
+   * The sign-on protection gate: when the admin armed the PIN and this
+   * target would sign on automatically (a system with a sign-on account),
+   * ask for it before any socket opens. Resolves with a single-use ticket
+   * for the WebSocket URL, null to connect without automatic sign-on, or
+   * undefined when the user cancelled the connection.
+   */
+  private async signOnGate(): Promise<string | null | undefined> {
+    if (!this.target.system?.autoSignOn) return null;
+    const meta = await loadMeta();
+    if (!meta?.signOnPin) return null;
+    const pin = await promptSignOnPin();
+    if (pin === undefined || pin === null) return pin;
+    // A remembered PIN still needs a fresh ticket per connection (they are
+    // single-use). A rejection here means the PIN changed since it was
+    // proven - connect without automatic sign-on; the next page asks again.
+    return (await signOnTicketFor(pin)) ?? null;
+  }
+
+  /** connect() continues here once the sign-on protection gate answered. */
+  private async openSocket(): Promise<void> {
+    const seq = ++this.connectSeq;
+    const ticket = await this.signOnGate();
+    if (seq !== this.connectSeq) return; // a newer connect took over while asking
+    if (ticket === undefined) {
+      // Cancelled at the PIN question: no connection is made - straight
+      // back to system selection, as if the launch never happened.
+      this.services.openSystemMenu(this);
+      return;
+    }
+    const sock = new WebSocket(this.wsUrl(ticket));
     this.ws = sock;
     sock.addEventListener('open', () => {
       this.setConnState('connecting');
@@ -509,7 +553,7 @@ export class SessionPane {
     this.send({ t: 'key', k });
   }
 
-  private wsUrl(): string {
+  private wsUrl(signOnTicket?: string | null): string {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // Derive the WS endpoint from the page URL so sub-path deployments
     // (https://host/as400/ -> service) resolve to .../as400/ws automatically.
@@ -521,6 +565,10 @@ export class SessionPane {
     else params.delete('attach');
     if (this.target.view) params.set('view', this.target.view);
     else params.delete('view');
+    // The sign-on protection PIN's one-shot proof; explicitly deleted so a
+    // stale page-URL param can never leak a ticket into a later connect.
+    if (signOnTicket) params.set('signonticket', signOnTicket);
+    else params.delete('signonticket');
     // The browser's saved display name rides along; the gateway appends a
     // numeric suffix automatically when another live session already has it.
     const dev = displayName();

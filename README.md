@@ -57,7 +57,10 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   menu list shows no more than a "SOCKS5" marker. Each system may also carry
   a **stored sign-on account** (username + password, same admin-only trust
   model): picking it signs the user on automatically — the public list shows
-  only an `auto sign-on` marker.
+  only an `auto sign-on` marker. An optional system-wide **sign-on
+  protection PIN** (Settings tab) gates those automatic sign-ons behind one
+  shared secret: users enter it once per page before a system signs them on;
+  without it the session still opens — just on the normal sign-on screen.
 - **Directory systems**: menu entries and **automatic sign-on** served from
   your own database of hosts and accounts through a tiny read-only
   microservice (`DIRECTORY_URL`, [docs/directory-service.md](docs/directory-service.md)
@@ -762,10 +765,19 @@ they are derived data. Syncs and failures land in the Audit tab
 
 Manually-configured systems can do the same without a directory: the admin
 editor's **Sign-on user / Sign-on password** fields store an account on the
-system row (the proxy password's trust model — admin-only view, never on
-the public list, never in the browser) and opening the system signs on
+system row (the proxy password's trust model — admin-only view, never on the
+public list, never in the browser) and opening the system signs on
 with it. Empty both fields to return to the normal sign-on screen; import/
 export files carry the pair like every other setting.
+
+Both kinds of automatic sign-on can be gated by an optional system-wide
+**protection PIN** (admin console → Settings → *Automatic sign-on
+protection*): while it is set, users are asked for the PIN the first time a
+system would sign them on automatically (once per page). Entering it wrong —
+or choosing *Sign on myself* — still connects, just without the automatic
+sign-on. The PIN is stored hashed, and the browser exchanges it for a
+single-use ticket so the PIN itself never appears in a URL. Unattended
+`?auto=1` launches on the shared `AUTO_SIGNON_*` account are exempt.
 
 ## Connecting to IBM i
 

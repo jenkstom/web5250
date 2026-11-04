@@ -8,6 +8,7 @@
 //   GET    /api/printjobs/<token>           job download (unguessable token)
 //   DELETE /api/printjobs/<token>           delete job (public, audited)
 //   POST   /api/admin/auth                  {pin} -> {token}
+//   POST   /api/signon-ticket               {pin} -> one-shot sign-on ticket
 //   GET    /api/admin/systems               full rows incl. proxy (Bearer token)
 //   POST   /api/admin/systems               create          (Bearer token)
 //   PUT    /api/admin/systems/<id>          update           (Bearer token)
@@ -22,6 +23,8 @@
 //   POST   /api/admin/systems/<id>/maintenance  window on/off  (Bearer token)
 //   POST   /api/admin/maintenance           gateway-wide window (Bearer token)
 //   GET    /api/admin/maintenance           current windows    (Bearer token)
+//   GET    /api/admin/settings              gateway settings   (Bearer token)
+//   PUT    /api/admin/settings              {signOnPin} set/clear (Bearer token)
 //   GET    /api/admin/directory             directory service status (Bearer token)
 //   POST   /api/admin/directory/sync        pull entries from the directory now
 //   GET    /api/admin/audit                 recent audit trail (Bearer token)
@@ -47,7 +50,10 @@
 // the same policy (admin-only; the public list shows just `autoSignOn`), as
 // does the printer device name on system rows; print jobs and replays
 // themselves are keyed by unguessable per-object tokens (the session-token
-// trust model) and never contain credentials.
+// trust model) and never contain credentials. The sign-on protection PIN
+// (Settings tab) is stored hashed and never returned by any route; users
+// prove it in exchange for single-use tickets that each authorize exactly
+// one automatic sign-on.
 import * as fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { TERM_TYPES } from './tn5250/constants.ts';
@@ -60,6 +66,7 @@ import type { Audit } from './audit.ts';
 import type { Maintenance } from './maintenance.ts';
 import type { Recordings } from './recordings.ts';
 import type { AdminAuth } from './admin-auth.ts';
+import type { Settings } from './settings.ts';
 import { allSessions, getSessionByConsoleId } from './sessions.ts';
 
 const MAX_BODY_BYTES = 32 * 1024;
@@ -89,6 +96,8 @@ export interface ApiDeps {
   maintenance: Maintenance;
   recordings: Recordings;
   adminAuth: AdminAuth;
+  /** Gateway-wide console settings (sign-on protection PIN). */
+  settings: Settings;
   /** Directory service integration (menu entries + auto sign-on). */
   directory: Directory;
   /** Fires after any admin mutation that changed the systems list. */
@@ -143,6 +152,9 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           breakglass: cfg.adminAssistBreakglass,
           identityHeader: cfg.trustedUserHeader !== null,
           directory: deps.directory.enabled,
+          // The sign-on protection PIN is armed (clients prompt before an
+          // automatic sign-on; the PIN itself stays server-side).
+          signOnPin: deps.settings.signOnPinSet(),
           termTypes: TERM_TYPES,
           codePages: Ebcdic.availablePages(),
           defaults: {
@@ -241,6 +253,24 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           return;
         }
         json(res, 200, { token: result.token, expiresInMs: result.expiresInMs });
+      }
+    },
+    {
+      // The user side of the sign-on protection PIN: exchange the PIN for a
+      // single-use, 60 s ticket that rides the WS upgrade (?signonticket=).
+      // The PIN itself never appears in a URL (proxy access logs) - same
+      // lockout cadence as the admin PIN sign-in above.
+      method: 'POST',
+      re: /(?:^|\/)api\/signon-ticket\/?$/,
+      auth: false,
+      run: ({ res, body, deps }) => {
+        const pin = String((body as { pin?: unknown })?.pin ?? '');
+        const result = deps.settings.exchangeSignOnPin(pin);
+        if (!result.ok) {
+          json(res, result.error.startsWith('Too many') ? 429 : 401, { error: result.error });
+          return;
+        }
+        json(res, 200, { ticket: result.ticket, expiresInMs: result.expiresInMs });
       }
     },
     {
@@ -471,6 +501,43 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       re: /(?:^|\/)api\/admin\/maintenance\/?$/,
       auth: true,
       run: ({ res, deps }) => json(res, 200, deps.maintenance.status())
+    },
+    {
+      // ------------------------------------------------------- settings
+      // Gateway-wide console settings. Today: the sign-on protection PIN.
+      method: 'GET',
+      re: /(?:^|\/)api\/admin\/settings\/?$/,
+      auth: true,
+      run: ({ res, deps }) => json(res, 200, { signOnPin: deps.settings.signOnPinSet() })
+    },
+    {
+      // Set ({signOnPin: '....'}) or clear ({signOnPin: null}) the sign-on
+      // protection PIN. Stored hashed only; the audit entry records that the
+      // gate was armed or disarmed - never the value.
+      method: 'PUT',
+      re: /(?:^|\/)api\/admin\/settings\/?$/,
+      auth: true,
+      run: ({ res, req, deps, body }) => {
+        const b = body as { signOnPin?: unknown };
+        if (!('signOnPin' in b)) {
+          json(res, 400, { error: 'signOnPin is required (a string to set it, null to clear it)' });
+          return;
+        }
+        if (b.signOnPin === null || b.signOnPin === '') {
+          deps.settings.setSignOnPin(null);
+          deps.audit.log(actor(req), 'settings.signonpin', '', 'cleared');
+          json(res, 200, { signOnPin: false });
+          return;
+        }
+        const pin = String(b.signOnPin ?? '').trim();
+        if (pin.length < 4 || pin.length > 64) {
+          json(res, 400, { error: 'the protection PIN needs 4 to 64 characters' });
+          return;
+        }
+        deps.settings.setSignOnPin(pin);
+        deps.audit.log(actor(req), 'settings.signonpin', '', 'set');
+        json(res, 200, { signOnPin: true });
+      }
     },
     {
       method: 'GET',

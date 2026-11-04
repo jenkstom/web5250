@@ -24,6 +24,7 @@ import { Audit } from './audit.ts';
 import { Maintenance } from './maintenance.ts';
 import { Recordings } from './recordings.ts';
 import { AdminAuth } from './admin-auth.ts';
+import { Settings } from './settings.ts';
 import { createApiHandler } from './api.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,8 @@ const maintenance = new Maintenance(audit);
 const recordings = new Recordings(cfg);
 recordings.start();
 const adminAuth = new AdminAuth(cfg);
+// Gateway-wide console settings (same SQLite file as the catalog).
+const settings = new Settings(cfg.dbPath);
 // Directory service (optional): menu entries + sign-on credentials from a
 // microservice in front of an existing host/credential database. Off unless
 // DIRECTORY_URL is set; the sync keeps the menu's directory rows current.
@@ -54,6 +57,7 @@ const api = createApiHandler(cfg, systems, {
   maintenance,
   recordings,
   adminAuth,
+  settings,
   directory,
   onSystemsChanged: () => printers.sync()
 });
@@ -289,6 +293,21 @@ async function openSession(
     signOnCredentials = { user: system.signOnUser, password: system.signOnPassword, source: 'system' };
   }
 
+  // Sign-on protection PIN (admin console's Settings tab): with the gate
+  // armed, the credential only travels when the user proved the PIN
+  // (?signonticket= — a single-use ticket minted by POST /api/signon-ticket,
+  // so the PIN itself never rides a URL). A missing or wrong proof never
+  // blocks the session; it just opens on the normal sign-on screen. ?auto=1
+  // launches (the shared AUTO_SIGNON_* account) are exempt: unattended
+  // embeds have nobody to ask.
+  let signOnSkipped = false;
+  if (signOnCredentials && settings.signOnPinSet() && !settings.consumeSignOnTicket(query.signOnTicket)) {
+    console.log(`[ws] auto-sign-on skipped for ${system?.name ?? 'system'}: sign-on PIN not proven`);
+    audit.log(identity ?? 'user', 'signon.skipped', system?.name ?? '');
+    signOnCredentials = undefined;
+    signOnSkipped = true;
+  }
+
   const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
   console.log(
     `[ws] session open${identity ? ` ${identity}` : clientIp ? ` from ${clientIp}` : ''}${system ? ` [${system.name}]` : ''} -> ` +
@@ -305,6 +324,12 @@ async function openSession(
     core.queueNotice(
       'warn',
       `Automatic sign-on is unavailable (${signOnIssue}). Sign on with your own account.`
+    );
+  }
+  if (signOnSkipped) {
+    core.queueNotice(
+      'warn',
+      'Automatic sign-on was skipped — the protection PIN was not entered. Sign on with your own account.'
     );
   }
   wireSocket(ws, core.attach(ws, identity));
@@ -341,6 +366,7 @@ function parseSessionQuery(url: URL): SessionQuery {
     systemId: int(q.get('system')),
     attach: sanitize(q.get('attach'), 64),
     view: sanitize(q.get('view'), 64),
+    signOnTicket: sanitize(q.get('signonticket'), 64),
     auto: parseAuto(q)
   };
 }
