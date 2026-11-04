@@ -43,10 +43,11 @@
 //
 // Proxy credentials (and the proxy's location - internal infrastructure)
 // appear only on the authenticated admin routes; the public menu list gets a
-// `viaProxy` flag and nothing more. The printer device name follows the same
-// policy on system rows; print jobs and replays themselves are keyed by
-// unguessable per-object tokens (the session-token trust model) and never
-// contain credentials.
+// `viaProxy` flag and nothing more. A system's stored sign-on account follows
+// the same policy (admin-only; the public list shows just `autoSignOn`), as
+// does the printer device name on system rows; print jobs and replays
+// themselves are keyed by unguessable per-object tokens (the session-token
+// trust model) and never contain credentials.
 import * as fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { TERM_TYPES } from './tn5250/constants.ts';
@@ -109,16 +110,16 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
   /** Audit actor for an admin-route call: the console user's edge identity. */
   const actor = (req: IncomingMessage): string => identityOf(req) ?? 'admin';
 
-  /** Menu-safe projection: no proxy or printer-infrastructure details. */
+  /** Menu-safe projection: no credentials (proxy, printer, sign-on) anywhere. */
   const publicSystem = (s: SystemRow): Record<string, unknown> => {
     const {
       proxyHost, proxyPort, proxyUser, proxyPass, printerDeviceName,
-      directoryRef, directoryAutoSignOn, ...pub
+      directoryRef, directoryAutoSignOn, signOnUser, signOnPassword, ...pub
     } = s;
     return {
       ...pub,
       viaProxy: Boolean(proxyHost),
-      autoSignOn: Boolean(s.directory && directoryAutoSignOn),
+      autoSignOn: Boolean((s.directory && directoryAutoSignOn) || (signOnUser && signOnPassword)),
       maintenance: deps.maintenance.maintenanceOf(s.id)
     };
   };
@@ -246,7 +247,13 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       method: 'GET',
       re: /(?:^|\/)api\/admin\/systems\/?$/,
       auth: true,
-      run: ({ systems, res }) => json(res, 200, { systems: systems.list() })
+      run: ({ systems, res }) =>
+        json(res, 200, {
+          systems: systems.list().map((s) => ({
+            ...s,
+            autoSignOn: Boolean((s.directory && s.directoryAutoSignOn) || (s.signOnUser && s.signOnPassword))
+          }))
+        })
     },
     {
       method: 'POST',

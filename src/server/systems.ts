@@ -48,6 +48,14 @@ export interface SystemRow {
   directoryRef: string | null;
   /** The directory holds a sign-on credential for this entry. */
   directoryAutoSignOn: boolean;
+  /**
+   * Manually-configured sign-on account (admin editor): sessions on this
+   * system sign on automatically, like directory systems do. Stored in the
+   * catalog (the proxy password's trust model: PIN-gated admin view only,
+   * stripped from the public menu list). Both set or both null.
+   */
+  signOnUser: string | null;
+  signOnPassword: string | null;
 }
 
 /** Payload shape for manual create/update: connection settings only (the
@@ -137,6 +145,18 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
   }
   const recording = r.recording === true || r.recording === 'true' || r.recording === 1 || r.recording === '1';
 
+  // Manual sign-on account: both halves or neither. The user profile follows
+  // the IBM i rules (same charset as a device prefix); the password rides
+  // along like the proxy password does.
+  const signOnUser = str(r.signOnUser, 10).toUpperCase();
+  const signOnPassword = str(r.signOnPassword, 128);
+  if (!signOnUser !== !signOnPassword) {
+    return { ok: false, error: 'Sign-on needs both a user and a password (empty both for the manual sign-on screen)' };
+  }
+  if (signOnUser && !PREFIX_RE.test(signOnUser)) {
+    return { ok: false, error: 'Sign-on user may only contain A-Z 0-9 # $ @ _ (max 10 chars)' };
+  }
+
   return {
     ok: true,
     value: {
@@ -155,7 +175,9 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       printerEnabled,
       printerDeviceName: printerDeviceName ? printerDeviceName.toUpperCase() : null,
       printerMode,
-      recording
+      recording,
+      signOnUser: signOnUser || null,
+      signOnPassword: signOnPassword || null
     }
   };
 }
@@ -181,6 +203,8 @@ interface Row {
   directory: string | null;
   directory_ref: string | null;
   directory_autosignon: number;
+  sign_on_user: string | null;
+  sign_on_password: string | null;
   position: number;
 }
 
@@ -205,6 +229,8 @@ const mapRow = (r: Row): SystemRow => ({
   directory: r.directory ?? null,
   directoryRef: r.directory_ref ?? null,
   directoryAutoSignOn: Number(r.directory_autosignon ?? 0) !== 0,
+  signOnUser: r.sign_on_user ?? null,
+  signOnPassword: r.sign_on_password ?? null,
   position: Number(r.position)
 });
 
@@ -226,7 +252,9 @@ function sameShape(row: SystemRow, input: SystemInput): boolean {
     row.printerEnabled === input.printerEnabled &&
     row.printerDeviceName === input.printerDeviceName &&
     row.printerMode === input.printerMode &&
-    row.recording === input.recording
+    row.recording === input.recording &&
+    row.signOnUser === input.signOnUser &&
+    row.signOnPassword === input.signOnPassword
   );
 }
 
@@ -286,6 +314,9 @@ export class Systems {
     addColumn('directory', 'TEXT');
     addColumn('directory_ref', 'TEXT');
     addColumn('directory_autosignon', 'INTEGER NOT NULL DEFAULT 0');
+    // Databases from before per-system sign-on accounts: no stored credential.
+    addColumn('sign_on_user', 'TEXT');
+    addColumn('sign_on_password', 'TEXT');
     // One row per directory entry: the sync's upsert key.
     this.db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS systems_directory_ref ON systems(directory, directory_ref)'
@@ -344,7 +375,7 @@ export class Systems {
          term_type = ?, code_page = ?, dev_prefix = ?,
          proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
          printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
-         recording = ?,
+         recording = ?, sign_on_user = ?, sign_on_password = ?,
          updated_at = datetime('now') WHERE id = ?`
       )
       .run(
@@ -364,6 +395,8 @@ export class Systems {
         input.printerDeviceName,
         input.printerMode,
         input.recording ? 1 : 0,
+        input.signOnUser,
+        input.signOnPassword,
         id
       );
     return { ok: true, row: this.get(id)! };
@@ -405,8 +438,9 @@ export class Systems {
       const stmt = this.db.prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, recording, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         printer_enabled, printer_device_name, printer_mode, recording,
+         sign_on_user, sign_on_password, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       inputs.forEach((input, i) =>
         stmt.run(
@@ -426,6 +460,8 @@ export class Systems {
           input.printerDeviceName,
           input.printerMode,
           input.recording ? 1 : 0,
+          input.signOnUser,
+          input.signOnPassword,
           i + 1
         )
       );
@@ -576,8 +612,9 @@ export class Systems {
       .prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, recording, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         printer_enabled, printer_device_name, printer_mode, recording,
+         sign_on_user, sign_on_password, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -596,6 +633,8 @@ export class Systems {
         input.printerDeviceName,
         input.printerMode,
         input.recording ? 1 : 0,
+        input.signOnUser,
+        input.signOnPassword,
         Number(max.m) + 1
       );
     return this.get(Number(res.lastInsertRowid))!;

@@ -160,6 +160,12 @@
                   <span class="check"><input id="f-recording" type="checkbox" /> <em>let users record their
                     sessions for replay (a REC control starts and stops the recording — nothing is
                     recorded until the user starts it; passwords are never captured)</em></span>
+                  <label for="f-signuser">Sign-on user</label>
+                  <input id="f-signuser" maxlength="10" autocapitalize="characters" placeholder="(manual sign-on)"
+                         title="IBM i user profile signed on automatically when this system is opened. Leave both sign-on fields empty for the normal sign-on screen." />
+                  <label for="f-signpass">Sign-on password</label>
+                  <input id="f-signpass" type="password" maxlength="128" autocomplete="new-password"
+                         title="Its password — stored in the gateway catalog (like the proxy password) and typed server-side at sign-on; it never reaches the browser." />
                 </div>
                 <p id="admin-dirnote" class="admin-note hidden" role="status">
                   Directory-managed system — every field here comes from the directory service

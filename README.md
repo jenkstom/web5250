@@ -54,7 +54,10 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   list — add, edit, delete, reorder. PINs are compared in constant time with
   a lockout after repeated failures; tokens expire after 8 hours. Proxy
   credentials are only ever served to the authenticated editor — the public
-  menu list shows no more than a "SOCKS5" marker.
+  menu list shows no more than a "SOCKS5" marker. Each system may also carry
+  a **stored sign-on account** (username + password, same admin-only trust
+  model): picking it signs the user on automatically — the public list shows
+  only an `auto sign-on` marker.
 - **Directory systems**: menu entries and **automatic sign-on** served from
   your own database of hosts and accounts through a tiny read-only
   microservice (`DIRECTORY_URL`, [docs/directory-service.md](docs/directory-service.md)
@@ -749,6 +752,13 @@ overwritten by each sync (edit the database or the template, not the row),
 re-appear after an admin delete, and are excluded from export/import —
 they are derived data. Syncs and failures land in the Audit tab
 (`directory.sync` / `directory.error`).
+
+Manually-configured systems can do the same without a directory: the admin
+editor's **Sign-on user / Sign-on password** fields store an account on the
+system row (the proxy password's trust model — admin-only view, never on
+the public list, never in the browser) and opening the system signs on
+with it. Empty both fields to return to the normal sign-on screen; import/
+export files carry the pair like every other setting.
 
 ## Connecting to IBM i
 

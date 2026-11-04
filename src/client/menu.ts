@@ -34,6 +34,9 @@ export interface MenuSystem {
   directory?: boolean | null;
   /** True: the directory holds a sign-on credential (sessions sign on alone). */
   autoSignOn?: boolean;
+  /** Admin-only copy: a stored sign-on pair (present on the authenticated rows). */
+  signOnUser?: string | null;
+  signOnPassword?: string | null;
 }
 
 interface Meta {
@@ -641,6 +644,7 @@ async function refreshAdminList(): Promise<void> {
       (s.viaProxy || s.proxyHost ? ' · SOCKS5' : '') +
       (s.printerEnabled || s.printerDeviceName ? ' · printer' : '') +
       (s.devPrefix ? ` · ${s.devPrefix}` : '') +
+      (s.signOnUser || s.autoSignOn ? ' · auto sign-on' : '') +
       (s.directory ? ' · directory (re-synced)' : '');
     nm.append(b, small);
 
@@ -1233,6 +1237,10 @@ function fillForm(s: MenuSystem | null): void {
   $<HTMLInputElement>('f-printerdev').value = s?.printerDeviceName ?? 'WEB5250P';
   $<HTMLSelectElement>('f-printermode').value = s?.printerMode ?? 'text';
   $<HTMLInputElement>('f-recording').checked = s ? Boolean(s.recording) : false;
+  // Stored sign-on account (same authenticated-copy rule as the proxy
+  // fields): the masked password round-trips through the form.
+  $<HTMLInputElement>('f-signuser').value = s?.signOnUser ?? '';
+  $<HTMLInputElement>('f-signpass').value = s?.signOnPassword ?? '';
 }
 
 function editSystem(s: MenuSystem): void {
@@ -1261,7 +1269,9 @@ function formPayload(): Record<string, unknown> {
     printerEnabled: $<HTMLInputElement>('f-printer').checked,
     printerDeviceName: $<HTMLInputElement>('f-printerdev').value,
     printerMode: $<HTMLSelectElement>('f-printermode').value,
-    recording: $<HTMLInputElement>('f-recording').checked
+    recording: $<HTMLInputElement>('f-recording').checked,
+    signOnUser: $<HTMLInputElement>('f-signuser').value,
+    signOnPassword: $<HTMLInputElement>('f-signpass').value
   };
 }
 

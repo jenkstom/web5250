@@ -8,6 +8,8 @@
 //   4. Credential fetch failure (500): manual sign-on screen + banner.
 //   5. Re-sync via the admin route: add/update/remove, stable row ids.
 //   6. Directory outage (401): last-good rows stay, lastError reported.
+//   7. Manually-configured system with a stored sign-on pair: same
+//      automatic sign-on, credentials stripped from the public list.
 //
 // Usage: npm run build && npm run test:directory
 import { spawn } from 'node:child_process';
@@ -301,6 +303,47 @@ async function main() {
   const auditRes = await api('api/admin/audit', { token: adminToken });
   const audit = await auditRes.json();
   check('audit trail has directory events', (audit.entries ?? []).some((e) => String(e.action).startsWith('directory.')), JSON.stringify((audit.entries ?? []).slice(0, 3)));
+
+  // ----------------------------- 7. manually-configured sign-on account
+  console.log('\n7. Manually-configured system with a stored sign-on account');
+  const createRes = await api('api/admin/systems', {
+    method: 'POST',
+    token: adminToken,
+    body: {
+      name: 'MANUAL',
+      description: '',
+      host: '127.0.0.1',
+      port: MOCK_PORT,
+      ssl: false,
+      termType: 'IBM-3477-FC',
+      codePage: 'cp037',
+      signOnUser: 'MANUALUSR',
+      signOnPassword: 'ManualPw7'
+    }
+  });
+  const created = (await createRes.json())?.system;
+  check('admin create accepts a sign-on pair (response stays credential-free)', createRes.status === 201 && created?.name === 'MANUAL' && created?.signOnUser === undefined, JSON.stringify(created));
+  const adminRows = await (await api('api/admin/systems', { token: adminToken })).json();
+  const adminManual = (adminRows.systems ?? []).find((r) => r.name === 'MANUAL');
+  check('authenticated editor view round-trips the pair (like proxy credentials)', adminManual?.signOnUser === 'MANUALUSR' && adminManual?.signOnPassword === 'ManualPw7', JSON.stringify(adminManual));
+  rows = await systemsList();
+  const manualRow = rows.find((r) => r.name === 'MANUAL');
+  check('public row shows the auto sign-on marker but no credential', manualRow?.autoSignOn === true && manualRow?.signOnUser === undefined && manualRow?.signOnPassword === undefined && !JSON.stringify(rows).includes('ManualPw7'), JSON.stringify(manualRow));
+  const s7 = await openSession(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${manualRow.id}`);
+  check(
+    'stored credential signs the session on automatically',
+    await waitFor(s7.term, (t) => t.text().includes('IBM i Main Menu') && t.text().includes('Signed on as MANUALUSR'), 10000),
+    s7.term.text().slice(0, 300)
+  );
+  check('stored password never crosses the WebSocket', !s7.term.rawLog.some((m) => m.includes('ManualPw7')));
+  s7.sock.close();
+  await sleep(300);
+  const halfRes = await api('api/admin/systems', {
+    method: 'POST',
+    token: adminToken,
+    body: { name: 'HALF', host: '127.0.0.1', port: MOCK_PORT, termType: 'IBM-3477-FC', codePage: 'cp037', signOnUser: 'NOBODY' }
+  });
+  check('a sign-on user without a password is rejected', halfRes.status === 400, String(halfRes.status));
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
   dirSrv.close();

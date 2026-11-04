@@ -56,11 +56,12 @@ export interface SessionQuery {
   /** ?auto=1 automated data-entry launch parameters. */
   auto?: AutoQuery;
   /**
-   * Per-system sign-on credential for directory systems: fetched from the
-   * directory service at upgrade time (never from the URL), held in memory
-   * only for the sign-on automation.
+   * Per-system sign-on credential: either fetched from the directory service
+   * at upgrade time (`source: 'directory'`) or the system row's stored pair
+   * from the admin editor (`source: 'system'`). Never from the URL; held in
+   * memory only for the sign-on automation.
    */
-  signOnCredentials?: { user: string; password: string };
+  signOnCredentials?: { user: string; password: string; source?: 'directory' | 'system' };
 }
 
 export interface AutoQuery {
@@ -242,11 +243,12 @@ export class HostSession {
     // should not run PC commands), and only to controlling front-ends -
     // read-only mirrors never get windows opened on them.
     this.client.onPcCommand = (command) => this.handlePcCommand(command);
-    // Auto sign-on, from whichever source configured one: a directory
-    // system's per-entry credential (fetched at upgrade time) or the shared
-    // AUTO_SIGNON_* account (?auto=1 data-entry launches - the HTTP layer
-    // refuses those without the configured pair, so both are present whenever
-    // query.auto is set). Input pre-fill only applies to ?auto=1.
+    // Auto sign-on, from whichever source configured one: a per-system
+    // credential (directory entry fetched at upgrade time, or the stored pair
+    // from the admin editor) or the shared AUTO_SIGNON_* account (?auto=1
+    // data-entry launches - the HTTP layer refuses those without the
+    // configured pair, so both are present whenever query.auto is set).
+    // Input pre-fill only applies to ?auto=1.
     const signOn =
       query.signOnCredentials ??
       (query.auto && cfg.autoSignOnUser && cfg.autoSignOnPassword
@@ -271,7 +273,7 @@ export class HostSession {
         }
       );
       console.log(
-        `[ws] auto-sign-on session (${query.signOnCredentials ? 'directory' : 'configured'} account ${signOn.user})`
+        `[ws] auto-sign-on session (${query.signOnCredentials?.source ?? 'configured'} account ${signOn.user})`
       );
     }
     this.client.onScreenChange = () => this.onScreenChange();

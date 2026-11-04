@@ -67,7 +67,11 @@ Understanding these rules makes the directory service easy to operate:
   `?auto=1` uses, and forgotten. They are not written to the gateway's
   SQLite file, never sent to the browser (password fields are blanked
   server-side before any screen update, as always), and never appear in the
-  admin editor.
+  admin editor. (That is the directory's trust model. A *manually*
+  configured system may instead store a sign-on pair in the admin editor —
+  the proxy password's model: kept in the catalog, admin-only view. Both
+  give the same automatic sign-on; directory entries are simply never
+  written down.)
 
 ## Configuring web5250
 

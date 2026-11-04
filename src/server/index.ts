@@ -271,17 +271,22 @@ async function openSession(
   // sign-on screen; a failed lookup does the same but says why - the
   // terminal stays usable either way. The credential lives in memory for
   // the sign-on automation only; it is never stored or sent to the browser.
-  let signOnCredentials: { user: string; password: string } | undefined;
+  // Manually-configured systems may carry their own stored pair (admin
+  // editor) - the same automatic sign-on, sourced from the catalog.
+  let signOnCredentials: { user: string; password: string; source: 'directory' | 'system' } | undefined;
   let signOnIssue: string | null = null;
   if (system?.directoryRef && directory.enabled) {
     try {
       const cred = await directory.credentials(system.directoryRef);
-      if (cred) signOnCredentials = { user: cred.username, password: cred.password };
+      if (cred) signOnCredentials = { user: cred.username, password: cred.password, source: 'directory' };
     } catch (e) {
       signOnIssue = String((e as Error).message ?? e);
       console.log(`[ws] directory sign-on unavailable for ${system.name}: ${signOnIssue}`);
       audit.log(identity ?? 'user', 'directory.error', system.directoryRef, signOnIssue);
     }
+  }
+  if (!signOnCredentials && system?.signOnUser && system?.signOnPassword) {
+    signOnCredentials = { user: system.signOnUser, password: system.signOnPassword, source: 'system' };
   }
 
   const target = system ?? { host: cfg.ibmHost, port: cfg.ibmPort, name: undefined as string | undefined };
