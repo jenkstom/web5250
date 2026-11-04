@@ -136,6 +136,7 @@ export class Printers {
         mode: system.printerMode,
         codePage: system.codePage,
         traceRecords: this.cfg.traceRecords,
+        negotiateTimeoutMs: this.cfg.negotiateTimeoutMs,
         maxJobBytes: Math.max(this.cfg.printjobsMaxBytes, 1024 * 1024)
       });
       const run: RunningPrinter = { client, systemId: id, signature, jobSeq: 0 };

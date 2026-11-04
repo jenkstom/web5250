@@ -29,6 +29,14 @@ export interface PrinterClientOptions {
   mode: PrinterMode;
   codePage: string;
   connectTimeoutMs?: number;
+  /**
+   * Fail the attempt when the transport is up but the host's startup
+   * response has not arrived within this window (0 disables). The session
+   * then goes through the normal reconnect loop instead of parking on a
+   * silent tunnel - for printers "ready" is the startup response, since a
+   * healthy session may receive no print data for hours.
+   */
+  negotiateTimeoutMs?: number;
   /** Inbound records hex-dumped to the diagnostics (WEB5250_TRACE parity). */
   traceRecords?: number;
   /** Assembly cap for one job; bytes beyond it are dropped with a warning. */
@@ -56,8 +64,10 @@ export class Printer5250Client {
   private sock: net.Socket | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private connectTimer: NodeJS.Timeout | null = null;
+  private startupTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
+  private rxBytes = 0;
   private destroyed = false;
   /** Print-record payloads of the job currently coming down the wire. */
   private jobBuf: Buffer = Buffer.alloc(0);
@@ -74,6 +84,7 @@ export class Printer5250Client {
       {
         onRecord: (rec) => this.handleRecord(rec),
         onWarn: (msg) => this.warn(`telnet: ${msg}`),
+        onDiag: (line) => this.diag(`[printer ${opts.deviceName}] ${line}`),
         // A taken device name is an admin-visible error (the output queue is
         // per device) - not something to rename our way out of.
         onDeviceNameCollision: () =>
@@ -124,6 +135,7 @@ export class Printer5250Client {
     if (this.destroyed) return;
     this.destroyed = true;
     this.clearConnectTimer();
+    this.clearStartupTimer();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.sock?.destroy();
@@ -160,6 +172,7 @@ export class Printer5250Client {
     this.diag(`startup response ${code}`);
     if (C.PRINT_STARTUP_OK.has(code)) {
       this.reconnectAttempts = 0;
+      this.clearStartupTimer();
       this.setStatus('ready');
       return;
     }
@@ -233,7 +246,31 @@ export class Printer5250Client {
     socket.setNoDelay(true);
     socket.on('error', (err) => this.reconnect(err.message));
     socket.on('close', () => this.reconnect('host closed the connection'));
-    socket.on('data', (chunk: Buffer) => this.telnet.receive(chunk));
+    socket.on('data', (chunk: Buffer) => {
+      this.rxBytes += chunk.length;
+      this.telnet.receive(chunk);
+    });
+    // Transport anchor + negotiation capture, like the display sessions: a
+    // printer stuck before its startup response exports what flowed.
+    const via = this.opts.proxy
+      ? `socks5 via ${this.opts.proxy.host}:${this.opts.proxy.port}`
+      : this.opts.ssl
+        ? 'tls'
+        : 'direct';
+    this.rxBytes = 0;
+    this.diag(`[printer ${this.opts.deviceName}] transport ${via} -> ${this.opts.host}:${this.opts.port} up, awaiting startup response`);
+    // Cap the wait for the startup response: the connect timer only covers
+    // the connecting state, so without this a silent tunnel parks the
+    // session on 'connecting' forever (retrying is reconnect()'s job).
+    const startupTimeout = this.opts.negotiateTimeoutMs ?? 60000;
+    if (startupTimeout > 0) {
+      this.startupTimer = setTimeout(() => {
+        if (this.destroyed || this.status === 'ready') return;
+        this.reconnect(
+          `no startup response within ${Math.round(startupTimeout / 1000)}s (negotiation timeout), rx=${this.rxBytes}B`
+        );
+      }, startupTimeout);
+    }
     if (ready === null) this.clearConnectTimer();
     else socket.on(ready, () => this.clearConnectTimer());
   }
@@ -242,6 +279,7 @@ export class Printer5250Client {
   private reconnect(detail: string): void {
     if (this.destroyed || this.reconnectTimer) return;
     this.clearConnectTimer();
+    this.clearStartupTimer();
     this.sock?.destroy();
     this.sock = null;
     this.setStatus('error', detail);
@@ -261,6 +299,13 @@ export class Printer5250Client {
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = null;
+    }
+  }
+
+  private clearStartupTimer(): void {
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
     }
   }
 
