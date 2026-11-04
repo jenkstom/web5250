@@ -1192,3 +1192,137 @@ button.primary { border-color: var(--green); color: var(--green); }
 .player-lane-row.warn { color: var(--warn); }
 .player-lane-row.urgent { color: var(--err); }
 .player-lane-row.assist { color: #ffb1e8; }
+
+/* ------------------------------------------------------------------ help
+   In-app manuals: AS/400-style hypertext panels (green screen, turquoise
+   links, inverse-video selection cursor, function-key-style footer). */
+#help-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 97; /* above every other modal, incl. the admin console */
+}
+.help-card {
+  width: min(880px, 94vw);
+  height: min(640px, 88vh);
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  border: 1px solid var(--green);
+  box-shadow: 0 0 0 4px rgba(75, 228, 99, 0.08), 0 18px 50px rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.help-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  background: var(--green);
+  color: #001a08;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  flex: 0 0 auto;
+}
+.help-bar-title { font-size: 0.8rem; }
+.help-bar-spacer { flex: 1 1 auto; }
+.help-navbtn {
+  background: #001a08;
+  color: var(--green);
+  border: 1px solid #001a08;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.55rem;
+  cursor: pointer;
+}
+.help-navbtn:hover:not(:disabled) { background: var(--green); color: #001a08; }
+.help-navbtn:disabled { opacity: 0.35; cursor: default; }
+.help-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.65rem 1rem 1rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) #000;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.help-topicbar {
+  display: flex;
+  justify-content: space-between;
+  color: var(--green);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.help-topicname { text-transform: none; }
+.help-rule { color: var(--dim); overflow: hidden; user-select: none; }
+.help-title {
+  margin-top: 0.35rem;
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.help-subtitle { color: var(--dim); margin-top: 0.1rem; }
+.help-h {
+  margin: 0.9rem 0 0.25rem;
+  color: #fff;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.help-p { margin: 0.35rem 0; }
+.help-ul { margin: 0.35rem 0; padding-left: 1.1rem; }
+.help-ul li { margin: 0.15rem 0; }
+.help-ul li::marker { color: var(--dim); content: '· '; }
+.help-pre {
+  margin: 0.45rem 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px dashed var(--line);
+  color: var(--green);
+  overflow-x: auto;
+  white-space: pre;
+}
+.help-keys { margin: 0.45rem 0; }
+.help-keys-row {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, 12rem) 1fr;
+  gap: 0 1rem;
+  padding: 0.08rem 0;
+}
+.help-key { color: var(--green); white-space: pre-wrap; }
+.help-desc { color: var(--text); }
+a.hlink {
+  color: #58d5e8; /* 5250 turquoise-ish link */
+  text-decoration: underline;
+  cursor: pointer;
+}
+a.hlink:hover { color: #8ef0ff; }
+a.hlink.focused {
+  background: #58d5e8;
+  color: #001318;
+  text-decoration: none;
+  outline: 1px solid #58d5e8;
+}
+.help-indexline { color: var(--dim); }
+.help-foot {
+  display: flex;
+  gap: 0.9rem;
+  padding: 0.3rem 0.7rem;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* Native keyboard focus matches the Tab-cycled cursor exactly. */
+a.hlink:focus-visible {
+  background: #58d5e8;
+  color: #001318;
+  text-decoration: none;
+  outline: 1px solid #58d5e8;
+}
