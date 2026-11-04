@@ -40,6 +40,9 @@ services:
       ALLOW_CUSTOM_HOST: ${ALLOW_CUSTOM_HOST:-false}
       # IBM i TLS certs are usually self-signed; set true to enforce CA validation.
       IBM_I_TLS_REJECT_UNAUTHORIZED: ${IBM_I_TLS_REJECT_UNAUTHORIZED:-false}
+      # Fail sessions stuck at "negotiating" (dead proxy leg / host out of
+      # devices) instead of holding them open forever. 0 disables.
+      IBM_I_NEGOTIATE_TIMEOUT_MS: ${IBM_I_NEGOTIATE_TIMEOUT_MS:-60000}
       WEB5250_TRACE: ${WEB5250_TRACE:-}
       # PIN for the admin editor in the connection menu (empty = admin disabled).
       ADMIN_PIN: ${ADMIN_PIN:-}

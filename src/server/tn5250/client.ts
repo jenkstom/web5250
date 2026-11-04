@@ -22,6 +22,13 @@ export interface Tn5250ClientOptions {
   /** Route the host TCP connection through this SOCKS5 proxy (per system). */
   proxy?: SocksProxy;
   connectTimeoutMs?: number;
+  /**
+   * Fail the session when the transport is up but no 5250 record has
+   * arrived within this window (0 disables). Without it a dead proxy leg
+   * or a host that never allocates the device parks the session at
+   * "negotiating" forever, holding the host-side session open.
+   */
+  negotiateTimeoutMs?: number;
   /** Claim pointer-device capability in the query reply (IBM_I_MOUSE_GUI=1). */
   queryMouseGui?: boolean;
   /** Inbound records captured per session for Diag (IBM_I_TRACE_RECORDS). */
@@ -37,6 +44,7 @@ export class Tn5250Client {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private connectTimer: NodeJS.Timeout | null = null;
   private negPulseTimer: NodeJS.Timeout | null = null;
+  private negotiateTimer: NodeJS.Timeout | null = null;
   private negStartedAt = 0;
   private rxBytes = 0;
   private destroyed = false;
@@ -208,15 +216,31 @@ export class Tn5250Client {
         ? 'tls'
         : 'direct';
     this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] transport ${via} -> ${this.opts.host}:${this.opts.port} up, negotiating`);
-    // A stuck negotiation has no timeout of its own (the connect timer only
-    // covers the connecting state); pulse the diagnostics buffer so a
-    // mid-hang export states how long and how silent it has been.
+    // Pulse the diagnostics buffer while negotiation runs: a mid-hang
+    // export then states how long and how silent the wait has been.
     this.negPulseTimer = setInterval(() => {
       if (this.status !== 'negotiating' || this.destroyed) return;
       this.diag(
         `[tn5250 ${this.opts.deviceName ?? '-'}] negotiating still: ${Math.round((Date.now() - this.negStartedAt) / 1000)}s, rx=${this.rxBytes}B, records=${this.recordsSeen}`
       );
     }, 30000);
+    // And cap the wait: the connect timer only covers the connecting
+    // state, so without this a silent tunnel or a host that never
+    // allocates the device would hold the session (and its host-side
+    // half) open forever. Timing out closes our socket, which lets the
+    // host reap its session instead of accumulating dead ones.
+    const negotiateTimeout = this.opts.negotiateTimeoutMs ?? 60000;
+    if (negotiateTimeout > 0) {
+      this.negotiateTimer = setTimeout(() => {
+        if (this.destroyed || this.status !== 'negotiating') return;
+        this.diagNegSummary('negotiation timeout');
+        this.setStatus(
+          'error',
+          `no screen from the host within ${Math.round(negotiateTimeout / 1000)}s (negotiation timeout) - host or proxy path not responding; see Diagnostics`
+        );
+        this.destroy();
+      }, negotiateTimeout);
+    }
     if (ready === null) {
       this.clearConnectTimer();
       this.setStatus('negotiating');
@@ -251,6 +275,10 @@ export class Tn5250Client {
         if (this.negPulseTimer) {
           clearInterval(this.negPulseTimer);
           this.negPulseTimer = null;
+        }
+        if (this.negotiateTimer) {
+          clearTimeout(this.negotiateTimer);
+          this.negotiateTimer = null;
         }
         this.diag(
           `[tn5250 ${this.opts.deviceName ?? '-'}] first record after ${Math.round((Date.now() - this.negStartedAt) / 1000)}s (rx=${this.rxBytes}B)`
@@ -292,6 +320,7 @@ export class Tn5250Client {
     this.clearConnectTimer();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.negPulseTimer) clearInterval(this.negPulseTimer);
+    if (this.negotiateTimer) clearTimeout(this.negotiateTimer);
     this.sock?.destroy();
     if (this.status !== 'error' && this.status !== 'closed') this.setStatus('closed');
   }

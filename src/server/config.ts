@@ -8,6 +8,12 @@ export interface Config {
   ibmHost: string;
   ibmPort: number;
   ibmSsl: boolean;
+  /**
+   * Fail a session whose transport is up but which never receives a 5250
+   * record (0 = wait forever). Dead sessions hold the host-side telnet
+   * session open, so the default caps the wait at a minute.
+   */
+  negotiateTimeoutMs: number;
   /** SOCKS5 proxy for the first-boot seed system (IBM_I_PROXY_HOST etc). */
   ibmProxyHost: string | null;
   ibmProxyPort: number;
@@ -190,6 +196,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ibmHost: env.IBM_I_HOST ?? '127.0.0.1',
     ibmPort: int(env.IBM_I_PORT, 23),
     ibmSsl: bool(env.IBM_I_SSL, false),
+    negotiateTimeoutMs: clampInt(env.IBM_I_NEGOTIATE_TIMEOUT_MS, 0, 10 * 60 * 1000, 60_000),
     ibmProxyHost: env.IBM_I_PROXY_HOST?.trim() || null,
     ibmProxyPort: int(env.IBM_I_PROXY_PORT, 1080),
     ibmProxyUser: env.IBM_I_PROXY_USER?.trim() || null,

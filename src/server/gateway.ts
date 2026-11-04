@@ -223,6 +223,7 @@ export class HostSession {
       deviceName: this.devName,
       queryMouseGui: cfg.mouseGui,
       traceRecords: cfg.traceRecords,
+      negotiateTimeoutMs: cfg.negotiateTimeoutMs,
       codePage
     });
     // Terminal host state (connection failed, host dropped us): tear the
