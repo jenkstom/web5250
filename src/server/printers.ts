@@ -139,6 +139,7 @@ export class Printers {
         mode: system.printerMode,
         codePage: system.codePage,
         traceRecords: this.cfg.traceRecords,
+        consoleDiag: this.cfg.traceConsole,
         negotiateTimeoutMs: this.cfg.negotiateTimeoutMs,
         maxJobBytes: Math.max(this.cfg.printjobsMaxBytes, 1024 * 1024)
       });

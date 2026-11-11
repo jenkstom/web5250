@@ -236,6 +236,7 @@ export class HostSession {
       deviceName: this.devName,
       queryMouseGui: cfg.mouseGui,
       traceRecords: cfg.traceRecords,
+      consoleDiag: cfg.traceConsole,
       negotiateTimeoutMs: cfg.negotiateTimeoutMs,
       codePage
     });

@@ -26,6 +26,12 @@ export interface Config {
   mouseGui: boolean;
   /** How many inbound records to capture per session for Diag (IBM_I_TRACE_RECORDS). */
   traceRecords: number;
+  /**
+   * Mirror the per-session 5250 protocol capture into the container log
+   * (IBM_I_TRACE_CONSOLE). Off, the capture stays in memory for the
+   * browser's Diag export and docker logs stay quiet.
+   */
+  traceConsole: boolean;
   devPrefix: string | null;
   allowCustomHost: boolean;
   /** PIN guarding host-list administration; null disables the admin UI. */
@@ -218,6 +224,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // 8 records is not enough to diagnose a stuck screen after sign-on
     // flows - default to a few hundred (bounded, ~1 KB per record).
     traceRecords: clampInt(env.IBM_I_TRACE_RECORDS, 8, 5000, 200),
+    traceConsole: bool(env.IBM_I_TRACE_CONSOLE, true),
     devPrefix: devPrefix === undefined || devPrefix === '' ? null : devPrefix.toUpperCase(),
     allowCustomHost: bool(env.ALLOW_CUSTOM_HOST, false),
     adminPin,

@@ -285,6 +285,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `DIRECTORY_TEMPLATE_*` | Connection settings every directory entry inherits — `NAME`/`DESCRIPTION` (`{name}`/`{host}` patterns), `PORT`, `SSL`, `TERM_TYPE`, `CODEPAGE`, `DEV_PREFIX`, `PROXY_HOST/PORT/USER/PASSWORD`, `PRINTER_ENABLED/DEVNAME/MODE`, `RECORDING`; entries may override `port`/`ssl` per row | port 23, else the gateway defaults |
 | `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
 | `SHOW_DIAG_BUTTON` | Show the `Diag` button in the top bar (copies raw 5250 session diagnostics to the clipboard for bug reports) | `false` |
+| `IBM_I_TRACE_CONSOLE` | Mirror the per-session 5250 protocol trace (negotiation bytes, first records' hex, field maps) into the container log; `false` keeps the trace in memory for the Diag button only | `true` |
 | `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
 
 Each browser session gets its own 5250 device. Device names are generated as

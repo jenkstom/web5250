@@ -39,6 +39,8 @@ export interface PrinterClientOptions {
   negotiateTimeoutMs?: number;
   /** Inbound records hex-dumped to the diagnostics (WEB5250_TRACE parity). */
   traceRecords?: number;
+  /** Mirror the capture into the container log (IBM_I_TRACE_CONSOLE). */
+  consoleDiag?: boolean;
   /** Assembly cap for one job; bytes beyond it are dropped with a warning. */
   maxJobBytes?: number;
 }
@@ -325,7 +327,7 @@ export class Printer5250Client {
   private diag(line: string): void {
     this.diagLines.push(line);
     if (this.diagLines.length > 300) this.diagLines.splice(0, this.diagLines.length - 300);
-    console.log(line);
+    if (this.opts.consoleDiag !== false) console.log(line);
   }
 
   /** Hex of the first records per session, like Tn5250Client.capture. */

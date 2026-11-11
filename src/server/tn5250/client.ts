@@ -33,6 +33,12 @@ export interface Tn5250ClientOptions {
   queryMouseGui?: boolean;
   /** Inbound records captured per session for Diag (IBM_I_TRACE_RECORDS). */
   traceRecords?: number;
+  /**
+   * Mirror the protocol capture into the container log (IBM_I_TRACE_CONSOLE,
+   * default true). false keeps the capture in memory - the browser's Diag
+   * export still has it - but stops the hex dumps from filling docker logs.
+   */
+  consoleDiag?: boolean;
 }
 
 export class Tn5250Client {
@@ -90,19 +96,19 @@ export class Tn5250Client {
   }
 
   /**
-   * Session protocol capture in the server logs: raw hex of the first
-   * records (the sign-on screens), the parsed field table whenever it
-   * changes, and every outgoing AID payload. Enough to diagnose a real
-   * host's data-stream dialect from `docker logs` alone. The same lines are
-   * kept in a bounded buffer so a browser can export them (diagnostics
-   * button) without container access.
+   * Session protocol capture: raw hex of the first records (the sign-on
+   * screens), the parsed field table whenever it changes, and every outgoing
+   * AID payload. Enough to diagnose a real host's data-stream dialect from
+   * `docker logs` alone. The same lines are kept in a bounded buffer so a
+   * browser can export them (diagnostics button) without container access;
+   * IBM_I_TRACE_CONSOLE=false keeps the console mirror off.
    */
   private readonly diagLines: string[] = [];
 
   private diag(line: string): void {
     this.diagLines.push(line);
     if (this.diagLines.length > 300) this.diagLines.splice(0, this.diagLines.length - 300);
-    console.log(line);
+    if (this.opts.consoleDiag !== false) console.log(line);
   }
 
   getDiagnostics(): string {
