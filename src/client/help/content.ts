@@ -49,7 +49,7 @@ const userPages: HelpPage[] = [
       ),
       h('Getting started'),
       ul(
-        `Pick a system on the selection panel with the arrow keys (or type its number) and press Enter.`,
+        `Pick a system on the selection panel with the arrow keys, a typed number, or a few letters of its name (the field filters as you type) - then press Enter.`,
         `Wait for the sign-on screen - or none at all, on systems marked {{auto sign-on|u-signon}}.`,
         `Work exactly as on a desktop emulator; see {{Keyboard|u-keyboard}} for the key map.`
       ),
@@ -74,17 +74,19 @@ const userPages: HelpPage[] = [
       keys(
         ['SOCKS5', 'The connection is tunneled through a proxy (the proxy itself stays hidden)'],
         ['printer', 'Host spool files from this system appear under {{Spool|u-spool}}'],
-        ['directory', 'The row comes from the central host directory and refreshes automatically'],
+        ['directory', 'The row comes from the central host directory - listed only while that service is reachable, never stored here'],
         ['auto sign-on', 'Opening it signs you on by itself - see {{Automatic sign-on|u-signon}}'],
         ['MAINTENANCE', 'Blocked for now; new sessions are refused until the window ends']
       ),
       h('Keys on the panel'),
       keys(
-        ['↑ ↓', 'Move the selection'],
+        ['↑ ↓', 'Move the selection (across page boundaries)'],
+        ['PgUp PgDn', 'Turn the page - long lists are paged, and a typed number jumps to its page'],
         ['number + Enter', 'Connect to that system'],
+        ['letters in the field', 'Quick search: filter the list live by name, description or host (rows renumber; Esc clears the filter)'],
         ['Enter', 'Connect to the selected system'],
         ['? (question mark)', 'Open this {{user guide|u-home}}'],
-        ['A', 'Open the admin console (PIN required)'],
+        ['A', "Open the admin console (PIN required) - anywhere outside the Option/Filter field"],
         ['Esc', 'Hide the panel while a session runs']
       ),
       h('Display name'),
@@ -362,13 +364,13 @@ const adminPages: HelpPage[] = [
     title: 'The system list',
     subtitle: 'Add, edit, delete, reorder',
     blocks: [
-      p(`Every user's selection panel is this list. Rows from the {{directory service|a-directory}} carry their own marker and are managed there, not here.`),
+      p(`Every user's selection panel is this list. Rows from the {{directory service|a-directory}} also appear on that panel, but they are held in memory only - they never show up in this editor and cannot be edited here.`),
       h('Editing'),
       keys(
         ['Add system', 'Open the form on a new, empty row'],
         ['Edit', 'Open the form on that row'],
         ['Del (Sure?)', 'Two-step delete: click again within 3 s'],
-        ['↑ ↓', 'Move a row within the menu (directory rows always list after manual ones)']
+        ['↑ ↓', 'Move a row within the menu']
       ),
       h('Connection fields'),
       keys(
@@ -491,20 +493,20 @@ const adminPages: HelpPage[] = [
     blocks: [
       p(
         `When the gateway is configured with a directory service (DIRECTORY_URL), its entries appear ` +
-          `here marked "directory (re-synced)" - connection settings come from the ` +
+          `on the selection panel marked "directory" - connection settings come from the ` +
           `DIRECTORY_TEMPLATE_* environment; the directory supplies identity, host, and the sign-on ` +
           `credential.`
       ),
       keys(
         ['Sync directory', 'Pull the entry list right now (it also re-syncs on a timer, default 5 minutes)'],
-        ['Edits', 'Overwritten by the next sync - change the directory entry or the template instead'],
-        ['Delete', 'Returns on the next sync - remove the entry in the directory'],
-        ['Export / Import', 'Directory rows are excluded (derived data); manual rows are unaffected by them']
+        ['In-memory only', 'Directory hosts are never written to the catalog: they are absent from this editor, from export/import, and from the menu whenever the directory is unreachable'],
+        ['Edits', 'Change the directory entry or the DIRECTORY_TEMPLATE_* environment - there is no local row to edit'],
+        ['Printer sessions', 'Follow the list: a failed sync drops the hosts and stops their printers']
       ),
       p(
         `Directory credentials are never stored: each session start fetches them fresh. Rows keep ` +
-          `their gateway id across syncs, so live sessions and printer devices survive. Syncs and ` +
-          `failures land in the {{audit trail|a-audit}}.`
+          `their "dir:<entry id>" address across syncs, so live sessions and printer devices survive. ` +
+          `Syncs and failures land in the {{audit trail|a-audit}}.`
       )
     ]
   },

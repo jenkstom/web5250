@@ -58,12 +58,19 @@
           <div id="menu-title">SYSTEM SELECTION</div>
           <p id="menu-sub">Select the system for your 5250 session</p>
           <ul id="menu-list"></ul>
+          <div id="menu-pager" class="pager hidden">
+            <button id="menu-prev" type="button">‹ Prev</button>
+            <span id="menu-page-label"></span>
+            <button id="menu-next" type="button">Next ›</button>
+          </div>
           <p id="menu-empty" class="hidden"></p>
           <p id="menu-error" class="hidden"></p>
           <div id="menu-cmd">
-            <label for="menu-option">Option ==&gt;</label>
+            <label for="menu-option">Option/Filter ==&gt;</label>
             <input id="menu-option" autocomplete="off" autocapitalize="off" spellcheck="false"
-                   inputmode="numeric" maxlength="3" aria-label="System number" />
+                   maxlength="25" aria-label="System number or filter"
+                   title="Type a number to jump to that system; type any letters to filter the list by name, description or host (Esc clears the filter)" />
+            <span id="menu-count" class="menu-count hidden"></span>
             <button id="menu-go" type="button" class="primary">Connect</button>
           </div>
           <div id="menu-dev">
@@ -75,6 +82,7 @@
           </div>
           <div id="menu-foot">
             <span>↑↓&nbsp;Select</span>
+            <span>PgUp/PgDn&nbsp;Page</span>
             <span>Enter&nbsp;Connect</span>
             <span class="spacer"></span>
             <button id="menu-splith" type="button" title="Split the current pane side by side (left and right)">Split ↔</button>
@@ -170,11 +178,6 @@
                   <input id="f-signpass" type="password" maxlength="128" autocomplete="new-password"
                          title="Its password — stored in the gateway catalog (like the proxy password) and typed server-side at sign-on; it never reaches the browser." />
                 </div>
-                <p id="admin-dirnote" class="admin-note hidden" role="status">
-                  Directory-managed system — every field here comes from the directory service
-                  template, and the next sync overwrites manual edits. Change the entry (or the
-                  <code>DIRECTORY_TEMPLATE_*</code> environment) instead.
-                </p>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">
                   <button id="admin-save" type="submit" class="primary">Save</button>
@@ -187,9 +190,9 @@
                 <button id="admin-dirsync" type="button" class="hidden"
                         title="Pull the entry list from the directory service right now (it also re-syncs on a timer)">Sync directory</button>
                 <button id="admin-export" type="button"
-                        title="Download every manual system (with proxy and printer settings) as a JSON file — directory systems are served by the directory service and excluded">Export</button>
+                        title="Download every stored system (with proxy and printer settings) as a JSON file — directory hosts are never stored, so they are never in here">Export</button>
                 <button id="admin-import" type="button"
-                        title="Upload a JSON export — replaces the whole manual system list">Import</button>
+                        title="Upload a JSON export — replaces the whole stored system list">Import</button>
               </div>
               <input id="admin-import-file" type="file" accept=".json,application/json"
                      class="hidden" tabindex="-1" aria-hidden="true" />

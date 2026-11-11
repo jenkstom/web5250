@@ -570,6 +570,16 @@ button.primary { border-color: var(--green); color: var(--green); }
 }
 
 #menu-list { list-style: none; margin: 0 0.4rem; padding: 0; }
+
+/* Page controls under the list (hidden while one page holds it all). */
+#menu-pager {
+  display: flex;
+  justify-content: center;
+  margin: 0.55rem 0.4rem 0;
+  color: var(--dim);
+  font-size: 0.78rem;
+}
+#menu-pager.hidden { display: none; }
 .menu-row {
   display: flex;
   gap: 0.7rem;
@@ -654,18 +664,29 @@ button.primary { border-color: var(--green); color: var(--green); }
 #menu-frame button:hover { background: rgba(75, 228, 99, 0.14); color: var(--green); border-color: var(--green); }
 #menu-frame button.primary { background: var(--green); color: #04140a; font-weight: 700; }
 #menu-frame button.primary:hover { background: #6df57f; color: #04140a; }
+/* Dual-mode field: number jump or live filter - wide enough to read a
+ * filter term, left-aligned so typed text reads naturally. */
 #menu-option {
-  width: 4.5ch;
+  width: 11ch;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--green);
   color: var(--green);
   font: inherit;
-  text-align: center;
+  text-align: left;
   caret-color: var(--green);
   padding: 0.1rem 0.2rem;
   outline: none;
 }
+
+/* Match count beside the Option/Filter field ("21 of 120"), filtering only. */
+.menu-count {
+  color: var(--dim);
+  font-size: 0.72rem;
+  user-select: none;
+  white-space: nowrap;
+}
+#menu-count.hidden, .sys-menu-cmd .menu-count.hidden { display: none; }
 
 #menu-foot {
   display: flex;
@@ -720,6 +741,14 @@ button.primary { border-color: var(--green); color: var(--green); }
   margin: 0.6rem 0.5rem 0.4rem;
 }
 .sys-menu-list { list-style: none; margin: 0 0.4rem; padding: 0; }
+.sys-menu-frame .pager {
+  display: flex;
+  justify-content: center;
+  margin: 0.5rem 0.4rem 0;
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+.sys-menu-frame .pager.hidden { display: none; }
 .sys-menu-empty, .sys-menu-error {
   text-align: center;
   color: var(--warn);
@@ -738,13 +767,13 @@ button.primary { border-color: var(--green); color: var(--green); }
   font-size: 0.8rem;
 }
 .sys-menu-cmd input {
-  width: 4.5ch;
+  width: 11ch; /* dual-mode like #menu-option: number jump or filter text */
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--green);
   color: var(--green);
   font: inherit;
-  text-align: center;
+  text-align: left;
   caret-color: var(--green);
   padding: 0.1rem 0.2rem;
   outline: none;

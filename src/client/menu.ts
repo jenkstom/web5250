@@ -7,7 +7,12 @@
 import { recheckSpool } from './spool.ts';
 import { openHelp } from './help/help.ts';
 export interface MenuSystem {
-  id: number;
+  /**
+   * The system's menu id: a stored system's numeric catalog id, or a
+   * directory host's "dir:<entry id>" string (those exist only while the
+   * directory service is up, and are passed back opaquely on connect).
+   */
+  id: number | string;
   name: string;
   description: string;
   host: string;
@@ -65,11 +70,36 @@ const api = (name: string): string =>
   window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + name;
 
 // ------------------------------------------------------------------ state
+/** Rows per menu page: the landing menu is a centered dialog, and ten
+ *  two-line rows (plus its chrome) fit a laptop screen without scrolling.
+ *  The pane picker paginates too, with its own smaller page. */
+const MENU_PAGE_SIZE = 10;
 let systems: MenuSystem[] = [];
 let meta: Meta | null = null;
 let selected = 0;
+let page = 0;
+/**
+ * Quick-search text from the Option/Filter field ('' = none). The field is
+ * dual-mode: digits-only keeps the classic number jump; any other text is a
+ * live filter (case-insensitive; every whitespace-separated term must occur
+ * in the row's name, description or host). It survives show/hide so the
+ * menu reopens on the same narrowed list.
+ */
+let filterText = '';
 let onSelect: ((s: MenuSystem) => void) | null = null;
 let booted = false;
+
+/** The list as currently filtered - the whole catalog when no filter runs.
+ *  Everything that numbers or picks rows (render, select, pager, connect)
+ *  addresses this view, so filtered rows renumber 1..N on screen. */
+function viewSystems(): MenuSystem[] {
+  if (!filterText) return systems;
+  const terms = filterText.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return systems;
+  const hay = (s: MenuSystem): string =>
+    `${s.name} ${s.description} ${s.host}`.toLowerCase();
+  return systems.filter((s) => terms.every((t) => hay(s).includes(t)));
+}
 
 // ------------------------------------------------------------- display name
 const DEVNAME_KEY = 'web5250.displayName';
@@ -101,11 +131,15 @@ async function fetchMeta(): Promise<Meta> {
   return (await res.json()) as Meta;
 }
 
+/** The editor's row: the admin list carries stored systems only, so its ids
+ *  are always numeric (directory hosts never reach this editor). */
+type AdminSystem = MenuSystem & { id: number };
+
 /** The editor's copy of the list: full rows, proxy credentials included. */
-async function fetchAdminSystems(): Promise<MenuSystem[]> {
+async function fetchAdminSystems(): Promise<AdminSystem[]> {
   const res = await adminCall('GET', 'api/admin/systems');
   if (!res.ok) throw new Error(`admin systems list failed (${res.status})`);
-  const data = (await res.json()) as { systems: MenuSystem[] };
+  const data = (await res.json()) as { systems: AdminSystem[] };
   return data.systems ?? [];
 }
 
@@ -151,7 +185,9 @@ export async function showMenu(callback: (s: MenuSystem) => void): Promise<void>
     err.textContent = `Could not load the system list — ${String((e as Error).message ?? e)}`;
     err.classList.remove('hidden');
   }
-  selected = Math.min(selected, Math.max(systems.length - 1, 0));
+  const view = viewSystems();
+  selected = Math.min(selected, Math.max(view.length - 1, 0));
+  page = Math.floor(selected / MENU_PAGE_SIZE);
   render();
   $('menu-option').focus();
 }
@@ -188,13 +224,22 @@ function rowFlags(s: MenuSystem): string {
 function render(): void {
   const list = $('menu-list');
   list.innerHTML = '';
-  systems.forEach((s, i) => {
+  // One page of rows at a time; the row numbers address the whole catalog
+  // (or, while filtering, the matching subset - the visible set renumbers,
+  // so Option/Filter digits and typed numbers stay consistent with the
+  // screen whichever mode is active).
+  const view = viewSystems();
+  const pages = Math.max(1, Math.ceil(view.length / MENU_PAGE_SIZE));
+  page = Math.min(page, pages - 1);
+  const start = page * MENU_PAGE_SIZE;
+  view.slice(start, start + MENU_PAGE_SIZE).forEach((s, i) => {
+    const idx = start + i;
     const li = document.createElement('li');
-    li.className = 'menu-row' + (i === selected ? ' sel' : '') + (s.maintenance?.on ? ' maint' : '');
+    li.className = 'menu-row' + (idx === selected ? ' sel' : '') + (s.maintenance?.on ? ' maint' : '');
 
     const num = document.createElement('span');
     num.className = 'row-num';
-    num.textContent = `${i + 1}.`;
+    num.textContent = `${idx + 1}.`;
 
     const main = document.createElement('span');
     const name = document.createElement('span');
@@ -215,32 +260,71 @@ function render(): void {
     main.appendChild(sub);
 
     li.append(num, main);
-    li.addEventListener('click', () => (selected === i ? connectTo(i) : select(i)));
+    li.addEventListener('click', () => (selected === idx ? connectTo(idx) : select(idx)));
     list.appendChild(li);
   });
 
+  // The pager only exists when the visible set cannot fit one page.
+  const pager = $('menu-pager');
+  if (view.length > MENU_PAGE_SIZE) {
+    pager.classList.remove('hidden');
+    $<HTMLButtonElement>('menu-prev').disabled = page === 0;
+    $<HTMLButtonElement>('menu-next').disabled = page === pages - 1;
+    $('menu-page-label').textContent = `Page ${page + 1} / ${pages}`;
+  } else {
+    pager.classList.add('hidden');
+  }
+
+  // Match count while filtering ("21 of 120") - hidden with no filter.
+  const count = $('menu-count');
+  if (filterText) {
+    count.textContent = `${view.length} of ${systems.length}`;
+    count.classList.remove('hidden');
+  } else {
+    count.classList.add('hidden');
+  }
+
   const empty = $('menu-empty');
-  if (systems.length === 0 && $('menu-error').classList.contains('hidden')) {
-    empty.textContent = 'No systems configured.\nSelect Admin below to add one.';
+  if (view.length === 0 && $('menu-error').classList.contains('hidden')) {
+    empty.textContent = filterText
+      ? `No systems match "${filterText}".\nEsc clears the filter.`
+      : 'No systems configured.\nSelect Admin below to add one.';
     empty.classList.remove('hidden');
   } else {
     empty.classList.add('hidden');
   }
-  // Keep the selection cursor on screen when the list outgrows the panel
-  // (arrows past the fold, a typed number jumping far down). Nearest-edge
-  // only: an already-visible selection never scrolls.
+  // Keep the selection cursor on screen when even a single page outgrows the
+  // panel (a short viewport). Nearest-edge only: an already-visible selection
+  // never scrolls.
   list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
 
-  $<HTMLInputElement>('menu-option').value = systems.length ? String(selected + 1) : '';
+  // In filter mode the field is showing the filter text itself - never
+  // clobber it mid-typing. Otherwise it mirrors the selection's number.
+  $<HTMLInputElement>('menu-option').value = filterText || (view.length ? String(selected + 1) : '');
 }
 
 function select(i: number): void {
-  selected = Math.max(0, Math.min(i, systems.length - 1));
+  selected = Math.max(0, Math.min(i, viewSystems().length - 1));
+  page = Math.floor(selected / MENU_PAGE_SIZE);
+  render();
+}
+
+/** Page turn (PgUp/PgDn, pager buttons): the selection lands on the first
+ *  row of the page turned onto (the last row when paging back). */
+function turnPage(delta: 1 | -1): void {
+  const view = viewSystems();
+  const pages = Math.max(1, Math.ceil(view.length / MENU_PAGE_SIZE));
+  const next = Math.min(pages - 1, Math.max(0, page + delta));
+  if (next === page) return;
+  page = next;
+  const start = page * MENU_PAGE_SIZE;
+  selected =
+    delta > 0 ? start : Math.min(start + MENU_PAGE_SIZE - 1, view.length - 1);
   render();
 }
 
 function connectTo(i: number): void {
-  const s = systems[i];
+  const s = viewSystems()[i];
   if (s?.maintenance?.on) {
     const err = $('menu-error');
     err.textContent = `${s.name} is in maintenance — ${s.maintenance.message}`;
@@ -259,30 +343,86 @@ function connectTo(i: number): void {
 export function initMenu(): void {
   const option = $<HTMLInputElement>('menu-option');
   option.addEventListener('keydown', (e) => {
+    // A letter typed over the echoed selection number starts a fresh filter
+    // (classic 5250 overtype): without this, "prod" over "1" would filter
+    // on "1prod". Digits keep today's append/replace behavior, and '?'
+    // stays the help shortcut (it never inserts).
+    const overtypes =
+      e.key.length === 1 &&
+      e.key !== '?' &&
+      /\S/.test(e.key) &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      /[^\d]/.test(e.key) &&
+      /^\d+$/.test(option.value);
+    if (overtypes) option.value = '';
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       select(selected - 1);
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       select(selected + 1);
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      turnPage(1);
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      turnPage(-1);
     } else if (e.key === 'Enter') {
       e.preventDefault();
+      const view = viewSystems();
       const typed = Number.parseInt(option.value, 10);
-      const idx = Number.isInteger(typed) && typed >= 1 && typed <= systems.length ? typed - 1 : selected;
+      // Number+Enter stays classic - but only when the field is not a
+      // filter ("prod5" must connect the selection, not row 5).
+      const idx =
+        !filterText && Number.isInteger(typed) && typed >= 1 && typed <= view.length
+          ? typed - 1
+          : selected;
       connectTo(idx);
-    } else if (e.key === 'a' || e.key === 'A') {
-      e.preventDefault();
-      openAdmin();
-    } else if (e.key === '?') {
+    }
+    // (No 'a' shortcut here: letters typed in this field are filter text,
+    // and a filter may start with 'a' ("as400"). 'a' still works anywhere
+    // outside the field, and as the Admin button. '?' stays a shortcut -
+    // it cannot start a realistic filter.)
+    else if (e.key === '?') {
       e.preventDefault();
       openHelp('user');
     } else if (e.key === 'Escape') {
-      option.value = systems.length ? String(selected + 1) : '';
+      if (filterText) {
+        // First Esc drops the filter; a second one resets the field.
+        filterText = '';
+        selected = Math.min(selected, Math.max(systems.length - 1, 0));
+        page = Math.floor(selected / MENU_PAGE_SIZE);
+        render();
+      } else {
+        option.value = systems.length ? String(selected + 1) : '';
+      }
     }
   });
   option.addEventListener('input', () => {
-    const typed = Number.parseInt(option.value, 10);
-    if (Number.isInteger(typed) && typed >= 1 && typed <= systems.length) select(typed - 1);
+    const v = option.value;
+    if (/^\d*$/.test(v)) {
+      // Digits-only (or empty): classic number jump. Clearing a filter this
+      // way (backspacing its letters away) restores the full list.
+      const hadFilter = filterText !== '';
+      filterText = '';
+      const view = viewSystems();
+      const typed = Number.parseInt(v, 10);
+      if (Number.isInteger(typed) && typed >= 1 && typed <= view.length) select(typed - 1);
+      else if (hadFilter) {
+        selected = Math.min(selected, Math.max(view.length - 1, 0));
+        page = Math.floor(selected / MENU_PAGE_SIZE);
+        render();
+      }
+    } else {
+      // Any letter switches the field to a live filter; the cursor lands on
+      // the first match and paging restarts.
+      filterText = v;
+      selected = 0;
+      page = 0;
+      render();
+    }
   });
 
   // Menu-level keys, so Enter/arrows work no matter what inside the menu
@@ -304,6 +444,12 @@ export function initMenu(): void {
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       select(selected + 1);
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      turnPage(1);
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      turnPage(-1);
     } else if (e.key === 'a' || e.key === 'A') {
       e.preventDefault();
       openAdmin();
@@ -318,6 +464,8 @@ export function initMenu(): void {
   $('menu-go').addEventListener('click', () => connectTo(selected));
   $('menu-help-btn').addEventListener('click', () => openHelp('user'));
   $('menu-admin-btn').addEventListener('click', openAdmin);
+  $('menu-prev').addEventListener('click', () => turnPage(-1));
+  $('menu-next').addEventListener('click', () => turnPage(1));
 
   // Split view: the shell lays the current page out into split panes in
   // place (no navigation) and keeps ?grid= in the URL for reloads/deep
@@ -376,13 +524,22 @@ export function closePanePickers(): boolean {
 }
 
 class PanePicker {
+  /** Rows per page inside one split pane (panes are short; six fit). */
+  private static readonly PAGE_SIZE = 6;
   readonly el: HTMLDivElement;
   private readonly listEl: HTMLUListElement;
+  private readonly prevBtn: HTMLButtonElement;
+  private readonly pageLabel: HTMLElement;
+  private readonly nextBtn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   private readonly errEl: HTMLElement;
+  private readonly countEl: HTMLElement;
   private readonly option: HTMLInputElement;
   private rows: MenuSystem[] = [];
   private selected = 0;
+  private page = 0;
+  /** Same dual-mode field as the landing menu ('' = classic number jump). */
+  private filterText = '';
 
   constructor(
     mount: HTMLElement,
@@ -403,6 +560,19 @@ class PanePicker {
     sub.textContent = 'Select the system for this pane';
     this.listEl = document.createElement('ul');
     this.listEl.className = 'sys-menu-list';
+    // The pager appears only when the list cannot fit one pane page.
+    const pager = document.createElement('div');
+    pager.className = 'pager hidden';
+    this.prevBtn = document.createElement('button');
+    this.prevBtn.type = 'button';
+    this.prevBtn.textContent = '‹ Prev';
+    this.prevBtn.addEventListener('click', () => this.turnPage(-1));
+    this.pageLabel = document.createElement('span');
+    this.nextBtn = document.createElement('button');
+    this.nextBtn.type = 'button';
+    this.nextBtn.textContent = 'Next ›';
+    this.nextBtn.addEventListener('click', () => this.turnPage(1));
+    pager.append(this.prevBtn, this.pageLabel, this.nextBtn);
     this.emptyEl = document.createElement('p');
     this.emptyEl.className = 'sys-menu-empty hidden';
     this.errEl = document.createElement('p');
@@ -410,27 +580,33 @@ class PanePicker {
     const cmd = document.createElement('div');
     cmd.className = 'sys-menu-cmd';
     const label = document.createElement('label');
-    label.textContent = 'Option ==>';
+    label.textContent = 'Option/Filter ==>';
     this.option = document.createElement('input');
     this.option.autocomplete = 'off';
     this.option.autocapitalize = 'off';
     this.option.spellcheck = false;
-    this.option.inputMode = 'numeric';
-    this.option.maxLength = 3;
-    this.option.setAttribute('aria-label', 'System number');
+    this.option.maxLength = 25;
+    this.option.setAttribute('aria-label', 'System number or filter');
     label.append(this.option);
+    this.countEl = document.createElement('span');
+    this.countEl.className = 'menu-count hidden';
     const go = document.createElement('button');
     go.type = 'button';
     go.className = 'primary';
     go.textContent = 'Connect';
     go.addEventListener('click', () => this.connectSelected());
-    cmd.append(label, go);
+    cmd.append(label, this.countEl, go);
     const foot = document.createElement('div');
     foot.className = 'sys-menu-foot';
     foot.append(
       (() => {
         const s = document.createElement('span');
         s.textContent = '↑↓ Select';
+        return s;
+      })(),
+      (() => {
+        const s = document.createElement('span');
+        s.textContent = 'PgUp/PgDn Page';
         return s;
       })(),
       (() => {
@@ -449,35 +625,93 @@ class PanePicker {
         return s;
       })()
     );
-    frame.append(title, sub, this.listEl, this.emptyEl, this.errEl, cmd, foot);
+    frame.append(title, sub, this.listEl, pager, this.emptyEl, this.errEl, cmd, foot);
     el.append(frame);
     this.el = el;
 
     // Same keyboard contract as the landing menu: arrows / typed number
-    // select, Enter connects, Escape cancels - from anywhere in the picker.
+    // select, PageUp/PageDown turn pages, Enter connects, Escape drops a
+    // running filter first and cancels the picker second - from anywhere.
     el.addEventListener('keydown', (e) => {
+      // A letter typed over the echoed number starts a fresh filter (the
+      // landing menu's overtype rule, for its delegated listener).
+      if (
+        e.target === this.option &&
+        e.key.length === 1 &&
+        e.key !== '?' &&
+        /\S/.test(e.key) &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        /[^\d]/.test(e.key) &&
+        /^\d+$/.test(this.option.value)
+      ) {
+        this.option.value = '';
+      }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         this.select(this.selected - 1);
       } else if (e.key === 'ArrowDown') {
         e.preventDefault();
         this.select(this.selected + 1);
+      } else if (e.key === 'PageDown') {
+        e.preventDefault();
+        this.turnPage(1);
+      } else if (e.key === 'PageUp') {
+        e.preventDefault();
+        this.turnPage(-1);
       } else if (e.key === 'Enter') {
         e.preventDefault();
         this.connectSelected();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        this.close();
+        if (this.filterText) this.clearFilter();
+        else this.close();
       }
     });
     this.option.addEventListener('input', () => {
-      const typed = Number.parseInt(this.option.value, 10);
-      if (Number.isInteger(typed) && typed >= 1 && typed <= this.rows.length) this.select(typed - 1);
+      const v = this.option.value;
+      if (/^\d*$/.test(v)) {
+        const hadFilter = this.filterText !== '';
+        this.filterText = '';
+        const view = this.view();
+        const typed = Number.parseInt(v, 10);
+        if (Number.isInteger(typed) && typed >= 1 && typed <= view.length) this.select(typed - 1);
+        else if (hadFilter) {
+          this.selected = Math.min(this.selected, Math.max(view.length - 1, 0));
+          this.page = Math.floor(this.selected / PanePicker.PAGE_SIZE);
+          this.render();
+        }
+      } else {
+        this.filterText = v;
+        this.selected = 0;
+        this.page = 0;
+        this.render();
+      }
     });
 
     mount.append(el);
     if (focus) this.option.focus();
     void this.refresh();
+  }
+
+  /** The list as filtered by the picker's own field (same rules as the
+   *  landing menu: every whitespace-separated term in name/description/host). */
+  private view(): MenuSystem[] {
+    if (!this.filterText) return this.rows;
+    const terms = this.filterText.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return this.rows;
+    const hay = (s: MenuSystem): string =>
+      `${s.name} ${s.description} ${s.host}`.toLowerCase();
+    return this.rows.filter((s) => terms.every((t) => hay(s).includes(t)));
+  }
+
+  /** Drop the filter and resettle the selection on the full list. */
+  private clearFilter(): void {
+    this.filterText = '';
+    this.selected = Math.min(this.selected, Math.max(this.rows.length - 1, 0));
+    this.page = Math.floor(this.selected / PanePicker.PAGE_SIZE);
+    this.render();
   }
 
   private async refresh(): Promise<void> {
@@ -489,18 +723,25 @@ class PanePicker {
       this.errEl.textContent = `Could not load the system list — ${String((e as Error).message ?? e)}`;
       this.errEl.classList.remove('hidden');
     }
-    this.selected = Math.min(this.selected, Math.max(this.rows.length - 1, 0));
+    const view = this.view();
+    this.selected = Math.min(this.selected, Math.max(view.length - 1, 0));
+    this.page = Math.floor(this.selected / PanePicker.PAGE_SIZE);
     this.render();
   }
 
   private render(): void {
+    const view = this.view();
+    const pages = Math.max(1, Math.ceil(view.length / PanePicker.PAGE_SIZE));
+    this.page = Math.min(this.page, pages - 1);
+    const start = this.page * PanePicker.PAGE_SIZE;
     this.listEl.replaceChildren(
-      ...this.rows.map((s, i) => {
+      ...view.slice(start, start + PanePicker.PAGE_SIZE).map((s, i) => {
+        const idx = start + i;
         const li = document.createElement('li');
-        li.className = 'menu-row' + (i === this.selected ? ' sel' : '');
+        li.className = 'menu-row' + (idx === this.selected ? ' sel' : '');
         const num = document.createElement('span');
         num.className = 'row-num';
-        num.textContent = `${i + 1}.`;
+        num.textContent = `${idx + 1}.`;
         const main = document.createElement('span');
         const name = document.createElement('span');
         name.className = 'row-name';
@@ -518,36 +759,72 @@ class PanePicker {
           `${s.host}:${s.port} · ${s.ssl ? 'TLS' : 'telnet'}${rowFlags(s)}`;
         main.appendChild(sub);
         li.append(num, main);
-        li.addEventListener('click', () => (this.selected === i ? this.connectTo(i) : this.select(i)));
+        li.addEventListener('click', () =>
+          this.selected === idx ? this.connectTo(idx) : this.select(idx)
+        );
         return li;
       })
     );
-    if (this.rows.length === 0 && this.errEl.classList.contains('hidden')) {
-      this.emptyEl.textContent = 'No systems configured.\nLeave split view and add one under Admin.';
+    // Same pager as the landing menu (hidden while one page holds the list).
+    const pagerEl = this.pageLabel.parentElement!;
+    if (view.length > PanePicker.PAGE_SIZE) {
+      pagerEl.classList.remove('hidden');
+      this.prevBtn.disabled = this.page === 0;
+      this.nextBtn.disabled = this.page === pages - 1;
+      this.pageLabel.textContent = `Page ${this.page + 1} / ${pages}`;
+    } else {
+      pagerEl.classList.add('hidden');
+    }
+    if (this.filterText) {
+      this.countEl.textContent = `${view.length} of ${this.rows.length}`;
+      this.countEl.classList.remove('hidden');
+    } else {
+      this.countEl.classList.add('hidden');
+    }
+    if (view.length === 0 && this.errEl.classList.contains('hidden')) {
+      this.emptyEl.textContent = this.filterText
+        ? `No systems match "${this.filterText}".\nEsc clears the filter.`
+        : 'No systems configured.\nLeave split view and add one under Admin.';
       this.emptyEl.classList.remove('hidden');
     } else {
       this.emptyEl.classList.add('hidden');
     }
     // Same scroll-follow as the landing menu: the cursor stays visible when
-    // the picker's list outgrows the pane.
+    // even one page outgrows the pane.
     this.listEl.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
-    this.option.value = this.rows.length ? String(this.selected + 1) : '';
+    this.option.value = this.filterText || (view.length ? String(this.selected + 1) : '');
   }
 
   private select(i: number): void {
-    this.selected = Math.max(0, Math.min(i, this.rows.length - 1));
+    this.selected = Math.max(0, Math.min(i, this.view().length - 1));
+    this.page = Math.floor(this.selected / PanePicker.PAGE_SIZE);
+    this.render();
+  }
+
+  private turnPage(delta: 1 | -1): void {
+    const view = this.view();
+    const pages = Math.max(1, Math.ceil(view.length / PanePicker.PAGE_SIZE));
+    const next = Math.min(pages - 1, Math.max(0, this.page + delta));
+    if (next === this.page) return;
+    this.page = next;
+    const start = this.page * PanePicker.PAGE_SIZE;
+    this.selected =
+      delta > 0 ? start : Math.min(start + PanePicker.PAGE_SIZE - 1, view.length - 1);
     this.render();
   }
 
   private connectSelected(): void {
+    const view = this.view();
     const typed = Number.parseInt(this.option.value, 10);
     const idx =
-      Number.isInteger(typed) && typed >= 1 && typed <= this.rows.length ? typed - 1 : this.selected;
+      !this.filterText && Number.isInteger(typed) && typed >= 1 && typed <= view.length
+        ? typed - 1
+        : this.selected;
     this.connectTo(idx);
   }
 
   private connectTo(i: number): void {
-    const s = this.rows[i];
+    const s = this.view()[i];
     if (!s) return;
     if (s.maintenance?.on) {
       this.errEl.textContent = `${s.name} is in maintenance — ${s.maintenance.message}`;
@@ -648,7 +925,7 @@ async function refreshAdminList(): Promise<void> {
   // fields the public list never sees. If that fetch fails, show no rows
   // rather than the public ones - editing a public row would blank its
   // proxy credentials on save (a 401 has already flipped to the PIN pane).
-  let rows: MenuSystem[] = [];
+  let rows: AdminSystem[] = [];
   let listError = false;
   try {
     rows = await fetchAdminSystems();
@@ -676,8 +953,7 @@ async function refreshAdminList(): Promise<void> {
       (s.viaProxy || s.proxyHost ? ' · SOCKS5' : '') +
       (s.printerEnabled || s.printerDeviceName ? ' · printer' : '') +
       (s.devPrefix ? ` · ${s.devPrefix}` : '') +
-      (s.signOnUser || s.autoSignOn ? ' · auto sign-on' : '') +
-      (s.directory ? ' · directory (re-synced)' : '');
+      (s.signOnUser || s.autoSignOn ? ' · auto sign-on' : '');
     nm.append(b, small);
 
     const edit = document.createElement('button');
@@ -711,7 +987,7 @@ async function moveSystem(id: number, dir: 'up' | 'down'): Promise<void> {
   await refreshAdminList();
 }
 
-async function deleteSystem(s: MenuSystem, btn: HTMLButtonElement): Promise<void> {
+async function deleteSystem(s: AdminSystem, btn: HTMLButtonElement): Promise<void> {
   // Two-step confirm without a native dialog: the button arms for 3 s.
   if (btn.dataset.armed !== '1') {
     btn.dataset.armed = '1';
@@ -728,10 +1004,6 @@ async function deleteSystem(s: MenuSystem, btn: HTMLButtonElement): Promise<void
     btn.disabled = false;
     btn.dataset.armed = '';
     btn.textContent = 'Del';
-  } else if (s.directory) {
-    transferNote(
-      'Deleted — but directory systems return on the next sync. Remove the entry in the directory service (or its database) instead.'
-    );
   }
   await refreshAdminList();
 }
@@ -981,7 +1253,7 @@ interface MaintView {
 
 async function refreshMaint(): Promise<void> {
   let views: { global: MaintView | null; systems: Record<string, MaintView> };
-  let rows: MenuSystem[];
+  let rows: AdminSystem[];
   try {
     const [mRes, sRes] = await Promise.all([
       adminCall('GET', 'api/admin/maintenance'),
@@ -989,7 +1261,7 @@ async function refreshMaint(): Promise<void> {
     ]);
     if (!mRes.ok || !sRes.ok) throw new Error('unavailable');
     views = (await mRes.json()) as typeof views;
-    rows = ((await sRes.json()) as { systems: MenuSystem[] }).systems ?? [];
+    rows = ((await sRes.json()) as { systems: AdminSystem[] }).systems ?? [];
   } catch {
     $('maint-list').replaceChildren();
     return;
@@ -1294,11 +1566,8 @@ async function importConfigFile(file: File): Promise<void> {
   await refreshAdminList();
 }
 
-function fillForm(s: MenuSystem | null): void {
+function fillForm(s: AdminSystem | null): void {
   const d = meta?.defaults;
-  // Directory rows are editable, but the note says what happens on the next
-  // sync; manual rows (and the add form) show nothing.
-  $('admin-dirnote').classList.toggle('hidden', !s?.directory);
   const termSel = $<HTMLSelectElement>('f-term');
   const cpSel = $<HTMLSelectElement>('f-cp');
   if (termSel.options.length === 0) {
@@ -1331,7 +1600,7 @@ function fillForm(s: MenuSystem | null): void {
   $<HTMLInputElement>('f-signpass').value = s?.signOnPassword ?? '';
 }
 
-function editSystem(s: MenuSystem): void {
+function editSystem(s: AdminSystem): void {
   editingId = s.id;
   fillForm(s);
   $('admin-form').classList.remove('hidden');
