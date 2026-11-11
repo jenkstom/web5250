@@ -42,26 +42,37 @@ working reference implementation ships next to this document as
 
 Understanding these rules makes the directory service easy to operate:
 
-- **The entry `id` is the sync key.** Menu rows are matched by it across
-  syncs, so a row keeps its gateway id (deep links, live sessions and printer
-  devices survive a re-sync). Renaming a host's row in your database is
-  seamless; recycling an id for a *different* host re-points the menu row.
-- **Directory rows list after the manual ones**, in the order the service
-  returns them; reordering the query reorders the menu on the next sync.
-- **Every field of a directory row is overwritten by each sync** (the admin
-  editor shows a note on directory rows). To change one permanently, change
-  the database or the `DIRECTORY_TEMPLATE_*` environment — not the row.
-- **Deleting a directory row in the admin editor** works, but the next sync
-  brings it back. Remove the entry in your database instead.
-- **Export/import ignore directory rows** (export notes how many were
-  excluded; import never deletes them) — they are derived data.
+- **Directory hosts are ephemeral — nothing is stored.** The entry list
+  lives in gateway memory only. A failed sync (service down, wrong token,
+  network partition) **removes the directory hosts from the menu** — a
+  down or mis-pointed service shows nothing rather than stale hosts, and
+  the failure is logged + audited (`directory.error`). The next successful
+  sync brings them back. Gateway restarts start from an empty list until
+  the first sync succeeds; rows materialized by *older* gateway versions
+  are deleted from the SQLite catalog on boot.
+- **The entry `id` is the row id.** Menu rows are addressed as
+  `dir:<entry id>` — stable for as long as the entry exists, so live
+  sessions, printer devices and deep links survive a re-sync. Renaming a
+  host's row in your database is seamless; recycling an id for a *different*
+  host re-points the menu row.
+- **Directory rows list after the manual (stored) ones**, in the order the
+  service returns them; reordering the query reorders the menu on the next
+  sync.
+- **Directory hosts are managed at the directory, not in the admin
+  editor.** They do not appear there at all (and export/import carry the
+  stored catalog only) — to change one, change the database or the
+  `DIRECTORY_TEMPLATE_*` environment. Maintenance windows and session
+  recording target stored systems and do not apply to directory hosts.
+- **Printer sessions follow the list.** With
+  `DIRECTORY_TEMPLATE_PRINTER_ENABLED=true` the gateway keeps a printer
+  session per directory host; when a failed sync drops the hosts, their
+  printers stop too.
 - **`autoSignOn: true`** (a username *and* password exist for the entry) is
   what makes the menu say `· auto sign-on`. Entries without a stored
   credential still appear and open on the normal sign-on screen.
-- **Failure behaviour**: if the list call fails, the last-good menu rows stay
-  and the failure is logged + audited (`directory.error`). If a credential
-  call fails mid-outage, the session still opens — on the manual sign-on
-  screen, with a banner explaining that automatic sign-on is unavailable.
+- **Credential failures degrade gracefully.** If the credential call fails
+  (mid-outage), the session still opens — on the manual sign-on screen,
+  with a banner explaining that automatic sign-on is unavailable.
 - **Credentials never persist.** They are fetched at session start, typed
   into the host's sign-on screen by the same server-side automation
   `?auto=1` uses, and forgotten. They are not written to the gateway's
@@ -103,10 +114,10 @@ substitutes the entry's label and `{host}` its address.
 | `DIRECTORY_TEMPLATE_TERM_TYPE` | `IBM-3477-FC` | 5250 device model |
 | `DIRECTORY_TEMPLATE_CODEPAGE` | `cp037` | EBCDIC code page |
 | `DIRECTORY_TEMPLATE_DEV_PREFIX` | – | Device-name prefix for sessions on these systems |
-| `DIRECTORY_TEMPLATE_PROXY_HOST` | – | **SOCKS5 proxy** every directory host is reached through |
-| `DIRECTORY_TEMPLATE_PROXY_PORT` | `1080` | …its port |
-| `DIRECTORY_TEMPLATE_PROXY_USER` | – | …its username (RFC 1929 auth) |
-| `DIRECTORY_TEMPLATE_PROXY_PASSWORD` | – | …its password |
+| `DIRECTORY_TEMPLATE_PROXY_HOST` | – | **SOCKS5 proxy** every directory host is reached through. Unset = fall back to the `IBM_I_PROXY_*` proxy (the one the seed system uses), so a single-proxy deployment configures it exactly once. |
+| `DIRECTORY_TEMPLATE_PROXY_PORT` | `1080` | …its port (ignored when the host falls back to `IBM_I_PROXY_*` — that proxy's own port applies) |
+| `DIRECTORY_TEMPLATE_PROXY_USER` | – | …its username (RFC 1929 auth; same `IBM_I_PROXY_*` fallback) |
+| `DIRECTORY_TEMPLATE_PROXY_PASSWORD` | – | …its password (same `IBM_I_PROXY_*` fallback) |
 | `DIRECTORY_TEMPLATE_PRINTER_ENABLED` | `false` | Gateway-owned printer session (spool in the browser) |
 | `DIRECTORY_TEMPLATE_PRINTER_DEVNAME` | – | Printer device name |
 | `DIRECTORY_TEMPLATE_PRINTER_MODE` | `text` | `text` or `raw` spool handling |
@@ -224,7 +235,8 @@ gateway only ever makes those two GET calls with a bearer header. Keep the
 contract's edge rules in mind:
 
 - **401 vs 403** for missing vs wrong token (the gateway surfaces both as a
-  sync/credential failure — and keeps working from its last-good state),
+  sync/credential failure — its directory hosts leave the menu until a
+  sync succeeds again),
 - **404/204 means "no credential for this entry"**, not an error,
 - respond to the credentials call quickly — the session's WebSocket upgrade
   waits for it (gateway timeout `DIRECTORY_TIMEOUT_MS`),
@@ -269,4 +281,7 @@ npm run build && npm run test:directory
 spins up a mock directory service and a mock 5250 host, and verifies the
 whole path: template materialization, per-entry overrides, removal on
 disappearance, auto sign-on through a real session, manual fallback when no
-credential exists, and the degraded banner when the service fails.
+credential exists, the degraded banner when the service fails, the
+outage-clears-the-menu rule (and that a restart stores nothing), the boot
+purge of rows materialized by older gateways, and the SOCKS5 proxy
+fallback to `IBM_I_PROXY_*`.

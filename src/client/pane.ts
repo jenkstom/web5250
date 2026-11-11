@@ -63,7 +63,7 @@ export interface PaneServices {
   /** Connection state changed: shell mirrors it for the focused pane. */
   onStatus(pane: SessionPane): void;
   /** The pane's re-attach token arrived; the shell records grid state. */
-  onToken(pane: SessionPane, token: string, systemId: number | null): void;
+  onToken(pane: SessionPane, token: string, systemId: number | string | null): void;
   /** A new screen size arrived: the shell refits (it owns the box math). */
   requestFit(pane: SessionPane): void;
   /** Recording state (hello / recstate): shell drives the REC indicator. */
@@ -143,7 +143,8 @@ export class SessionPane {
   private connectSeq = 0;
   /** Share token: builds the ?view= mirror link anyone can open read-only. */
   shareToken: string | null = null;
-  systemId: number | null = null;
+  /** Menu id of the connected system: numeric (stored) or "dir:…" string. */
+  systemId: number | string | null = null;
   graceMs = 0;
   /** A read-only mirror (?view=): renders the stream, never sends input. */
   viewOnly = false;
@@ -604,7 +605,9 @@ export class SessionPane {
         this.setLabel(parts.filter(Boolean).join(' · '));
         this.setConnState('connecting');
         this.graceMs = typeof msg.graceMs === 'number' ? msg.graceMs : 0;
-        if (typeof msg.systemId === 'number') this.systemId = msg.systemId;
+        if (typeof msg.systemId === 'number' || typeof msg.systemId === 'string') {
+          this.systemId = msg.systemId;
+        }
         this.myIdentity = typeof msg.you === 'string' && msg.you ? msg.you : null;
         this.recording = msg.recording === true;
         this.recAvailable = msg.recordingAllowed === true;

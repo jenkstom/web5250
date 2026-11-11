@@ -1004,7 +1004,7 @@ function boot(): void {
   try {
     const saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? 'null') as {
       token?: string;
-      systemId?: number | null;
+      systemId?: number | string | null;
     } | null;
     if (saved?.token) {
       const begin = (system?: MenuSystem): void => {

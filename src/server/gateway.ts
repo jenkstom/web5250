@@ -33,7 +33,8 @@ import type { SocksProxy } from './tn5250/socks.ts';
 import type { Config } from './config.ts';
 import { makeDeviceName } from './config.ts';
 import { devices } from './devices.ts';
-import type { SystemRow } from './systems.ts';
+import type { SystemId, SystemRow } from './systems.ts';
+import type { DirectorySystem } from './directory.ts';
 import { Automation } from './automation.ts';
 import { newSessionToken, registerSession, removeSession } from './sessions.ts';
 import type { Audit } from './audit.ts';
@@ -47,8 +48,9 @@ export interface SessionQuery {
   termType?: string;
   codePage?: string;
   devName?: string;
-  /** Menu selection (?system=<id>) resolved by the HTTP layer. */
-  systemId?: number;
+  /** Menu selection (?system=<id>) resolved by the HTTP layer: a stored
+   *  system's numeric id or a directory host's "dir:<entry id>". */
+  systemId?: SystemId;
   /** Re-attach token (?attach=<token>) for an existing host session. */
   attach?: string;
   /** Share token (?view=<token>): attach as a read-only mirror. */
@@ -122,7 +124,7 @@ export class HostSession {
   readonly devName: string | null;
   readonly sessionInfo: { host: string; port: number; ssl: boolean; termType: string; codePage: string };
   readonly systemName: string | undefined;
-  readonly systemId: number | undefined;
+  readonly systemId: SystemId | undefined;
   /**
    * How long the session survives with no front-end attached. Automated
    * launches keep the strict close-equals-teardown contract their embedders
@@ -176,7 +178,12 @@ export class HostSession {
   private pendingAssist: { viewer: GatewaySession; name: string; timer: NodeJS.Timeout } | null = null;
   private assistBlockedUntil = 0;
 
-  constructor(cfg: Config, query: SessionQuery, system?: SystemRow, svcs?: SessionServices) {
+  constructor(
+    cfg: Config,
+    query: SessionQuery,
+    system?: SystemRow | DirectorySystem,
+    svcs?: SessionServices
+  ) {
     this.cfg = cfg;
     this.audit = svcs?.audit;
     this.adminAuth = svcs?.adminAuth;
@@ -184,8 +191,8 @@ export class HostSession {
     this.identity = svcs?.identity ?? null;
     this.clientIp = svcs?.clientIp ?? null;
     // Connection parameters resolve in order: explicit URL overrides
-    // (ALLOW_CUSTOM_HOST) > menu-selected system (?system=<id> from the DB)
-    // > the IBM_I_* environment defaults.
+    // (ALLOW_CUSTOM_HOST) > menu-selected system (?system=<id>, stored or
+    // directory) > the IBM_I_* environment defaults.
     const allowCustom = cfg.allowCustomHost;
     const host = allowCustom && query.host ? query.host : (system?.host ?? cfg.ibmHost);
     const port = allowCustom && query.port ? query.port : (system?.port ?? cfg.ibmPort);
@@ -288,7 +295,9 @@ export class HostSession {
     // Recording is a property of the system entry (like the printer session):
     // opt-in per system in the admin editor. It is *available*, never
     // automatic — nothing is captured until the owner starts it (startRecording).
-    this.recordingAllowed = Boolean(system?.recording) && Boolean(svcs?.recordings);
+    // Recording is a stored-system feature: recordings are catalogued by the
+    // system's numeric id, which an in-memory directory host doesn't have.
+    this.recordingAllowed = typeof system?.id === 'number' && Boolean(system.recording) && Boolean(svcs?.recordings);
 
     registerSession(this);
   }
@@ -503,7 +512,8 @@ export class HostSession {
   startRecording(): void {
     if (this.recorder || !this.recordingAllowed || !this.recordings) return;
     this.recorder = this.recordings.createRecorder({
-      systemId: this.systemId!,
+      // recordingAllowed implies a stored system, whose id is numeric.
+      systemId: this.systemId as number,
       systemName: this.systemName!,
       devName: this.devName,
       identity: this.identity

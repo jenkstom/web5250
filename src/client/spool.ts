@@ -6,7 +6,8 @@
 // formats are download-only: the browser cannot render them.
 export interface SpoolJob {
   token: string;
-  systemId: number;
+  /** System menu id: numeric (stored) or "dir:…" (directory host). */
+  systemId: number | string;
   systemName: string | null;
   device: string;
   mode: 'text' | 'raw';
@@ -17,7 +18,7 @@ export interface SpoolJob {
 }
 
 interface SpoolPrinter {
-  systemId: number;
+  systemId: number | string;
   systemName: string;
   device: string;
   mode: 'text' | 'raw';

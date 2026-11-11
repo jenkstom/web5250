@@ -37,11 +37,11 @@ export interface SystemRow {
   recording: boolean;
   position: number;
   /**
-   * Directory marker: 'directory' on rows materialized from the directory
-   * service, null on manual (admin-created) rows. Directory rows keep their
-   * id across syncs (live sessions and printer config survive) but their
-   * connection settings are overwritten by every sync - edit the directory,
-   * not the row.
+   * Directory marker: 'directory' on rows that live only in the directory
+   * client's memory (never in this table), null on manual (admin-created)
+   * rows. The columns below stay in the schema so older databases upgrade
+   * in place; the boot migration deletes any rows a previous install had
+   * materialized from the directory service.
    */
   directory: string | null;
   /** The directory entry id this row was materialized from. */
@@ -64,6 +64,10 @@ export type SystemInput = Omit<
   SystemRow,
   'id' | 'position' | 'directory' | 'directoryRef' | 'directoryAutoSignOn'
 >;
+
+/** Any system id as it appears in a URL or an API row: a stored catalog row's
+ *  numeric id, or a directory host's "dir:<entry id>" string. */
+export type SystemId = number | string;
 
 export type MutationResult = { ok: true; row: SystemRow } | { ok: false; error: string };
 export type ValidationResult = { ok: true; value: SystemInput } | { ok: false; error: string };
@@ -234,30 +238,6 @@ const mapRow = (r: Row): SystemRow => ({
   position: Number(r.position)
 });
 
-/** True when every connection-relevant field of a row matches an input. */
-function sameShape(row: SystemRow, input: SystemInput): boolean {
-  return (
-    row.name === input.name &&
-    row.description === input.description &&
-    row.host === input.host &&
-    row.port === input.port &&
-    row.ssl === input.ssl &&
-    row.termType === input.termType &&
-    row.codePage === input.codePage &&
-    row.devPrefix === input.devPrefix &&
-    row.proxyHost === input.proxyHost &&
-    row.proxyPort === input.proxyPort &&
-    row.proxyUser === input.proxyUser &&
-    row.proxyPass === input.proxyPass &&
-    row.printerEnabled === input.printerEnabled &&
-    row.printerDeviceName === input.printerDeviceName &&
-    row.printerMode === input.printerMode &&
-    row.recording === input.recording &&
-    row.signOnUser === input.signOnUser &&
-    row.signOnPassword === input.signOnPassword
-  );
-}
-
 export class Systems {
   private readonly db: DatabaseSync;
 
@@ -317,7 +297,11 @@ export class Systems {
     // Databases from before per-system sign-on accounts: no stored credential.
     addColumn('sign_on_user', 'TEXT');
     addColumn('sign_on_password', 'TEXT');
-    // One row per directory entry: the sync's upsert key.
+    // Legacy from the era when directory hosts were materialized into this
+    // table: they are in-memory now, so any surviving rows are stale copies
+    // that would linger on the menu forever. The index is left in place (a
+    // table rebuild is not worth it) but nothing writes to it anymore.
+    this.db.exec('DELETE FROM systems WHERE directory IS NOT NULL');
     this.db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS systems_directory_ref ON systems(directory, directory_ref)'
     );
@@ -410,13 +394,12 @@ export class Systems {
   }
 
   /**
-   * Import: replace the *manual* catalog with the given systems. Directory
-   * rows are derived from the directory service and survive an import - the
-   * next sync would re-create them anyway. Accepts an export document
-   * ({kind, version, systems: [...]}) or a bare array. Every row validates
-   * before anything changes; the swap is one transaction with menu positions
-   * following the array order (manual rows first, directory rows after), so a
-   * bad file leaves the existing configuration untouched.
+   * Import: replace the catalog with the given systems. Accepts an export
+   * document ({kind, version, systems: [...]}) or a bare array. Every row
+   * validates before anything changes; the swap is one transaction with menu
+   * positions following the array order, so a bad file leaves the existing
+   * configuration untouched. (Directory hosts are not stored here and are
+   * unaffected.)
    */
   replaceAll(raw: unknown, cfg: Config): { ok: true; rows: SystemRow[] } | { ok: false; error: string } {
     const arr = Array.isArray(raw)
@@ -431,10 +414,9 @@ export class Systems {
       if (!v.ok) return { ok: false, error: `System ${i + 1}: ${v.error}` };
       inputs.push(v.value!);
     }
-    const dirRows = this.list().filter((r) => r.directory !== null);
     this.db.exec('BEGIN');
     try {
-      this.db.exec('DELETE FROM systems WHERE directory IS NULL');
+      this.db.exec('DELETE FROM systems');
       const stmt = this.db.prepare(
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
@@ -465,130 +447,12 @@ export class Systems {
           i + 1
         )
       );
-      // Directory rows follow the imported manual ones, in their own order.
-      dirRows.forEach((row, i) =>
-        this.db.prepare('UPDATE systems SET position = ? WHERE id = ?').run(inputs.length + i + 1, row.id)
-      );
       this.db.exec('COMMIT');
     } catch (e) {
       this.db.exec('ROLLBACK');
       throw e;
     }
     return { ok: true, rows: this.list() };
-  }
-
-  /**
-   * Directory sync: reconcile the menu's directory rows with the entry list
-   * the directory service just served. Rows keep their id across syncs (a
-   * live session's system stays addressable); entries that vanished are
-   * removed; manual rows are never touched. Directory rows always sit after
-   * the manual ones, in directory order. Returns what changed (for logging).
-   */
-  syncDirectory(entries: { ref: string; autoSignOn: boolean; input: SystemInput }[]): {
-    added: number;
-    updated: number;
-    removed: number;
-  } {
-    const existing = this.list().filter((r) => r.directory !== null);
-    const byRef = new Map(existing.map((r) => [r.directoryRef!, r]));
-    const seen = new Set<string>();
-    let added = 0;
-    let updated = 0;
-    let removed = 0;
-    const manual = this.list().filter((r) => r.directory === null);
-
-    this.db.exec('BEGIN');
-    try {
-      for (const e of entries) {
-        if (seen.has(e.ref)) continue; // a broken directory may repeat ids
-        seen.add(e.ref);
-        const row = byRef.get(e.ref);
-        if (!row) {
-          this.insertDirectory(e.ref, e.autoSignOn, e.input, manual.length + seen.size);
-          added++;
-        } else if (!sameShape(row, e.input) || row.directoryAutoSignOn !== e.autoSignOn) {
-          this.db
-            .prepare(
-              `UPDATE systems SET name = ?, description = ?, host = ?, port = ?, ssl = ?,
-               term_type = ?, code_page = ?, dev_prefix = ?,
-               proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
-               printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
-               recording = ?, directory_autosignon = ?, position = ?, updated_at = datetime('now')
-               WHERE id = ?`
-            )
-            .run(
-              e.input.name,
-              e.input.description,
-              e.input.host,
-              e.input.port,
-              e.input.ssl ? 1 : 0,
-              e.input.termType,
-              e.input.codePage,
-              e.input.devPrefix,
-              e.input.proxyHost,
-              e.input.proxyPort,
-              e.input.proxyUser,
-              e.input.proxyPass,
-              e.input.printerEnabled ? 1 : 0,
-              e.input.printerDeviceName,
-              e.input.printerMode,
-              e.input.recording ? 1 : 0,
-              e.autoSignOn ? 1 : 0,
-              manual.length + seen.size,
-              row.id
-            );
-          updated++;
-        } else {
-          // Unchanged content, but keep the directory's order authoritative.
-          this.db
-            .prepare('UPDATE systems SET position = ? WHERE id = ?')
-            .run(manual.length + seen.size, row.id);
-        }
-      }
-      for (const row of existing) {
-        if (!seen.has(row.directoryRef!)) {
-          this.db.prepare('DELETE FROM systems WHERE id = ?').run(row.id);
-          removed++;
-        }
-      }
-      this.db.exec('COMMIT');
-    } catch (e) {
-      this.db.exec('ROLLBACK');
-      throw e;
-    }
-    return { added, updated, removed };
-  }
-
-  private insertDirectory(ref: string, autoSignOn: boolean, input: SystemInput, position: number): void {
-    this.db
-      .prepare(
-        `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
-         proxy_host, proxy_port, proxy_user, proxy_pass,
-         printer_enabled, printer_device_name, printer_mode, recording,
-         directory, directory_ref, directory_autosignon, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'directory', ?, ?, ?)`
-      )
-      .run(
-        input.name,
-        input.description,
-        input.host,
-        input.port,
-        input.ssl ? 1 : 0,
-        input.termType,
-        input.codePage,
-        input.devPrefix,
-        input.proxyHost,
-        input.proxyPort,
-        input.proxyUser,
-        input.proxyPass,
-        input.printerEnabled ? 1 : 0,
-        input.printerDeviceName,
-        input.printerMode,
-        input.recording ? 1 : 0,
-        ref,
-        autoSignOn ? 1 : 0,
-        position
-      );
   }
 
   /** Swap a system with its neighbour in menu order (dir: 'up' | 'down'). */

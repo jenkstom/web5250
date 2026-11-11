@@ -61,7 +61,7 @@ import { Ebcdic } from './tn5250/ebcdic.ts';
 import type { Config } from './config.ts';
 import type { Systems, SystemRow } from './systems.ts';
 import type { Printers } from './printers.ts';
-import type { Directory } from './directory.ts';
+import type { Directory, DirectorySystem } from './directory.ts';
 import type { Audit } from './audit.ts';
 import type { Maintenance } from './maintenance.ts';
 import type { Recordings } from './recordings.ts';
@@ -119,8 +119,10 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
   /** Audit actor for an admin-route call: the console user's edge identity. */
   const actor = (req: IncomingMessage): string => identityOf(req) ?? 'admin';
 
-  /** Menu-safe projection: no credentials (proxy, printer, sign-on) anywhere. */
-  const publicSystem = (s: SystemRow): Record<string, unknown> => {
+  /** Menu-safe projection: no credentials (proxy, printer, sign-on) anywhere.
+   *  Directory hosts pass through here too; maintenance windows target stored
+   *  systems by numeric id, so an in-memory directory row reports none. */
+  const publicSystem = (s: SystemRow | DirectorySystem): Record<string, unknown> => {
     const {
       proxyHost, proxyPort, proxyUser, proxyPass, printerDeviceName,
       directoryRef, directoryAutoSignOn, signOnUser, signOnPassword, ...pub
@@ -129,14 +131,14 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       ...pub,
       viaProxy: Boolean(proxyHost),
       autoSignOn: Boolean((s.directory && directoryAutoSignOn) || (signOnUser && signOnPassword)),
-      maintenance: deps.maintenance.maintenanceOf(s.id)
+      maintenance: typeof s.id === 'number' ? deps.maintenance.maintenanceOf(s.id) : null
     };
   };
 
   /** System id/name pairs for stamping job rows (jobs keep arriving after
    * their system row is gone, so fall back to the stored device). */
-  const systemNames = (): Map<number, string> =>
-    new Map(systems.list().map((s) => [s.id, s.name]));
+  const systemNames = (): Map<number | string, string> =>
+    new Map([...systems.list(), ...deps.directory.list()].map((s) => [s.id, s.name]));
 
   const routes: Route[] = [
     {
@@ -168,11 +170,13 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       }
     },
     {
+      // Manual (stored) systems first, then whatever the directory service
+      // currently serves - its hosts are in-memory only and disappear with it.
       method: 'GET',
       re: /(?:^|\/)api\/systems\/?$/,
       auth: false,
-      run: ({ systems, res }) =>
-        json(res, 200, { systems: systems.list().map(publicSystem) })
+      run: ({ systems, deps, res }) =>
+        json(res, 200, { systems: [...systems.list(), ...deps.directory.list()].map(publicSystem) })
     },
     {
       method: 'GET',
@@ -274,6 +278,9 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       }
     },
     {
+      // The editor's copy of the list: stored rows only, full detail, proxy
+      // credentials included. Directory hosts are managed at the directory
+      // service, not here.
       method: 'GET',
       re: /(?:^|\/)api\/admin\/systems\/?$/,
       auth: true,
@@ -281,7 +288,7 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
         json(res, 200, {
           systems: systems.list().map((s) => ({
             ...s,
-            autoSignOn: Boolean((s.directory && s.directoryAutoSignOn) || (s.signOnUser && s.signOnPassword))
+            autoSignOn: Boolean(s.signOnUser && s.signOnPassword)
           }))
         })
     },
@@ -331,10 +338,9 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       }
     },
     {
-      // Export: the manual catalog as a download document (ids/positions are
+      // Export: the stored catalog as a download document (ids/positions are
       // re-assigned on import; the array order is the menu order). Directory
-      // rows are derived from the directory service and excluded - they come
-      // back on its next sync; the count notes how many were left out.
+      // hosts are never stored, so there is nothing of theirs to leave out.
       method: 'GET',
       re: /(?:^|\/)api\/admin\/config\/?$/,
       auth: true,
@@ -349,16 +355,13 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
           'cache-control': 'no-store',
           'content-disposition': `attachment; filename="${name}"`
         });
-        const all = systems.list();
-        const manual = all.filter((s) => s.directory === null);
         res.end(
           JSON.stringify(
             {
               kind: 'web5250-systems',
               version: 1,
               exportedAt: stamp.toISOString(),
-              directoryRowsExcluded: all.length - manual.length,
-              systems: manual.map(
+              systems: systems.list().map(
                 ({
                   id: _id, position: _pos, directory: _d, directoryRef: _dr,
                   directoryAutoSignOn: _da, ...system

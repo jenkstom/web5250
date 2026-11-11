@@ -31,26 +31,27 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
 const cfg = loadConfig();
 const systems = new Systems(cfg.dbPath, cfg);
-// Printer sessions are gateway-owned (independent of display sessions) and
-// reconcile with the systems list on every admin edit.
-const printers = new Printers(cfg, systems);
-printers.start();
 // Console plumbing: audit trail, maintenance windows, session recordings,
 // and the admin PIN/token store (shared by the API and WS break-glass).
 const audit = new Audit(cfg.dbPath, cfg.auditTtlMs);
+// Directory service (optional): menu entries + sign-on credentials from a
+// microservice in front of an existing host/credential database. Off unless
+// DIRECTORY_URL is set. Entries live in memory only - the menu carries them
+// for exactly as long as the service keeps answering; nothing is stored.
+const directory = new Directory(cfg, {
+  audit,
+  onSystemsChanged: () => printers.sync()
+});
+// Printer sessions are gateway-owned (independent of display sessions) and
+// reconcile with the full systems list (stored + directory) on every change.
+const printers = new Printers(cfg, () => [...systems.list(), ...directory.list()]);
+printers.start();
 const maintenance = new Maintenance(audit);
 const recordings = new Recordings(cfg);
 recordings.start();
 const adminAuth = new AdminAuth(cfg);
 // Gateway-wide console settings (same SQLite file as the catalog).
 const settings = new Settings(cfg.dbPath);
-// Directory service (optional): menu entries + sign-on credentials from a
-// microservice in front of an existing host/credential database. Off unless
-// DIRECTORY_URL is set; the sync keeps the menu's directory rows current.
-const directory = new Directory(cfg, systems, {
-  audit,
-  onSystemsChanged: () => printers.sync()
-});
 const api = createApiHandler(cfg, systems, {
   printers,
   audit,
@@ -159,9 +160,15 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const query = parseSessionQuery(url);
-  // Resolve the menu selection (?system=<id>) before upgrading so the
-  // session connects with the admin-configured parameters.
-  const system = query.systemId !== undefined ? systems.get(query.systemId) : undefined;
+  // Resolve the menu selection (?system=<id>, stored catalog row or in-memory
+  // directory host) before upgrading so the session connects with the
+  // admin-configured parameters.
+  const system =
+    query.systemId === undefined
+      ? undefined
+      : typeof query.systemId === 'number'
+        ? systems.get(query.systemId)
+        : directory.get(query.systemId);
   if (query.systemId !== undefined && !system) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();
@@ -194,7 +201,7 @@ server.on('upgrade', (req, socket, head) => {
 async function openSession(
   ws: import('ws').WebSocket,
   query: SessionQuery,
-  system: import('./systems.ts').SystemRow | undefined,
+  system: import('./systems.ts').SystemRow | import('./directory.ts').DirectorySystem | undefined,
   identity: string | null,
   clientIp: string | null
 ): Promise<void> {
@@ -356,6 +363,9 @@ function parseSessionQuery(url: URL): SessionQuery {
     const n = Number.parseInt(v ?? '', 10);
     return Number.isFinite(n) && n > 0 && n <= Number.MAX_SAFE_INTEGER ? n : undefined;
   };
+  // ?system= carries either a stored row's numeric id or a directory host's
+  // "dir:<entry id>" (entry ids cap at 64 chars, so 68 covers the prefix).
+  const sys = q.get('system');
   return {
     host: sanitize(q.get('host'), 253),
     port: num(q.get('port')),
@@ -363,7 +373,7 @@ function parseSessionQuery(url: URL): SessionQuery {
     termType: sanitize(q.get('term'), 20),
     codePage: sanitize(q.get('cp'), 10),
     devName: sanitizeDevName(q.get('devname')),
-    systemId: int(q.get('system')),
+    systemId: sys?.startsWith('dir:') ? (sanitize(sys, 68) ?? undefined) : int(sys),
     attach: sanitize(q.get('attach'), 64),
     view: sanitize(q.get('view'), 64),
     signOnTicket: sanitize(q.get('signonticket'), 64),

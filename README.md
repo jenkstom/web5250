@@ -64,11 +64,12 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
 - **Directory systems**: menu entries and **automatic sign-on** served from
   your own database of hosts and accounts through a tiny read-only
   microservice (`DIRECTORY_URL`, [docs/directory-service.md](docs/directory-service.md)
-  + [OpenAPI spec](docs/directory-service-openapi.yaml)). Entries are
-  materialized from a `DIRECTORY_TEMPLATE_*` template (proxy, code page,
-  printer, …) and re-synced on a timer; a user picking one is signed on
-  with the entry's stored credential — fetched at session start, typed
-  server-side, never written to disk and never sent to the browser.
+  + [OpenAPI spec](docs/directory-service-openapi.yaml)). Entries are built
+  from a `DIRECTORY_TEMPLATE_*` template (proxy, code page, printer, …) and
+  re-synced on a timer — held in memory only, so they are on the menu for
+  exactly as long as the service keeps answering; a user picking one is
+  signed on with the entry's stored credential — fetched at session start,
+  typed server-side, never written to disk and never sent to the browser.
 - **Browser UX**: canvas renderer with IBM Plex Mono, complete 5250 key
   interception (F1–F24 incl. Shift+F1–F12 → PF13–PF24), field exit, insert
   mode, roll keys, SysReq/Attn, Reset, on-screen keypad for touch devices,
@@ -755,13 +756,15 @@ gateway will
    sign-on screen (marked plainly, no `· auto sign-on`).
 
 The list re-syncs on a timer (`DIRECTORY_SYNC_INTERVAL_MS`, default 5 min)
-and on demand from the admin editor's **Sync directory** button; rows are
-matched by entry id, so live sessions, printer devices and deep links
-survive every sync. Directory rows list after the manual ones, are
-overwritten by each sync (edit the database or the template, not the row),
-re-appear after an admin delete, and are excluded from export/import —
-they are derived data. Syncs and failures land in the Audit tab
-(`directory.sync` / `directory.error`).
+and on demand from the admin editor's **Sync directory** button; rows keep
+their `dir:<entry id>` address across syncs, so live sessions, printer
+devices and deep links survive every sync. Directory hosts are **held in
+memory only — never written to the catalog**: they list after the manual
+ones, are absent from the admin editor and export/import (they are managed
+at the directory, not locally), and a failed sync (service down, wrong
+token) removes them from the menu until the service answers again — a down
+directory shows nothing instead of stale hosts. Syncs and failures land in
+the Audit tab (`directory.sync` / `directory.error`).
 
 Manually-configured systems can do the same without a directory: the admin
 editor's **Sign-on user / Sign-on password** fields store an account on the

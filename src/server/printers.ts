@@ -1,19 +1,22 @@
 // Gateway-owned printer sessions and the spool job store.
 //
 // One Printer5250Client per system with printerEnabled: started at boot,
-// reconciled whenever the admin edits the system list (edits apply live),
-// reconnected with backoff by the client itself. Completed jobs go to a
-// bounded store on the data volume next to the SQLite DB:
+// reconciled whenever the systems list changes (admin edits and directory
+// syncs apply live), reconnected with backoff by the client itself. Completed
+// jobs go to a bounded store on the data volume next to the SQLite DB:
 //   <data>/printjobs/<systemId>/<token>.<ext>
 // keyed by an unguessable per-job token (the same trust model as the
 // session tokens) and enforced by retention knobs - newest N jobs, total
 // bytes per system, and a TTL sweep - mirroring the bounded-diag approach
-// everywhere else in the gateway.
+// everywhere else in the gateway. Directory hosts join like any other
+// system (their "dir:<id>" keys are path-safe); their printers stop when a
+// failed directory sync drops them from the list.
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Config } from './config.ts';
-import type { Systems, SystemRow } from './systems.ts';
+import type { DirectorySystem } from './directory.ts';
+import type { SystemId, SystemRow } from './systems.ts';
 import {
   Printer5250Client,
   type PrinterMode,
@@ -24,7 +27,7 @@ import {
 export interface PrintJob {
   /** Unguessable download key (bearer credential for this job's bytes). */
   token: string;
-  systemId: number;
+  systemId: SystemId;
   device: string;
   mode: PrinterMode;
   format: 'txt' | 'pdf' | 'pcl';
@@ -39,14 +42,14 @@ export interface PrintJob {
 
 interface RunningPrinter {
   client: Printer5250Client;
-  systemId: number;
+  systemId: SystemId;
   /** Configuration signature; a change restarts the session. */
   signature: string;
   jobSeq: number;
 }
 
 export interface PrinterStateView {
-  systemId: number;
+  systemId: SystemId;
   systemName: string;
   device: string;
   mode: PrinterMode;
@@ -63,17 +66,17 @@ const CONTENT_TYPE_BY_FORMAT: Record<PrintJob['format'], string> = {
 
 export class Printers {
   private readonly cfg: Config;
-  private readonly systems: Systems;
+  private readonly listSystems: () => (SystemRow | DirectorySystem)[];
   private readonly root: string;
-  private readonly running = new Map<number, RunningPrinter>();
+  private readonly running = new Map<SystemId, RunningPrinter>();
   /** token -> job; jobs of a system kept newest-last for drop-oldest. */
   private readonly jobs = new Map<string, PrintJob>();
   private nextSeq = 1;
   private sweepTimer: NodeJS.Timeout | null = null;
 
-  constructor(cfg: Config, systems: Systems) {
+  constructor(cfg: Config, listSystems: () => (SystemRow | DirectorySystem)[]) {
     this.cfg = cfg;
-    this.systems = systems;
+    this.listSystems = listSystems;
     // Bounded storage lives on the data volume next to the SQLite DB.
     this.root = path.join(path.dirname(cfg.dbPath === ':memory:' ? 'data/x' : cfg.dbPath), 'printjobs');
   }
@@ -88,10 +91,10 @@ export class Printers {
     this.sweepTimer.unref();
   }
 
-  /** Reconcile running printers with the systems list (admin edits apply live). */
+  /** Reconcile running printers with the systems list (edits apply live). */
   sync(): void {
-    const desired = new Map<number, { system: SystemRow; signature: string }>();
-    for (const system of this.systems.list()) {
+    const desired = new Map<SystemId, { system: SystemRow | DirectorySystem; signature: string }>();
+    for (const system of this.listSystems()) {
       if (!system.printerEnabled) continue;
       const signature = [
         system.host,
@@ -161,7 +164,7 @@ export class Printers {
   /** Per-system printer states for the UI badge / button gating. */
   status(): PrinterStateView[] {
     const out: PrinterStateView[] = [];
-    for (const system of this.systems.list()) {
+    for (const system of this.listSystems()) {
       if (!system.printerEnabled) continue;
       const run = this.running.get(system.id);
       out.push({
@@ -211,7 +214,7 @@ export class Printers {
     else console.log(`[printer ${device}] ${state}${detail ? ` (${detail})` : ''}`);
   }
 
-  private store(run: RunningPrinter, system: SystemRow, job: PrintJobData): void {
+  private store(run: RunningPrinter, system: SystemRow | DirectorySystem, job: PrintJobData): void {
     const device = system.printerDeviceName ?? this.cfg.ibmPrinterDeviceName;
     const token = crypto.randomBytes(16).toString('hex');
     const format = job.format;
@@ -244,7 +247,7 @@ export class Printers {
   }
 
   /** Drop-oldest until the system's jobs fit count and byte budgets. */
-  private enforceRetention(systemId: number): void {
+  private enforceRetention(systemId: SystemId): void {
     const mine = this.listJobs().filter((j) => j.systemId === systemId).reverse(); // oldest first
     let count = mine.length;
     let bytes = mine.reduce((sum, j) => sum + j.bytes, 0);
@@ -270,9 +273,9 @@ export class Printers {
    * system row (one printer per system, so they match how the job arrived).
    */
   private recoverJobs(): void {
-    let systems: Map<number, SystemRow>;
+    let systems: Map<SystemId, SystemRow | DirectorySystem>;
     try {
-      systems = new Map(this.systems.list().map((s) => [s.id, s]));
+      systems = new Map(this.listSystems().map((s) => [s.id, s]));
     } catch {
       return; // no catalog yet - nothing to attribute files to
     }
@@ -284,8 +287,17 @@ export class Printers {
     }
     for (const sysDir of root) {
       if (!sysDir.isDirectory()) continue;
-      const systemId = Number(sysDir.name);
-      if (!Number.isInteger(systemId)) continue;
+      // Stored systems' jobs live under their numeric id, directory hosts'
+      // under "dir:<entry id>". The directory has not synced yet at boot, so
+      // a directory host's jobs recover with the default device/mode - being
+      // indexed (and therefore swept) matters more than the metadata.
+      const asNumber = Number(sysDir.name);
+      const systemId: SystemId | null = sysDir.name.startsWith('dir:')
+        ? sysDir.name
+        : Number.isInteger(asNumber) && asNumber > 0
+          ? asNumber
+          : null;
+      if (systemId === null) continue;
       const system = systems.get(systemId);
       let files: fs.Dirent[];
       try {

@@ -106,10 +106,12 @@ export class Maintenance {
     return viewOf(runtime);
   }
 
-  /** Refusal for new sessions: null when the target system is unaffected. */
-  blocked(systemId: number | undefined): { message: string; deadlineAt: number | null } | null {
+  /** Refusal for new sessions: null when the target system is unaffected.
+   *  Windows target stored systems by numeric id; an in-memory directory
+   *  host ("dir:...") is only ever subject to the global window. */
+  blocked(systemId: number | string | undefined): { message: string; deadlineAt: number | null } | null {
     if (this.global) return { message: this.global.message, deadlineAt: this.global.deadlineAt };
-    if (systemId !== undefined) {
+    if (typeof systemId === 'number') {
       const m = this.systems.get(systemId);
       if (m) return { message: m.message, deadlineAt: m.deadlineAt };
     }

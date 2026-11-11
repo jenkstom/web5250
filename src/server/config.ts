@@ -189,7 +189,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       `DIRECTORY_TEMPLATE_CODEPAGE=${dirCp} is not supported. Available: ${Ebcdic.availablePages().join(', ')}`
     );
   }
+  const ibmProxyHost = env.IBM_I_PROXY_HOST?.trim() || null;
+  const ibmProxyPort = int(env.IBM_I_PROXY_PORT, 1080);
+  const ibmProxyUser = env.IBM_I_PROXY_USER?.trim() || null;
+  const ibmProxyPassword = env.IBM_I_PROXY_PASSWORD ?? null;
+  // Directory hosts route through the DIRECTORY_TEMPLATE_PROXY_* proxy;
+  // when the template sets none they fall back to the IBM_I_PROXY_* one (the
+  // proxy the seed system uses), so a single-proxy deployment configures it
+  // exactly once and directory hosts stop connecting directly by accident.
   const dirProxyHost = env.DIRECTORY_TEMPLATE_PROXY_HOST?.trim() || null;
+  const dirProxyUser = env.DIRECTORY_TEMPLATE_PROXY_USER?.trim() || null;
+  const dirProxyPass = env.DIRECTORY_TEMPLATE_PROXY_PASSWORD ?? null;
   return {
     port: int(env.PORT, 8080),
     host: env.HOST ?? '0.0.0.0',
@@ -197,10 +207,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ibmPort: int(env.IBM_I_PORT, 23),
     ibmSsl: bool(env.IBM_I_SSL, false),
     negotiateTimeoutMs: clampInt(env.IBM_I_NEGOTIATE_TIMEOUT_MS, 0, 10 * 60 * 1000, 60_000),
-    ibmProxyHost: env.IBM_I_PROXY_HOST?.trim() || null,
-    ibmProxyPort: int(env.IBM_I_PROXY_PORT, 1080),
-    ibmProxyUser: env.IBM_I_PROXY_USER?.trim() || null,
-    ibmProxyPassword: env.IBM_I_PROXY_PASSWORD ?? null,
+    ibmProxyHost,
+    ibmProxyPort,
+    ibmProxyUser,
+    ibmProxyPassword,
     tlsRejectUnauthorized: bool(env.IBM_I_TLS_REJECT_UNAUTHORIZED, false),
     codePage,
     termType,
@@ -265,10 +275,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         env.DIRECTORY_TEMPLATE_DEV_PREFIX === undefined || env.DIRECTORY_TEMPLATE_DEV_PREFIX.trim() === ''
           ? null
           : env.DIRECTORY_TEMPLATE_DEV_PREFIX.trim().toUpperCase(),
-      proxyHost: dirProxyHost,
-      proxyPort: dirProxyHost ? int(env.DIRECTORY_TEMPLATE_PROXY_PORT, 1080) : null,
-      proxyUser: env.DIRECTORY_TEMPLATE_PROXY_USER?.trim() || null,
-      proxyPass: env.DIRECTORY_TEMPLATE_PROXY_PASSWORD ?? null,
+      proxyHost: dirProxyHost ?? ibmProxyHost,
+      proxyPort: dirProxyHost
+        ? int(env.DIRECTORY_TEMPLATE_PROXY_PORT, 1080)
+        : ibmProxyHost
+          ? ibmProxyPort
+          : null,
+      proxyUser: dirProxyUser ?? ibmProxyUser,
+      proxyPass: dirProxyPass ?? ibmProxyPassword,
       printerEnabled: bool(env.DIRECTORY_TEMPLATE_PRINTER_ENABLED, false),
       printerDeviceName: env.DIRECTORY_TEMPLATE_PRINTER_DEVNAME?.trim().toUpperCase() || null,
       printerMode: env.DIRECTORY_TEMPLATE_PRINTER_MODE === 'raw' ? 'raw' : 'text',

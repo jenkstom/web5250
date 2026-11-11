@@ -7,13 +7,14 @@
 //   GET /v1/entries                     -> the menu list (no credentials)
 //   GET /v1/entries/{id}/credentials    -> username/password, at session start
 //
-// The list is materialized into the systems catalog on a timer: every entry
-// becomes a menu row whose connection settings come from the DIRECTORY_TEMPLATE_*
-// environment (proxy, code page, terminal model, printer, ...) with the entry
-// supplying identity and reachability. Rows keep their id across syncs, so
-// live sessions, printer devices and deep links survive; entries that
-// disappear from the directory are removed. Manual (admin-created) rows are
-// never touched and always list before the directory rows.
+// The entry list is held in memory only - directory hosts are never written
+// to the systems catalog. They appear on the menu for exactly as long as the
+// directory service keeps answering: a failed sync clears the list, so a
+// down or mis-pointed service shows nothing instead of stale hosts. Every
+// entry becomes a menu row whose connection settings come from the
+// DIRECTORY_TEMPLATE_* environment (proxy, code page, terminal model,
+// printer, ...) with the entry supplying identity and reachability. Row ids
+// are "dir:<entry id>", stable for as long as the entry exists.
 //
 // Credentials are never persisted: they are fetched when a session starts,
 // held in memory for the sign-on automation, and typed straight into the
@@ -22,7 +23,7 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import type { Config } from './config.ts';
-import type { Systems, SystemInput } from './systems.ts';
+import type { SystemInput, SystemRow } from './systems.ts';
 import { validateSystemInput } from './systems.ts';
 import type { Audit } from './audit.ts';
 
@@ -43,18 +44,25 @@ export interface DirectoryCredentials {
   password: string;
 }
 
+/** A directory host as the rest of the gateway sees it: a full system row
+ *  with a namespaced string id ("dir:<entry id>") instead of a catalog id. */
+export type DirectorySystem = Omit<SystemRow, 'id'> & { id: string };
+
 const REF_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 const NAME_SUB = /\{(name|host|description)\}/gi;
+export const DIRECTORY_ID_PREFIX = 'dir:';
 
 export interface DirectoryHooks {
   audit?: Audit;
-  /** Fires after a sync changed the systems list (printer reconciliation). */
+  /** Fires after a sync changed the in-memory list (printer reconciliation). */
   onSystemsChanged: () => void;
 }
 
 export class Directory {
   private timer: NodeJS.Timeout | null = null;
   private syncing = false;
+  /** The live entry list, keyed by entry id (menu order = insertion order). */
+  private rows = new Map<string, DirectorySystem>();
   /** State of the last sync (console/API surface; never credentials). */
   lastSyncAt: number | null = null;
   lastError: string | null = null;
@@ -62,7 +70,6 @@ export class Directory {
 
   constructor(
     private readonly cfg: Config,
-    private readonly systems: Systems,
     private readonly hooks: DirectoryHooks
   ) {}
 
@@ -82,6 +89,18 @@ export class Directory {
     };
   }
 
+  /** The directory hosts, in directory order (manual rows list first). */
+  list(): DirectorySystem[] {
+    return [...this.rows.values()];
+  }
+
+  /** One directory host by its "dir:<entry id>" id. */
+  get(id: string): DirectorySystem | undefined {
+    return id.startsWith(DIRECTORY_ID_PREFIX)
+      ? this.rows.get(id.slice(DIRECTORY_ID_PREFIX.length))
+      : undefined;
+  }
+
   /** First sync (best effort) + the re-sync timer. No-op when unconfigured. */
   start(): void {
     if (!this.enabled || this.timer) return;
@@ -98,29 +117,34 @@ export class Directory {
     this.timer = null;
   }
 
-  /** One reconciliation pass; failures are logged/audited, never thrown. */
+  /**
+   * One refresh pass. Success replaces the in-memory list; failure clears it -
+   * the directory service being down means its hosts are gone from the menu,
+   * not served stale. Either way the outcome is logged/audited, never thrown.
+   */
   async syncNow(): Promise<void> {
     if (!this.enabled || this.syncing) return;
     this.syncing = true;
     try {
       const list = await this.getList();
-      const inputs: { ref: string; autoSignOn: boolean; input: SystemInput }[] = [];
+      const next = new Map<string, DirectorySystem>();
       const skipped: string[] = [];
       for (const entry of list) {
         const input = materialize(entry, this.cfg);
-        if (!input) {
+        if (!input || next.has(entry.id)) {
           skipped.push(entry.id || '(no id)');
           continue;
         }
-        inputs.push({ ref: entry.id, autoSignOn: entry.autoSignOn, input });
+        next.set(entry.id, toRow(entry, input));
       }
-      const changed = this.systems.syncDirectory(inputs);
+      const changed = diffCounts(this.rows, next);
+      this.rows = next;
       this.lastSyncAt = Date.now();
       this.lastError = null;
-      this.lastCounts = { ...changed, total: inputs.length };
+      this.lastCounts = { ...changed, total: next.size };
       if (changed.added || changed.updated || changed.removed) {
         this.hooks.onSystemsChanged();
-        const summary = `+${changed.added} ~${changed.updated} -${changed.removed} of ${inputs.length}`;
+        const summary = `+${changed.added} ~${changed.updated} -${changed.removed} of ${next.size}`;
         console.log(`[directory] sync: ${summary} system(s)`);
         this.hooks.audit?.log('directory', 'directory.sync', hostOf(this.cfg.directoryUrl!), summary);
       }
@@ -133,8 +157,17 @@ export class Directory {
       const detail = String((e as Error).message ?? e);
       this.lastSyncAt = Date.now();
       this.lastError = detail;
-      console.warn(`[directory] sync failed: ${detail}`);
-      this.hooks.audit?.log('directory', 'directory.error', '', `sync failed: ${detail}`);
+      const removed = this.rows.size;
+      this.rows = new Map();
+      this.lastCounts = { added: 0, updated: 0, removed, total: 0 };
+      console.warn(`[directory] sync failed: ${detail} (${removed} host(s) removed from the menu)`);
+      this.hooks.audit?.log(
+        'directory',
+        'directory.error',
+        '',
+        `sync failed: ${detail}${removed ? ` - ${removed} host(s) removed from the menu` : ''}`
+      );
+      if (removed) this.hooks.onSystemsChanged();
     } finally {
       this.syncing = false;
     }
@@ -263,6 +296,58 @@ function parseEntry(raw: unknown): DirectoryEntry | null {
     ssl,
     autoSignOn: r.autoSignOn === true || r.autoSignOn === 'true' || r.autoSignOn === 1
   };
+}
+
+/** One materialized entry as a full system row with a "dir:" id. */
+function toRow(entry: DirectoryEntry, input: SystemInput): DirectorySystem {
+  return {
+    ...input,
+    id: DIRECTORY_ID_PREFIX + entry.id,
+    position: 0,
+    directory: 'directory',
+    directoryRef: entry.id,
+    directoryAutoSignOn: entry.autoSignOn
+  };
+}
+
+/** What changed between two entry lists (for the sync log line). */
+function diffCounts(
+  prev: Map<string, DirectorySystem>,
+  next: Map<string, DirectorySystem>
+): { added: number; updated: number; removed: number } {
+  let added = 0;
+  let updated = 0;
+  let removed = 0;
+  for (const [ref, row] of next) {
+    const old = prev.get(ref);
+    if (!old) added++;
+    else if (!sameRow(old, row)) updated++;
+  }
+  for (const ref of prev.keys()) if (!next.has(ref)) removed++;
+  return { added, updated, removed };
+}
+
+/** True when two rows of the same entry carry identical settings. */
+function sameRow(a: DirectorySystem, b: DirectorySystem): boolean {
+  return (
+    a.name === b.name &&
+    a.description === b.description &&
+    a.host === b.host &&
+    a.port === b.port &&
+    a.ssl === b.ssl &&
+    a.termType === b.termType &&
+    a.codePage === b.codePage &&
+    a.devPrefix === b.devPrefix &&
+    a.proxyHost === b.proxyHost &&
+    a.proxyPort === b.proxyPort &&
+    a.proxyUser === b.proxyUser &&
+    a.proxyPass === b.proxyPass &&
+    a.printerEnabled === b.printerEnabled &&
+    a.printerDeviceName === b.printerDeviceName &&
+    a.printerMode === b.printerMode &&
+    a.recording === b.recording &&
+    a.directoryAutoSignOn === b.directoryAutoSignOn
+  );
 }
 
 /**
