@@ -81,6 +81,9 @@ const gw = spawn(process.execPath, ['dist/server.js'], {
     IBM_I_PRINTER_ENABLED: '1',
     IBM_I_PRINTER_DEVNAME: DEVNAME,
     IBM_I_PRINTER_MODE: MODE,
+    // This script validates printer mechanics with no display session
+    // open, so it pins the always-on model instead of the demand default.
+    PRINTER_IDLE_MS: '0',
     WEB5250_DB: join(mkdtempSync(join(tmpdir(), 'web5250-print-real-')), 'menu.db')
   }
 });

@@ -1,21 +1,26 @@
 // Gateway-owned printer sessions and the spool job store.
 //
-// One Printer5250Client per system with printerEnabled: started at boot,
-// reconciled whenever the systems list changes (admin edits and directory
-// syncs apply live), reconnected with backoff by the client itself. Completed
-// jobs go to a bounded store on the data volume next to the SQLite DB:
+// One Printer5250Client per system with printerEnabled, demand-driven: the
+// session starts when a display session opens to the system and stops after
+// PRINTER_IDLE_MS with none (0 = always-on), reconciled on every systems-list
+// or session-registry change, reconnected with backoff by the client itself
+// while demand lasts. Completed jobs go to a bounded store on the data volume
+// next to the SQLite DB:
 //   <data>/printjobs/<systemId>/<token>.<ext>
 // keyed by an unguessable per-job token (the same trust model as the
 // session tokens) and enforced by retention knobs - newest N jobs, total
 // bytes per system, and a TTL sweep - mirroring the bounded-diag approach
 // everywhere else in the gateway. Directory hosts join like any other
 // system (their "dir:<id>" keys are path-safe); their printers stop when a
-// failed directory sync drops them from the list.
+// failed directory sync drops them from the list. A printer dropped by the
+// idle tail frees the device: spool files the host releases while it is
+// down stay there until the next session opens.
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Config } from './config.ts';
 import type { DirectorySystem } from './directory.ts';
+import { allSessions } from './sessions.ts';
 import type { SystemId, SystemRow } from './systems.ts';
 import {
   Printer5250Client,
@@ -43,17 +48,22 @@ export interface PrintJob {
 interface RunningPrinter {
   client: Printer5250Client;
   systemId: SystemId;
+  /** Device name, kept for log lines after the starting context is gone. */
+  device: string;
   /** Configuration signature; a change restarts the session. */
   signature: string;
   jobSeq: number;
 }
+
+/** The client's live states, plus the not-running (waiting for demand) view. */
+export type PrinterSessionState = PrinterStatus | 'idle';
 
 export interface PrinterStateView {
   systemId: SystemId;
   systemName: string;
   device: string;
   mode: PrinterMode;
-  state: PrinterStatus;
+  state: PrinterSessionState;
   detail?: string;
 }
 
@@ -69,6 +79,8 @@ export class Printers {
   private readonly listSystems: () => (SystemRow | DirectorySystem)[];
   private readonly root: string;
   private readonly running = new Map<SystemId, RunningPrinter>();
+  /** Armed while a system's last display session is gone (printerIdleMs). */
+  private readonly idleTimers = new Map<SystemId, NodeJS.Timeout>();
   /** token -> job; jobs of a system kept newest-last for drop-oldest. */
   private readonly jobs = new Map<string, PrintJob>();
   private nextSeq = 1;
@@ -91,7 +103,12 @@ export class Printers {
     this.sweepTimer.unref();
   }
 
-  /** Reconcile running printers with the systems list (edits apply live). */
+  /**
+   * Reconcile running printers with the systems list and session demand
+   * (admin edits, directory syncs and session connect/disconnect apply live).
+   * A system's printer runs while at least one display session targets it;
+   * after the last one ends it stays up for printerIdleMs, then stops.
+   */
   sync(): void {
     const desired = new Map<SystemId, { system: SystemRow | DirectorySystem; signature: string }>();
     for (const system of this.listSystems()) {
@@ -110,17 +127,47 @@ export class Printers {
       desired.set(system.id, { system, signature });
     }
 
+    // Demand = systems with a live display session. A session in its
+    // post-detach grace period still counts (the browser may come back),
+    // so a refresh never flaps the printer. Raw ?host= sessions carry no
+    // system id and cannot be attributed to a printer.
+    const demand = new Set<SystemId>();
+    for (const session of allSessions()) {
+      if (!session.isDestroyed && session.systemId !== undefined) demand.add(session.systemId);
+    }
+
     // Stop printers whose system vanished, was disabled, or changed shape.
     for (const [id, run] of this.running) {
       const want = desired.get(id);
       if (want && want.signature === run.signature) continue;
+      this.clearIdleTimer(id);
       run.client.destroy();
       this.running.delete(id);
       console.log(`[printer] session for system ${id} stopped (${want ? 'configuration changed' : 'removed or disabled'})`);
     }
 
     for (const [id, { system, signature }] of desired) {
-      if (this.running.has(id)) continue;
+      const run = this.running.get(id);
+      if (this.cfg.printerIdleMs === 0) {
+        // Always-on: demand plays no role (the pre-demand model).
+        this.clearIdleTimer(id);
+      } else if (demand.has(id)) {
+        this.clearIdleTimer(id);
+      } else if (run) {
+        // Last display session is gone: arm the idle tail once (repeated
+        // syncs must not keep postponing it). The printer stays connected
+        // meanwhile - a job released right after the last user left still
+        // lands.
+        if (!this.idleTimers.has(id)) {
+          const timer = setTimeout(() => this.idleStop(id), this.cfg.printerIdleMs);
+          timer.unref();
+          this.idleTimers.set(id, timer);
+        }
+      } else {
+        // Demand-driven and nothing runs: wait for a session to open.
+        continue;
+      }
+      if (run) continue;
       const device = system.printerDeviceName ?? this.cfg.ibmPrinterDeviceName;
       const client = new Printer5250Client({
         host: system.host,
@@ -143,10 +190,10 @@ export class Printers {
         negotiateTimeoutMs: this.cfg.negotiateTimeoutMs,
         maxJobBytes: Math.max(this.cfg.printjobsMaxBytes, 1024 * 1024)
       });
-      const run: RunningPrinter = { client, systemId: id, signature, jobSeq: 0 };
-      this.running.set(id, run);
-      client.onStatus = (state, detail) => this.logStatus(run, device, state, detail);
-      client.onJob = (job) => this.store(run, system, job);
+      const started: RunningPrinter = { client, systemId: id, device, signature, jobSeq: 0 };
+      this.running.set(id, started);
+      client.onStatus = (state, detail) => this.logStatus(started, device, state, detail);
+      client.onJob = (job) => this.store(started, system, job);
       client.connect();
       console.log(
         `[printer ${device}] session starting -> ${system.host}:${system.port}` +
@@ -155,9 +202,27 @@ export class Printers {
     }
   }
 
+  /** The idle tail ran out: drop the session so the host frees the device. */
+  private idleStop(id: SystemId): void {
+    this.idleTimers.delete(id);
+    const run = this.running.get(id);
+    if (!run) return;
+    run.client.destroy();
+    this.running.delete(id);
+    console.log(`[printer ${run.device}] idle timeout - no display sessions, session stopped`);
+  }
+
+  private clearIdleTimer(id: SystemId): void {
+    const timer = this.idleTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this.idleTimers.delete(id);
+  }
+
   stopAll(): void {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.sweepTimer = null;
+    for (const timer of this.idleTimers.values()) clearTimeout(timer);
+    this.idleTimers.clear();
     for (const run of this.running.values()) run.client.destroy();
     this.running.clear();
   }
@@ -173,8 +238,8 @@ export class Printers {
         systemName: system.name,
         device: system.printerDeviceName ?? this.cfg.ibmPrinterDeviceName,
         mode: system.printerMode,
-        state: run?.client.status ?? 'connecting',
-        detail: run?.client.statusDetail
+        state: run?.client.status ?? 'idle',
+        detail: run ? run.client.statusDetail : 'starts when a user opens a session'
       });
     }
     return out;

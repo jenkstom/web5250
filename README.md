@@ -126,9 +126,12 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   `postMessage`s the embedding page when the user exits and the host drops
   the session — one-line deep links for other apps' data-entry screens.
 - **Spool printing to the browser (TN5250E printer sessions)**: the
-  gateway keeps one always-on printer device per system (RFC 4777 printer
-  flow — terminal type `IBM-3812-1`, no extra host infrastructure). Press
-  Print on the host or move a spool file to the device's output queue and
+  gateway opens one printer device per system on demand (RFC 4777 printer
+  flow — terminal type `IBM-3812-1`, no extra host infrastructure): it
+  connects when the first display session opens to the system and stays up
+  for `PRINTER_IDLE_MS` (default 5 minutes) after the last one ends; `0`
+  keeps it always-on. Press Print on the host or move a spool file to the
+  device's output queue and
   it appears in the browser under the top-bar **Spool** button —
   downloadable, printable on a local printer, or forwarded as a real PDF
   when the device has host print transform configured. `text` mode extracts
@@ -257,6 +260,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_PRINTER_ENABLED` | First-boot seed: keep a printer session up for the seeded system (per-system afterwards, in the admin editor) | `false` |
 | `IBM_I_PRINTER_DEVNAME` | Printer device name the seed system claims (`CRTDEVPRT … TYPE(3812) MODEL(1)`, or let `QAUTOVRT` auto-configure) | `WEB5250P` |
 | `IBM_I_PRINTER_MODE` | Seed printer delivery mode: `text` (extract plain text from SCS) or `raw` (store host-print-transform bytes, sniff `%PDF`/PCL) | `text` |
+| `PRINTER_IDLE_MS` | Printer sessions are demand-driven: stop a system's printer this long after the last display session to it ends; `0` = always-on | `300000` (5 min) |
 | `PRINTJOBS_MAX_COUNT` | Spool-job retention: newest jobs kept per system (drop-oldest) | `200` |
 | `PRINTJOBS_MAX_BYTES` | Spool-job retention: total bytes kept per system (drop-oldest) | `104857600` (100 MB) |
 | `PRINTJOBS_TTL_MS` | Spool-job retention: age limit, swept periodically and at boot | `2592000000` (30 days) |
@@ -360,7 +364,7 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | :-- | :-- | :-- |
 | `GET /api/meta` | – | admin enabled?, terminal models, code pages, form defaults |
 | `GET /api/systems` | – | the menu list |
-| `GET /api/printer-status` | – | per-system printer session state (ready / connecting / error) |
+| `GET /api/printer-status` | – | per-system printer session state (ready / connecting / error / idle) |
 | `GET /api/printjobs` | – | spool jobs, newest first (token, system, device, size, pages, time) |
 | `GET /api/printjobs/<token>` | – | job download (content type by format; `no-store`) |
 | `DELETE /api/printjobs/<token>` | – | delete one job (any spool viewer; audited) |
@@ -397,10 +401,15 @@ attempts lock administration for 60 s after 5 tries.
 The 5250 display protocol has no file transfer — the only channel a host
 can push bytes down is a **TN5250E printer session** (the mechanism ACS and
 tn5250 use for "print to local printer"). When a system has its printer
-enabled, the gateway keeps one always-on printer device connected
-(independent of any display sessions, reconnected with backoff): like a
-real printer being powered on, the device must be there for the host's
-writer to send to it. Print on the host — or move any spool file to the
+enabled, the gateway opens one printer device per **demand**: it connects
+when the first display session opens to the system, stays connected while
+any do (reconnected with backoff), and stops `PRINTER_IDLE_MS` (default 5
+minutes) after the last one ends — like a real printer being powered on
+when people arrive and off after they leave, because the device must be
+there for the host's writer to send to it. Spool files released while no
+session is up are not lost: the writer holds or errors them on the host
+and delivers on the next connect. `PRINTER_IDLE_MS=0` restores an
+always-on device. Print on the host — or move any spool file to the
 device's output queue — that's the queue **named like the device**, which
 CRTDEVPRT auto-created in QUSRSYS (device descriptions have no OUTQ
 parameter; the attached session is the writer, so `WRKCFGSTS` shows the

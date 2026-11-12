@@ -294,6 +294,8 @@ const userPages: HelpPage[] = [
         `Download saves it (text or the raw host format, as configured)`,
         `Delete removes it from the list (the administrator sets how long jobs are kept)`
       ),
+      p(`The printer device connects while people are connected to the system and drops a few minutes ` +
+        `after the last one leaves; a printout released in between arrives when the next session opens.`),
       p(`If the Spool button never appears, the system has no printer session - mention it to the administrator.`)
     ]
   },
@@ -452,8 +454,11 @@ const adminPages: HelpPage[] = [
     subtitle: 'Host spool files in the browser',
     blocks: [
       p(
-        `Enable Printer and the gateway keeps an always-on TN5250E printer device for the system; ` +
-          `printouts land in every user's {{Spool|a-home}} list. The device must exist on the host:`
+        `Enable Printer and the gateway opens a TN5250E printer device for the system on demand: ` +
+          `it connects when the first display session opens to the system and stops five minutes ` +
+          `(PRINTER_IDLE_MS) after the last one ends - 0 keeps it always-on. Printouts land in ` +
+          `every user's {{Spool|a-home}} list; files the host releases in an idle gap are held ` +
+          `there and delivered on the next connect. The device must exist on the host:`
       ),
       pre(
         `CRTCTLVDE CTLD(QVIRCD0001)                     /* once, if missing  */\n` +
@@ -501,7 +506,7 @@ const adminPages: HelpPage[] = [
         ['Sync directory', 'Pull the entry list right now (it also re-syncs on a timer, default 5 minutes)'],
         ['In-memory only', 'Directory hosts are never written to the catalog: they are absent from this editor, from export/import, and from the menu whenever the directory is unreachable'],
         ['Edits', 'Change the directory entry or the DIRECTORY_TEMPLATE_* environment - there is no local row to edit'],
-        ['Printer sessions', 'Follow the list: a failed sync drops the hosts and stops their printers']
+        ['Printer sessions', 'Follow the list: a failed sync drops the hosts and stops their printers (demand rules apply like any other system)']
       ),
       p(
         `Directory credentials are never stored: each session start fetches them fresh. Rows keep ` +

@@ -19,10 +19,19 @@ const registry = new Map<string, HostSession>();
 const shares = new Map<string, HostSession>();
 const consoleIds = new Map<string, HostSession>();
 
+/** Fired after every registry mutation; consumers keep their own view in sync
+ * (the gateway-owned printers reconcile their demand-driven sessions here). */
+let onRegistryChange: (() => void) | null = null;
+
+export function onSessionRegistryChange(cb: () => void): void {
+  onRegistryChange = cb;
+}
+
 export function registerSession(session: HostSession): void {
   registry.set(session.token, session);
   shares.set(session.shareToken, session);
   consoleIds.set(session.adminId, session);
+  onRegistryChange?.();
 }
 
 export function getSession(token: string): HostSession | undefined {
@@ -46,6 +55,7 @@ export function removeSession(token: string): void {
     shares.delete(session.shareToken);
     consoleIds.delete(session.adminId);
   }
+  onRegistryChange?.();
 }
 
 export function allSessions(): HostSession[] {

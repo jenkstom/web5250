@@ -22,7 +22,7 @@ interface SpoolPrinter {
   systemName: string;
   device: string;
   mode: 'text' | 'raw';
-  state: 'connecting' | 'ready' | 'error';
+  state: 'connecting' | 'ready' | 'error' | 'idle';
   detail?: string;
 }
 
@@ -124,7 +124,7 @@ function renderPrinters(printers: SpoolPrinter[]): void {
       row.className = `spool-printer ${p.state}`;
       const state = document.createElement('b');
       state.textContent =
-        p.state === 'ready' ? '●' : p.state === 'error' ? '✗' : '…';
+        p.state === 'ready' ? '●' : p.state === 'error' ? '✗' : p.state === 'idle' ? '·' : '…';
       const label = document.createElement('span');
       const where = p.systemName ? `${p.systemName} · ` : '';
       label.textContent = `${where}${p.device} (${p.mode}) — ${p.state}${p.detail ? `: ${p.detail}` : ''}`;

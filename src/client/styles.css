@@ -838,6 +838,7 @@ button.primary { border-color: var(--green); color: var(--green); }
 .spool-printer.ready b { color: var(--green); }
 .spool-printer.error b { color: var(--err); }
 .spool-printer.connecting b { color: var(--warn); }
+.spool-printer.idle { opacity: 0.75; }
 
 #spool-list { list-style: none; margin: 0.3rem 1rem; padding: 0; }
 .spool-row {

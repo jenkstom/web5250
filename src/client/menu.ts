@@ -23,7 +23,8 @@ export interface MenuSystem {
   devPrefix: string | null;
   /** True on the public list: this system connects through a SOCKS5 proxy. */
   viaProxy?: boolean;
-  /** True on the public list: a gateway-owned printer session runs for this system. */
+  /** True on the public list: the gateway opens a printer session for this
+   * system while display sessions target it (spool button + badge appear). */
   printerEnabled?: boolean;
   /** Present while a maintenance window blocks this system. */
   maintenance?: { on: boolean; message: string; deadlineAt: number | null } | null;

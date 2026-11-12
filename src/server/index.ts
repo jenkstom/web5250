@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { loadConfig } from './config.ts';
 import { HostSession, type SessionQuery, type AutoQuery } from './gateway.ts';
-import { getSession, getSessionByShare, allSessions } from './sessions.ts';
+import { getSession, getSessionByShare, allSessions, onSessionRegistryChange } from './sessions.ts';
 import { Systems } from './systems.ts';
 import { Directory } from './directory.ts';
 import { Printers } from './printers.ts';
@@ -42,9 +42,11 @@ const directory = new Directory(cfg, {
   audit,
   onSystemsChanged: () => printers.sync()
 });
-// Printer sessions are gateway-owned (independent of display sessions) and
-// reconcile with the full systems list (stored + directory) on every change.
+// Printer sessions are gateway-owned and demand-driven (one per system while
+// display sessions target it) and reconcile with the full systems list
+// (stored + directory) on every change - including session connect/disconnect.
 const printers = new Printers(cfg, () => [...systems.list(), ...directory.list()]);
+onSessionRegistryChange(() => printers.sync());
 printers.start();
 const maintenance = new Maintenance(audit);
 const recordings = new Recordings(cfg);

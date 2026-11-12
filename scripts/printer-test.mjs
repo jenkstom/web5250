@@ -19,6 +19,7 @@ const GW_PORT = 18280;
 const GW_RETENTION_PORT = 18281;
 const GW_ERROR_PORT = 18282;
 const GW_RAW_PORT = 18283;
+const GW_DEMAND_PORT = 18284;
 const ADMIN_PIN = '9876';
 const DEVICE = 'WEB5250P';
 
@@ -72,6 +73,10 @@ async function startGateway(port, db, env = {}) {
       IBM_I_CODEPAGE: 'cp037',
       ADMIN_PIN,
       SESSION_GRACE_MS: '0',
+      // The demand sections below opt into short/always-on idle tails
+      // explicitly; everything else keeps the always-on model these
+      // assertions were written against.
+      PRINTER_IDLE_MS: '0',
       WEB5250_DB: db,
       IBM_I_PRINTER_ENABLED: '1',
       IBM_I_PRINTER_DEVNAME: DEVICE,
@@ -326,6 +331,50 @@ await sleep(300);
   const body = await dl.text();
   check('pdf download: application/pdf and %PDF magic', dl.headers.get('content-type') === 'application/pdf' && body.startsWith('%PDF-1.4'), `${dl.headers.get('content-type')} ${body.slice(0, 8)}`);
   check('raw job carries no page count', job.pages === null, JSON.stringify(job));
+}
+
+// ============================================ 6. demand-driven sessions
+{
+  console.log('\n6. Demand-driven printer sessions (idle tail after last display session)');
+  const db = join(mkdtempSync(join(tmpdir(), 'web5250-print-demand-')), 'menu.db');
+  await startGateway(GW_DEMAND_PORT, db, { PRINTER_IDLE_MS: '3000' });
+  check(
+    'no printer at boot: status is idle',
+    (await printerStatus(GW_DEMAND_PORT))[0]?.state === 'idle',
+    JSON.stringify(await printerStatus(GW_DEMAND_PORT))
+  );
+
+  const { ws, term, opened } = wsTerm(GW_DEMAND_PORT, '?system=1');
+  await opened;
+  check(
+    'display session starts the printer',
+    await waitFor(async () => (await printerStatus(GW_DEMAND_PORT))[0]?.state === 'ready', 10000),
+    JSON.stringify(await printerStatus(GW_DEMAND_PORT))
+  );
+  check(
+    'jobs arrive while the session is up',
+    await waitFor(async () => (await listJobs(GW_DEMAND_PORT)).length === 2, 10000),
+    JSON.stringify(await listJobs(GW_DEMAND_PORT))
+  );
+  ws.close();
+  check(
+    'status leaves ready once the last session is gone',
+    await waitFor(async () => (await printerStatus(GW_DEMAND_PORT))[0]?.state !== 'ready', 10000),
+    JSON.stringify(await printerStatus(GW_DEMAND_PORT))
+  );
+  check(
+    'idle tail stops the printer (state returns to idle)',
+    await waitFor(async () => (await printerStatus(GW_DEMAND_PORT))[0]?.state === 'idle', 10000),
+    JSON.stringify(await printerStatus(GW_DEMAND_PORT))
+  );
+  check(
+    'sign-on screen was live alongside the printer',
+    term.text().includes('AS/400 Sign On'),
+    term.text().slice(0, 200)
+  );
+  const job = (await listJobs(GW_DEMAND_PORT))[0];
+  const dl = await fetch(`http://127.0.0.1:${GW_DEMAND_PORT}/api/printjobs/${job.token}`);
+  check('job captured while up stays downloadable', dl.ok && (await dl.text()).includes('SPOOL REPORT'));
 }
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) FAILED.`}`);

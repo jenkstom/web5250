@@ -33,10 +33,17 @@ spool files a path into the browser with no new infrastructure.
 
 ## Decisions already made (rationale)
 
-1. **Printer sessions are per-system, gateway-owned, always-on.** A printer
-   device must be connected for the host's writer to send to it — like a
-   real printer being powered on. They are independent of display sessions
-   (connecting one does not connect the other) and reconnect with backoff.
+1. **Printer sessions are per-system, gateway-owned, and demand-driven.** A
+   printer device must be connected for the host's writer to send to it —
+   like a real printer being powered on. The session opens when the first
+   display session opens to the system and stops `PRINTER_IDLE_MS` (default
+   5 minutes; `0` = always-on) after the last one ends, so an idle gateway
+   holds no host connections; spool files released in the gap are held or
+   errored by the host's writer and delivered on the next connect. While
+   demand lasts they reconnect with backoff. (Originally always-on and
+   independent of display sessions; the idle tail replaced that because an
+   unattended gateway kept a device session per printer-enabled system
+   forever.)
 2. **Reuse the existing socket path.** The raw-socket acquisition in
    `Tn5250Client.connect()` (direct / TLS / SOCKS5) is factored into a
    shared helper so printer sessions get TLS and SOCKS5 for free.

@@ -63,6 +63,12 @@ export interface Config {
   ibmPrinterDeviceName: string;
   /** First-boot seed printer delivery mode (text = SCS extraction, raw = passthrough). */
   ibmPrinterMode: 'text' | 'raw';
+  /**
+   * Demand-driven printer sessions: how long a system's printer stays
+   * connected after the last display session to it ends. 0 = always-on
+   * (the printer connects at boot regardless of demand).
+   */
+  printerIdleMs: number;
   /** Print-job retention: newest jobs kept per system (drop-oldest). */
   printjobsMaxCount: number;
   /** Print-job retention: total bytes kept per system (drop-oldest). */
@@ -246,6 +252,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ibmPrinterEnabled: bool(env.IBM_I_PRINTER_ENABLED, false),
     ibmPrinterDeviceName: (env.IBM_I_PRINTER_DEVNAME?.trim().toUpperCase() || 'WEB5250P').slice(0, 10),
     ibmPrinterMode: env.IBM_I_PRINTER_MODE === 'raw' ? 'raw' : 'text',
+    // Five minutes covers the gap between one user leaving and the next
+    // arriving; 0 restores the always-on model (and the printer E2E suite
+    // runs that way to keep its no-session assumptions).
+    printerIdleMs: clampInt(env.PRINTER_IDLE_MS, 0, 24 * 60 * 60 * 1000, 5 * 60 * 1000),
     printjobsMaxCount: clampInt(env.PRINTJOBS_MAX_COUNT, 1, 10000, 200),
     printjobsMaxBytes: clampInt(env.PRINTJOBS_MAX_BYTES, 1024, 16 * 1024 * 1024 * 1024, 100 * 1024 * 1024),
     printjobsTtlMs: clampInt(env.PRINTJOBS_TTL_MS, 60_000, 365 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000),
