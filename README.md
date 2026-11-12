@@ -47,7 +47,11 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
   Selection* panel (number keys / arrows + Enter, or tap) listing the remote
   systems an administrator maintains — each with its own host, port, TLS,
   terminal model, code page, device prefix and optional SOCKS5 proxy (with
-  username/password auth) its connection is tunneled through. Systems live
+  username/password auth) its connection is tunneled through. Long catalogs
+  page (10 rows on the menu, 6 in the split-pane picker) and the option field
+  doubles as a live filter — letters narrow the list by name, description or
+  host, digits keep the classic jump-to-row; see
+  [System selection & admin](#system-selection--admin). Systems live
   in a SQLite file on a persistent volume; the list is seeded from `IBM_I_*`
   on first boot, so upgrading deployments keep working unchanged.
 - **Admin editor**: a PIN-protected (`ADMIN_PIN`) editor manages the system
@@ -286,6 +290,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
 | `SHOW_DIAG_BUTTON` | Show the `Diag` button in the top bar (copies raw 5250 session diagnostics to the clipboard for bug reports) | `false` |
 | `IBM_I_TRACE_CONSOLE` | Mirror the per-session 5250 protocol trace (negotiation bytes, first records' hex, field maps) into the container log; `false` keeps the trace in memory for the Diag button only | `true` |
+| `IBM_I_TRACE_RECORDS` | Cap on how many inbound records each session's Diag trace captures | `200` (clamped 8–5000) |
 | `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
 
 Each browser session gets its own 5250 device. Device names are generated as
@@ -301,6 +306,19 @@ catalog is seeded with the environment host, so existing single-host
 deployments see exactly one entry and behave as before. Deep links work:
 `?system=<id>` opens that system directly, `?host=…` keeps the legacy
 custom-host behaviour.
+
+**Pages and filter at catalog scale.** Hundreds of directory + manual hosts
+don't fit one panel, so the list shows one page at a time — 10 rows on the
+landing menu, 6 in the split-pane picker — under a ‹ Prev / Page x / y /
+Next › bar: PgUp/PgDn turns pages, arrows walk across page boundaries with
+the cursor kept visible, and a typed number jumps to its page. The field is
+dual-mode (**Option/Filter ==>**): digits alone keep the classic
+jump/select (4 digits now), while any letter turns it into a live filter
+over name, description and host — whitespace-separated terms AND together,
+rows renumber within the matches, an `N of M` count appears while
+filtering, a letter typed over the echoed number overtakes it 5250-style,
+and Esc clears the filter first. `A` opens admin anywhere outside the
+field, so a filter may start with a letter.
 
 **Admin** (bottom of the menu, or press `A`): enter `ADMIN_PIN`, then add /
 edit / delete / reorder systems. Edits persist to SQLite (mount the compose
