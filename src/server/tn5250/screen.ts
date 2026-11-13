@@ -225,15 +225,33 @@ export class Screen5250 {
 
   /** Plain character write at the current write position. Characters never
    *  touch the attribute plane: an SF field's attribute covers exactly its
-   *  own cells (set in addField) and bare attribute bytes propagate on
-   *  their own - a label written right after a non-display field must stay
-   *  visible (tn5250j keeps char and attribute planes separate). */
+   *  own cells (set in addField) and bare attribute bytes propagate on their
+   *  own - a label written right after a non-display field must stay visible
+   *  (tn5250j keeps char and attribute planes separate).
+   *
+   *  A character DOES replace a field-attribute cell left over from an
+   *  earlier format: hosts repaint without CLEAR UNIT (an RA-spaces erase
+   *  plus new labels), and a real controller stores the character over the
+   *  stale attribute. Swallowing it instead would strand the old cell mid-
+   *  text (blank "holes" like "RE IEW UPDATE", stale chars where the write
+   *  was dropped). The character takes the attribute of the run in effect,
+   *  and the run continues past the destroyed cell - the attribute byte that
+   *  started it had to stop its propagation there. */
   writeChar(ch: string): void {
     const pos = this.writePos;
-    if (!this.attrPlace[pos]) {
-      this.chars[pos] = ch;
-      this.markDirty(pos);
+    if (this.attrPlace[pos]) {
+      this.attrPlace[pos] = false;
+      this.attrs[pos] = this.lastAttr;
+      let p = pos + 1;
+      let guard = 0;
+      while (p < this.size && !this.attrPlace[p] && this.attrs[p] !== this.lastAttr && guard++ < this.size) {
+        this.attrs[p] = this.lastAttr;
+        this.markDirty(p);
+        p++;
+      }
     }
+    this.chars[pos] = ch;
+    this.markDirty(pos);
     this.advanceWrite();
   }
 
