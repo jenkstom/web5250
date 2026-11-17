@@ -190,12 +190,30 @@ class HostSession {
         this.text(17, 6, null, 'Command line:'),
         this.field(19, 25, 0x20, 21),
         this.text(19, 47, null, '(unused)'),
-        this.text(23, 4, 0x3a, 'F1=Help  F3=Exit  F4=Prompt'),
-        this.text(24, 4, 0x22, `Signed on as ${user}`)
-      ],
+      this.text(23, 4, 0x3a, 'F1=Help  F3=Exit  F4=Prompt'),
+      this.text(24, 4, 0x22, `Signed on as ${user}`)
+    ],
       [6, 26],
       CMD_RMD
     );
+  }
+
+  // STRSQL-style statement entry: one 68-wide input field per row, the exact
+  // shape the multiline paste was built for (a pasted statement fills one row
+  // per source line, long lines roll into the next field).
+  sendSqlEntry() {
+    this.state = 'sql';
+    this.currentFields = [];
+    const defs = [
+      this.text(1, 29, 0x22, 'Enter SQL Statements'),
+      this.text(3, 6, null, 'Type SQL statement, press Enter to execute'),
+      this.text(22, 6, 0x3a, 'F3=Exit  F6=Insert  F9=Retrieve  F12=Cancel')
+    ];
+    for (let r = 5; r <= 20; r++) {
+      defs.push(this.field(r, 6, 0x20, 68));
+      this.currentFields.push({ row: r, col: 6, len: 68 });
+    }
+    this.screen(defs, [5, 7], CMD_RMD);
   }
 
   /**
@@ -680,6 +698,8 @@ class HostSession {
           this.sendPcCommand('start http://mock.example/report?from=menu', true);
         } else if (sel.trim() === '97') {
           this.sendPcCommand('rundll32 url.dll,FileProtocolHandler notepad.exe', false);
+        } else if ((cmd || sel).trim().toUpperCase() === 'STRSQL') {
+          this.sendSqlEntry();
         } else if (cmd) {
           this.sendError(`Command ${cmd} not known to mock host`, CMD_RMD);
           this.sendMain(user);
@@ -688,6 +708,13 @@ class HostSession {
         }
         break;
       }
+
+      case 'sql':
+        // Enter "runs" the statement: a fresh entry screen follows, PF3
+        // leaves the session like the real STRSQL.
+        if (aid === AID_PF3) this.sendMain(this.lastUser);
+        else this.sendSqlEntry();
+        break;
 
       case 'pccmd':
         // The emulator's Enter completion (WAIT(*YES)) lands here.

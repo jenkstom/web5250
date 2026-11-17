@@ -16,6 +16,17 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
 [ IBM i / AS/400 ]
 ```
 
+## Screenshots
+
+Taken against the bundled mock host (`npm run shots` regenerates them);
+the system catalog is mocked up through the admin API.
+
+| | |
+|---|---|
+| ![System selection](docs/screenshots/menu.png)<br>**System selection** — the admin-maintained catalog with TLS, SOCKS5-tunnel and auto sign-on markers | ![Sign-on](docs/screenshots/signon.png)<br>**Sign-on** — the host's own QDSIGNON screen; password cells never leave the server |
+| ![IBM i main menu](docs/screenshots/main-menu.png)<br>**IBM i main menu** — attribute-driven colors, command line, click-to-position cursor | ![Work list](docs/screenshots/worklist.png)<br>**Work list** — option columns, one input field per row |
+| ![Multiline SQL paste](docs/screenshots/sql-paste.png)<br>**Multiline paste** — a pasted SQL statement fills one input line per row | ![Split view](docs/screenshots/split.png)<br>**Split view** — two independent sessions side by side, draggable divider |
+
 ## Features
 
 - **Full TN5250 client protocol** implemented from RFC 1205 / RFC 2877 and
