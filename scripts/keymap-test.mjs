@@ -41,12 +41,62 @@ const SYNTH_KMP = [
   'C192=[fldext]',
   'B33554442=[enter]',
   'A81=|163',
+  'B8=[backspace]',
+  'A8=[bsdelete]',
+  'S8=[destbackspace]',
+  'B34=[pagedn]',
   'B999=[dup]',
   'C17=[reset]',
   'B65=66'
 ].join('\r\n');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ------------------------------------------------------------- terminal model
+// Minimal screen reader for raw-WS sessions (same idea as signonpin-test).
+class Term {
+  rows = 24;
+  cols = 80;
+  cells = [];
+  apply(msg) {
+    if (msg.t === 'screen') {
+      this.rows = msg.rows;
+      this.cols = msg.cols;
+      this.cells = new Array(this.rows * this.cols).fill(' ');
+      for (const [pos, , ch] of msg.cells) this.cells[pos] = String(ch ?? ' ');
+    } else if (msg.t === 'update' && Array.isArray(msg.cells)) {
+      for (const [pos, , ch] of msg.cells) this.cells[pos] = String(ch ?? ' ');
+    }
+  }
+  text() {
+    const out = [];
+    for (let r = 0; r < this.rows; r++) {
+      out.push(this.cells.slice(r * this.cols, (r + 1) * this.cols).join('').replace(/\s+$/, ''));
+    }
+    return out.join('\n');
+  }
+}
+
+async function openSession(url) {
+  const sock = new WebSocket(url);
+  const term = new Term();
+  sock.addEventListener('message', (ev) => term.apply(JSON.parse(String(ev.data))));
+  await new Promise((resolve, reject) => {
+    sock.addEventListener('open', resolve);
+    sock.addEventListener('error', reject);
+  });
+  return { sock, term };
+}
+
+async function waitFor(term, pred, timeoutMs, what) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pred(term)) return true;
+    await sleep(60);
+  }
+  console.log(`  (timeout waiting for ${what})`);
+  return false;
+}
 
 let failures = 0;
 function check(name, cond, detail = '') {
@@ -155,6 +205,13 @@ async function main() {
     hasBinding(sb, binding('Backquote', { ctrl: true }, 'fieldexit')));
   check('numpad location bits (0x2000000+10)', hasBinding(sb, binding('NumpadEnter', {}, 'enter')));
   check('|163 types the pound sign', hasBinding(sb, binding('KeyQ', { alt: true }, 'char', '£')));
+  check(
+    'backspace mnemonics: [backspace] + destructive aliases',
+    hasBinding(sb, binding('Backspace', {}, 'backspace')) &&
+      hasBinding(sb, binding('Backspace', { alt: true }, 'bsdelete')) &&
+      hasBinding(sb, binding('Backspace', { shift: true }, 'bsdelete'))
+  );
+  check('[pagedn] alias -> rolldown', hasBinding(sb, binding('PageDown', {}, 'rolldown')));
   check('unknown mnemonic / key / key-to-key skipped', (synthImport.data.skipped ?? []).length === 3,
     JSON.stringify(synthImport.data.skipped));
 
@@ -311,6 +368,34 @@ async function main() {
   // A bare array works too, and D needs a system that points at the mock
   // host (the import tests above replaced the catalog with fake hosts).
   await http('PUT', 'api/admin/config', [{ name: 'MOCK', host: '127.0.0.1', port: MOCK_PORT }], token);
+  const sysId = (await http('GET', 'api/admin/systems', undefined, token)).data.systems
+    .find((s) => s.name === 'MOCK')?.id;
+
+  // --------------------------------------- E. destructive backspace (live)
+  // The gateway screen model: type ZQX, destructive-backspace, then look:
+  // the X must be gone (plain backspace only moves the cursor - the field
+  // would still read ZQX). Asserting before typing anything else: in an
+  // overwrite field, backspace+type would look the same either way.
+  console.log('\nE. Destructive backspace on the live gateway');
+  const ws = await openSession(`ws://127.0.0.1:${HTTP_PORT}/ws?system=${sysId}`);
+  const ks = (k, ch) => ws.sock.send(JSON.stringify({ t: 'key', k, ...(ch ? { ch } : {}) }));
+  // The host screen must arrive before keys mean anything (the gateway
+  // drops input while nothing is invited yet).
+  check('sign-on screen arrived', await waitFor(ws.term, (t) => t.text().includes('Sign On'), 8000, 'sign-on screen'));
+  ks('char', 'Z');
+  ks('char', 'Q');
+  ks('char', 'X');
+  check('typed ZQX into the field', await waitFor(ws.term, (t) => t.text().includes('ZQX'), 5000, 'ZQX'));
+  ks('bsdelete');
+  const erased = await waitFor(
+    ws.term,
+    (t) => t.text().includes('ZQ') && !t.text().includes('ZQX'),
+    5000,
+    'the erased field'
+  );
+  check('bsdelete erased the character left of the cursor', erased,
+    ws.term.text().split('\n').filter((l) => l.includes('ZQ')).join(' | '));
+  ws.sock.close();
 
   // -------------------------------------------------------- D. browser UI
   console.log('\nD. The visual editor and a live remapped key');
@@ -376,6 +461,12 @@ async function main() {
   await page.waitForSelector('.keycap[data-code="KeyM"].bound', { timeout: 5000 });
   check('character binding lands from the UI', true);
 
+  // Destructive backspace on the Alt state of the Backspace key.
+  await page.selectOption('#km-add-code', 'Backspace');
+  await page.selectOption('#km-states .km-state:nth-child(4) select', 'bsdelete');
+  await page.waitForSelector('.keycap[data-code="Backspace"].bound', { timeout: 5000 });
+  check('Destructive Backspace is bindable from the editor', true);
+
   await page.click('#km-save');
   // The editor hides via the .hidden class (display:none) - watch the class,
   // not "visibility" (see the sign-on PIN test's note on this).
@@ -385,7 +476,7 @@ async function main() {
   );
   check(
     'saved map appears in the list with both bindings',
-    ((await page.locator('#keymap-list li', { hasText: 'UI' }).textContent()) ?? '').includes('2 binding')
+    ((await page.locator('#keymap-list li', { hasText: 'UI' }).textContent()) ?? '').includes('3 binding')
   );
 
   await page.locator('#keymap-list li', { hasText: 'UI' }).locator('button', { hasText: 'Default' }).click();
@@ -409,8 +500,11 @@ async function main() {
   // The owner's own pane never names its own keys (notifyKey skips the
   // origin - the owner knows what she pressed), so the live-key assertions
   // watch a mirrored viewer, which is the point of the readout anyway.
+  // Section E's raw session may still be lingering in grace - mirror the
+  // ACTIVE owner session, not the first MOCK row in the list.
   const live = (await http('GET', 'api/admin/sessions', undefined, token)).data.sessions
-    .find((s) => s.system === 'MOCK');
+    .filter((s) => s.system === 'MOCK' && s.state === 'active')
+    .at(-1);
   check('live session visible to the console', Boolean(live));
   const view = await http('POST', `api/admin/sessions/${live.id}/view`, {}, token);
   const viewer = await (await browser.newContext({ viewport: { width: 900, height: 700 } })).newPage();
@@ -433,6 +527,13 @@ async function main() {
     undefined, { timeout: 3000 }
   );
   check('Escape keeps its built-in SysReq (overlay falls through)', true);
+  await sleep(2200);
+  await page.keyboard.press('Alt+Backspace');
+  await viewer.waitForFunction(
+    () => (document.querySelector('.oia-key')?.textContent ?? '') === 'Destructive Bksp',
+    undefined, { timeout: 3000 }
+  );
+  check('Alt+Backspace sends the destructive backspace, live', true);
   check('no page errors along the way', pageErrors.length === 0, pageErrors.join(' | '));
   await browser.close();
 

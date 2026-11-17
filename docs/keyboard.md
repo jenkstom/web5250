@@ -29,7 +29,9 @@ The table above is the **built-in** mapping — what every session uses until
 an administrator configures otherwise. A custom keymap (see
 [Systems, admin & console](admin.md#system-selection--admin), Keymaps tab)
 **overrides it key by key**: a bound key sends its configured 5250 function
-(including ones the built-in map never reaches, like *Clear* and *Field+*),
+(including ones the built-in map never reaches, like *Clear*, *Field+* and a
+destructive *Backspace* that erases — PC5250-style; the built-in Backspace
+above stays the authentic non-destructive cursor move),
 a key left on `(default)` keeps its built-in meaning, and `(browser)` hands
 a key back to the browser. One keymap can be the gateway default; a host
 can use its own instead, or pin itself to the built-in map. If your keys

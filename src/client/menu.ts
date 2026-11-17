@@ -1714,7 +1714,7 @@ const ACTION_GROUPS: { label: string; actions: string[] }[] = [
     label: 'Field editing',
     actions: [
       'tab', 'btab', 'fieldexit', 'fieldplus', 'fieldminus', 'backspace',
-      'delete', 'insert', 'up', 'down', 'left', 'right', 'home', 'end'
+      'bsdelete', 'delete', 'insert', 'up', 'down', 'left', 'right', 'home', 'end'
     ]
   },
   { label: 'Keys while locked', actions: ['reset', 'sysreq', 'attn', 'print'] }
@@ -1825,6 +1825,7 @@ const COMPACT_LABELS: Record<string, string> = {
   fieldplus: 'Fld +',
   fieldminus: 'Fld −',
   backspace: 'Bksp',
+  bsdelete: 'Dest Bksp',
   rollup: 'RollUp',
   rolldown: 'RollDn',
   sysreq: 'SysRq'

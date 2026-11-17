@@ -443,7 +443,8 @@ const adminPages: HelpPage[] = [
           `Alt states send. The keycap glows once it carries a binding and shows the current ` +
           `action as a second legend, like a real keycap. (default) falls through to the built-in ` +
           `mapping, whose behavior is shown next to every state; the function list includes ` +
-          `actions the built-in map never reaches (Clear, Field+).`
+          `actions the built-in map never reaches (Clear, Field+, Destructive Backspace - the ` +
+          `PC5250-style backspace that erases; plain Backspace keeps its authentic cursor-left).`
       ),
       h('Where a map applies'),
       ul(

@@ -42,7 +42,7 @@ export const KEY_ACTIONS: readonly string[] = [
   'pf11', 'pf12', 'pf13', 'pf14', 'pf15', 'pf16', 'pf17', 'pf18', 'pf19',
   'pf20', 'pf21', 'pf22', 'pf23', 'pf24',
   'tab', 'btab', 'fieldexit', 'fieldplus', 'fieldminus',
-  'backspace', 'delete', 'insert',
+  'backspace', 'bsdelete', 'delete', 'insert',
   'up', 'down', 'left', 'right', 'home', 'end',
   'sysreq', 'attn', 'reset', 'print', 'help'
 ];

@@ -539,6 +539,12 @@ export class Tn5250Client {
       case 'backspace':
         s.backspace();
         return null;
+      case 'bsdelete':
+        // Destructive backspace (the PC5250/ACS "Character Backspace"):
+        // erase the character left of the cursor and shift the field left.
+        // The screen model no-ops at the field start, like Field- does.
+        s.deleteBackward();
+        return null;
       case 'delete':
         if (!s.currentField()) return 'nofield';
         s.deleteKey();

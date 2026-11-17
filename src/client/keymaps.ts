@@ -36,6 +36,7 @@ export const KEY_LABELS: Record<string, string> = {
   fieldplus: 'Field +',
   fieldminus: 'Field −',
   backspace: 'Backspace',
+  bsdelete: 'Destructive Bksp',
   delete: 'Delete',
   insert: 'Insert',
   up: '↑ Up',

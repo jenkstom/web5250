@@ -61,7 +61,10 @@ visual keyboard: click a keycap (or pick a key), then set what its Plain /
 Shift / Ctrl / Alt states send. A binding **overrides the built-in
 [browser mapping](keyboard.md)** for that one key; anything left on
 `(default)` falls through to it, and `(browser)` hands the key back to the
-browser. Entries a `.kmp` carries that this emulator cannot express (macros,
+browser. The action list includes functions the built-in map never sends —
+*Clear*, *Field+* and **Destructive Backspace** (erase the character left of
+the cursor, the PC5250/ACS "Character Backspace" behavior — the plain
+*Backspace* action stays the authentic non-destructive cursor move). Entries a `.kmp` carries that this emulator cannot express (macros,
 key-to-key translations, host functions with no 5250 equivalent) are
 reported on import — nothing is guessed at. One map can be the **default**
 applied to every host; each system's editor has a *Keymap* select for a
