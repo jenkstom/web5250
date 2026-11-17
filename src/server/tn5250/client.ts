@@ -11,6 +11,9 @@ import { openHostSocket } from './transport.ts';
 
 export type SessionStatus = 'connecting' | 'negotiating' | 'connected' | 'closed' | 'error';
 
+/** Paste pacing: max wait for the host to answer a submitted line. */
+const PASTE_READY_TIMEOUT_MS = 10_000;
+
 export interface Tn5250ClientOptions {
   host: string;
   port: number;
@@ -55,6 +58,8 @@ export class Tn5250Client {
   private rxBytes = 0;
   private destroyed = false;
   private recordsSeen = 0;
+  /** One paste at a time: a second blob would interleave with paced Enters. */
+  private pasting = false;
   /** Bounded protocol capture for the server logs (first records of a session). */
   private rxLogged = 0;
   private lastFieldLog = '';
@@ -569,5 +574,124 @@ export class Tn5250Client {
       default:
         return null;
     }
+  }
+
+  // ------------------------------------------------------------- text paste
+  /**
+   * Type pasted text with real 5250 field semantics instead of a blind
+   * character stream (a plain char run overflows the current field, and every
+   * character past its end silently overwrites the field's last cell):
+   * - a line separator jumps to the first input field on a later row - the
+   *   next line of a statement-entry screen, the Password field under User,
+   *   the next row of a form. With no field below (a command line at the
+   *   bottom of a menu) it submits with Enter and waits for the host to
+   *   invite input again, so pasting a command script runs it line by line;
+   * - typing a field's last cell continues on the next field in screen
+   *   order, so a line longer than the field spans rows instead of losing
+   *   its tail;
+   * - a tab advances to the next field (a spreadsheet row fills successive
+   *   prompt fields);
+   * - trailing line separators are ignored: a stray trailing newline must
+   *   not submit a half-filled screen;
+   * - anything the screen rejects (locked, not invited, a filtered
+   *   character, no field left to continue on) stops the paste and beeps.
+   */
+  async pasteText(text: string): Promise<'pasted' | 'stopped' | 'busy'> {
+    if (this.pasting) return 'busy';
+    const lines = text.replace(/[\r\n]+$/, '').split(/\r\n|\r|\n/);
+    this.diag(
+      `[tn5250 ${this.opts.deviceName ?? '-'}] paste ${text.length} chars, ${lines.length} line(s)`
+    );
+    this.pasting = true;
+    try {
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0 && !(await this.pasteNewline())) return this.pasteStop('nowhere to continue');
+        for (const ch of lines[i]) {
+          if (ch === '\t') {
+            this.screen.gotoField(1);
+            continue;
+          }
+          if ((ch.codePointAt(0) ?? 0) < 0x20) continue; // clipboard control noise is not text
+          const f = this.screen.currentField();
+          if (!f) return this.pasteStop('no input field at the cursor');
+          const fillsLastCell = this.screen.cursorPos >= f.endPos;
+          const rejected = this.localKey('char', ch); // beep reason or null
+          if (rejected) return this.pasteStop(`screen rejected the character (${rejected})`);
+          if (fillsLastCell && !this.pasteNextField()) return this.pasteStop('out of fields');
+          this.onScreenChange();
+          // An AUTO ENTER field fired an AID mid-line: let the host answer
+          // before typing on (the keyboard is locked until it does).
+          if (this.screen.lock !== 'none' && !(await this.waitReady())) {
+            return this.pasteStop('host did not re-invite input');
+          }
+        }
+      }
+      return 'pasted';
+    } finally {
+      this.pasting = false;
+    }
+  }
+
+  private pasteStop(reason: string): 'stopped' {
+    this.diag(`[tn5250 ${this.opts.deviceName ?? '-'}] paste stopped: ${reason}`);
+    return 'stopped';
+  }
+
+  /** Line separator: first input field on a later row, or Enter on a screen with none. */
+  private async pasteNewline(): Promise<boolean> {
+    const cur = this.screen.currentField();
+    if (!cur) return false;
+    const below = this.screen.fields
+      .filter((f) => !f.isBypass && this.screen.rowOf(f.dataStart) > this.screen.rowOf(cur.dataStart))
+      .sort((a, b) => a.dataStart - b.dataStart)[0];
+    if (below) {
+      this.screen.cursorPos = below.dataStart;
+      this.onScreenChange();
+      return true;
+    }
+    // No input field below the cursor: the screen's input is a command line,
+    // so the separator submits and the next pasted line types into whatever
+    // the host answers with - continuing on the field the paste started on
+    // (the command line of the redrawn menu), not wherever the host parked
+    // the cursor (the selection field above it).
+    const homeRow = this.screen.rowOf(cur.dataStart);
+    const homeCol = this.screen.colOf(cur.dataStart);
+    if (!this.sendAid(C.AID_ENTER)) return false;
+    this.onScreenChange();
+    if (!(await this.waitReady())) return false;
+    const back = this.screen.fields.find(
+      (f) =>
+        !f.isBypass &&
+        this.screen.rowOf(f.dataStart) === homeRow &&
+        this.screen.colOf(f.dataStart) === homeCol
+    );
+    if (back) this.screen.cursorPos = back.dataStart;
+    return true;
+  }
+
+  /** Field full: continue on the next input field in screen order (no wrap). */
+  private pasteNextField(): boolean {
+    const cur = this.screen.currentField();
+    if (!cur) return false;
+    const next = this.screen.fields
+      .filter((f) => !f.isBypass && f.startPos > cur.startPos)
+      .sort((a, b) => a.startPos - b.startPos)[0];
+    if (!next) return false;
+    this.screen.cursorPos = next.dataStart;
+    return true;
+  }
+
+  /** Wait for the host to invite input again (Enter pacing, AUTO ENTER fields). */
+  private waitReady(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        if (this.destroyed || this.status === 'closed' || this.status === 'error') return resolve(false);
+        if (this.screen.lock === 'none' && this.screen.waitingForInput) return resolve(true);
+        if (Date.now() - started >= PASTE_READY_TIMEOUT_MS) return resolve(false);
+        setTimeout(tick, 25);
+      };
+      tick();
+    });
   }
 }

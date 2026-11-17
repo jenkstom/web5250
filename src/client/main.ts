@@ -1345,15 +1345,12 @@ $('ctx-copy').addEventListener('click', (e) => {
   hideCtxMenu();
   focusTerminal();
 });
-// Paste text at the pane's cursor, typed character by character. Tabs
-// advance to the next field (a spreadsheet row fills successive prompt
-// fields); line breaks are dropped - auto-submitting a half-filled screen
-// on a stray newline is never what the user meant.
+// Paste goes to the gateway as one message; the server's screen model types
+// it with 5250 field semantics (line breaks continue on the next input line,
+// a full field rolls into the next, command-line screens submit line by
+// line, a trailing line break never submits).
 function pasteText(pane: SessionPane, text: string): void {
-  for (const ch of text) {
-    if (ch === '\t') pane.sendKey('tab');
-    else if (ch !== '\r' && ch !== '\n') pane.sendKey('char', ch);
-  }
+  pane.sendPaste(text);
 }
 
 // Menu Paste must read the clipboard with readText() - and the browser

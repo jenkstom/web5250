@@ -862,8 +862,15 @@ terminal emulator does:
   the double click itself).
 - **Ctrl+C** / **Cmd+C** re-copies the standing mark; a plain click clears it
   and places the host cursor as before.
-- **Ctrl+V** / **Cmd+V** pastes at the cursor with no browser prompt - tabs in
-  the pasted text advance to the next field, line breaks are dropped.
+- **Ctrl+V** / **Cmd+V** pastes at the cursor with no browser prompt. The paste
+  follows the screen's field layout: each line break continues on the next
+  input line (a multiline SQL statement fills one row per line, a sign-on
+  fills User then Password), a line longer than the field rolls into the next
+  field instead of losing its tail, tabs advance one field - and on screens
+  whose input is a single command line, each line is submitted with Enter and
+  the next types into whatever the host answers (pasting a command script
+  runs it). A trailing line break never submits; when the paste runs out of
+  screen it stops and beeps.
 - **Paste** (the right-click item) has to *read* the clipboard, and the
   browser answers that read with its own confirmation box (Safari and Firefox
   every time, Chrome once and then remembered). That box is the browser's

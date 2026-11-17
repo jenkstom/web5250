@@ -104,6 +104,11 @@ const LOCK_SAFE_KEYS = new Set(['reset', 'sysreq', 'attn', 'print']);
 // but never end the session.
 const CONTROL_INPUT = new Set(['key', 'sysreq', 'mouseevent', 'mouseprobe', 'pick']);
 
+// A clipboard blob is a single key message; cap it so a misfired huge paste
+// cannot pin the event loop or the host. What fits on any 5250 screen is a
+// few thousand cells - the rest of the blob is dropped with a beep.
+const PASTE_MAX_CHARS = 10_000;
+
 // "Deny + block" cooling-off after an owner refuses control.
 const ASSIST_BLOCK_MS = 60 * 60 * 1000;
 
@@ -1092,6 +1097,26 @@ export class GatewaySession {
       const c = Number(msg.c);
       if (screen.lock === 'none' && Number.isInteger(r) && Number.isInteger(c)) {
         screen.clickTo(r, c);
+      }
+      this.core.scheduleBroadcast();
+      return;
+    }
+
+    // Paste: the whole clipboard as one message, applied by the screen model
+    // with 5250 field semantics (next input line per line break, field-full
+    // rollover, Enter pacing on command-line screens) - see client.pasteText.
+    // It runs async (paced Enters wait for the host), so the broadcast fires
+    // per typed line from the client itself and once more when it settles.
+    if (k === 'paste') {
+      const text = typeof msg.text === 'string' ? msg.text.slice(0, PASTE_MAX_CHARS) : '';
+      if (text) {
+        this.core.client
+          .pasteText(text)
+          .then((r) => {
+            if (r !== 'pasted') this.beeped = true; // stopped: screen full/rejected
+            this.core.scheduleBroadcast();
+          })
+          .catch(() => this.core.scheduleBroadcast()); // never throws; belt and braces
       }
       this.core.scheduleBroadcast();
       return;

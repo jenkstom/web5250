@@ -179,7 +179,8 @@ const userPages: HelpPage[] = [
       ),
       p(
         `Hidden (password) fields always copy as blanks - what you copy can never contain a password. ` +
-          `Paste types the text at the cursor; if the browser asks for read-permission, ` +
+          `Paste types the text at the cursor, line by line onto the screen's input fields ` +
+          `(a command-line screen submits one line at a time); if the browser asks for read-permission, ` +
           `{{Ctrl+V|u-keyboard}} skips the prompt.`
       )
     ]

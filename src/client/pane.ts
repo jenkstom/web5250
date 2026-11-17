@@ -119,7 +119,8 @@ const KEY_LABELS: Record<string, string> = {
   attn: 'Attn',
   reset: 'Reset',
   print: 'Print',
-  help: 'Help'
+  help: 'Help',
+  paste: 'Paste'
 };
 function keyLabel(k: string): string {
   const pf = /^pf(\d{1,2})$/.exec(k);
@@ -555,6 +556,16 @@ export class SessionPane {
       return;
     }
     this.send({ t: 'key', k });
+  }
+
+  /** Hand a whole clipboard blob to the gateway in one message: the server's
+   *  screen model applies it with 5250 field semantics (a line break moves to
+   *  the next input line, a full field rolls into the next, command-line
+   *  screens submit line by line). */
+  sendPaste(text: string): void {
+    if (!this.canDrive) return;
+    this.term.clearSelection();
+    this.send({ t: 'key', k: 'paste', text });
   }
 
   private wsUrl(signOnTicket?: string | null): string {

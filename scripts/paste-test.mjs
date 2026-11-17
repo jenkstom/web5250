@@ -1,9 +1,13 @@
-// E2E for paste: Ctrl+V must type the clipboard at the cursor with no
+// E2E for paste: Ctrl+V must hand the clipboard to the gateway with no
 // confirmation (the prompt-free path the menu's readText() can't offer),
-// tabs in pasted text advance fields, line breaks are dropped, the
-// right-click menu Paste still works, and a UI surface or typing surface
-// swallows the paste. Uses the mock sign-on fields (11 wide, cursor 9,45)
-// and then the main menu's command line (19,26, 21 wide).
+// which types it with 5250 field semantics: line breaks continue on the
+// next input line (sign-on: User -> Password -> Program), a line longer
+// than the field rolls into the next field, tabs advance fields, a
+// trailing line break never submits, and on the main menu's single
+// command line (19,26, 21 wide) each line is submitted with Enter and the
+// next types into the redraw. Also: the right-click menu Paste still
+// works, and a UI surface or typing surface swallows the paste. Uses the
+// mock sign-on fields (11 wide, cursor 9,45).
 // Usage: npm run build && node scripts/paste-test.mjs
 import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
@@ -100,17 +104,29 @@ await page.waitForTimeout(600); // font settle + first render
 // --- sign-on: cursor starts in the User field (9,45) -----------------------
 check('cursor starts in the User field', (await page.textContent('#oia-pos')) === '9,45');
 
-// --- line breaks are dropped, not submitted ---------------------------------
-await pasteKeys('XY\nZ');
+// --- line breaks continue on the next input line ----------------------------
+// Q1 -> User (9,45), Q2 -> hidden Password (10,45), Q3 -> Program (12,45).
+await pasteKeys('Q1\nQ2\nQ3');
 {
   const screen = await screenText();
-  check('pasted line break is dropped, not entered', screen.includes('XYZ'), JSON.stringify(screen.slice(0, 400)));
+  check('first pasted line lands in the User field', screen.includes('Q1'), JSON.stringify(screen.slice(0, 400)));
+  check('line break skips the hidden password to the Program field', screen.includes('Q3'));
+  check('second line went into the password, not the screen', !screen.includes('Q2'));
   check('multi-line paste keeps the sign-on screen', screen.includes('AS/400 Sign On'));
+  check('cursor sits after Q3 in the Program field', (await page.textContent('#oia-pos')) === '12,47');
 }
 
+// --- a line longer than the field rolls into the next field ----------------
+// User field holds 11 cells; the remaining 5 chars continue in the Password.
+await clickCell(9, 45);
+await pasteKeys('ABCDEFGHIJKLMNOP');
+check('field fills to its width, no characters lost silently', (await screenText()).includes('ABCDEFGHIJK'));
+check('overflow continues in the next field', (await page.textContent('#oia-pos')) === '10,50');
+
 // --- a tab in the pasted text advances to the next field -------------------
-await pasteKeys('AB\tCD');
-check('text before the pasted tab lands in the User field', (await screenText()).includes('XYZAB'));
+await clickCell(9, 45);
+await pasteKeys('ZZ\tCD');
+check('text before the pasted tab lands in the User field', (await screenText()).includes('ZZCDEFGHIJK'));
 check('pasted tab jumps to the Password field, rest types there', (await page.textContent('#oia-pos')) === '10,47');
 
 // --- sign on: overwrite the user field, then the password ------------------
@@ -125,8 +141,22 @@ check('signed on to the main menu', (await screenText()).includes('User tasks'))
 // --- Ctrl+V pastes with no confirmation -------------------------------------
 await clickCell(19, 26); // command line's first input cell
 check('click places the command-line cursor', (await page.textContent('#oia-pos')) === '19,26');
-await pasteKeys('HELLO5250');
+await pasteKeys('HELLO5250\n');
 check('ctrl+v types the clipboard at the cursor', (await screenText()).includes('HELLO5250'));
+check('trailing line break does not submit the command', !((await screenText()).includes('not known')));
+
+// --- a multi-line paste on a command-line screen runs line by line ---------
+// No input field below the command line: each line break submits with Enter
+// and the paste waits for the redraw before typing the next line.
+await clickCell(19, 26);
+await pasteKeys('CMD1\nCMD2');
+await sleep(600);
+{
+  const screen = await screenText();
+  check('second line types into the redraw after the first submits', screen.includes('CMD2'), JSON.stringify(screen.slice(0, 400)));
+  check('the redraw cleared the submitted first line', !screen.includes('CMD1'));
+  check('cursor sits after CMD2 on the command line', (await page.textContent('#oia-pos')) === '19,30');
+}
 
 // --- right-click menu Paste still reads and types ---------------------------
 await page.evaluate(() => navigator.clipboard.writeText('MENUP8'));
@@ -138,6 +168,17 @@ await page.evaluate(() => navigator.clipboard.writeText('MENUP8'));
 }
 await page.waitForTimeout(400);
 check('menu Paste still types the clipboard', (await screenText()).includes('MENUP8'));
+
+// --- a paste that runs out of screen stops instead of wrapping -------------
+// The command line is the last field; a line longer than it has nowhere to
+// roll into, so the paste stops (and beeps) after filling it.
+await clickCell(19, 26);
+await pasteKeys('Z'.repeat(40));
+{
+  const screen = await screenText();
+  check('out-of-room paste fills the field and stops at its end', (await page.textContent('#oia-pos')) === '19,46');
+  check('the overflow characters are dropped, not wrapped', (screen.match(/Z/g) ?? []).length === 21);
+}
 
 // --- a UI surface keeps the paste for itself --------------------------------
 // Synthetic event, so the check does not depend on the keystroke reaching
