@@ -1242,7 +1242,7 @@ export class SessionPane {
     // Right-click: the shell's shared Copy/Paste menu - unless the host
     // programmed this screen's right button (5494 mouse support), where the
     // click is the application's, like on ACS. Shift+right-click keeps the
-    // local menu reachable; ?mouseprobe= sends the experiment AID instead.
+    // local menu reachable; ?mouseprobe= sends a probe AID instead.
     this.screenEl.addEventListener('contextmenu', (e) => {
       if ((e.target as HTMLElement).closest('.sys-menu')) return; // picker has its own
       e.preventDefault();

@@ -62,6 +62,10 @@ npm run test:console    # session console: identity stamping, sign-on
                         #   capture, signal banners, assist consent/lease/
                         #   revoke, maintenance windows + drain, recording
                         #   + replay tokens + history, audit trail
+npm run test:mousegui   # IBM_I_MOUSE_GUI: query reply claims the pointer,
+                        #   host-programmed right-click opens the host menu
+                        #   (save-image dialect, pick flow), Shift+right-
+                        #   click keeps the local menu, flag off stays local
 npm run test:pcuri      # STRPCCMD: host-pushed URI arrives as an openurl
                         #   message (never painted), Enter completion,
                         #   non-URI commands ignored, mirrors excluded

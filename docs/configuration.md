@@ -15,6 +15,7 @@ for a commented template and `docker-compose.yml` for the full wiring:
 | `IBM_I_CODEPAGE` | EBCDIC code page: `cp037` `cp273` `cp277` `cp278` `cp280` `cp284` `cp285` `cp297` `cp500` `cp871` `cp1047` `cp1140` | `cp037` |
 | `IBM_I_TERM_TYPE` | Terminal model (`IBM-3477-FC` = color + 27×132, `IBM-3179-2` = 24×80 color, …) | `IBM-3477-FC` |
 | `IBM_I_DEV_PREFIX` | Prefix for auto-generated device names (max 10 chars total) | `PANG_` |
+| `IBM_I_MOUSE_GUI` | Claim pointer-device capability in the 5250 query reply (5494 GUI support). Hosts that speak the dialect program the mouse per screen — right-click opens the application's own context menu, double-click runs its action, like IBM ACS; Shift+right-click keeps this app's local Copy/Paste menu. Hosts without the dialect ignore the capability | `false` |
 | `IBM_I_PROXY_HOST` | SOCKS5 proxy the first-boot seed system tunnels through (per-system afterwards, in the admin editor) | – |
 | `IBM_I_PROXY_PORT` | SOCKS5 proxy port | `1080` |
 | `IBM_I_PROXY_USER` | SOCKS5 username (RFC 1929, with `IBM_I_PROXY_PASSWORD`) | – |

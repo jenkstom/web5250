@@ -53,7 +53,10 @@ the system catalog is mocked up through the admin API.
   saved and put back on REMOVE GUI WINDOW / RESTORE — plus DEFINE SELECTION
   FIELD choice lists placed cell-exact inside the window, and box-drawing
   characters rendered as continuous canvas lines so frames have no font
-  gaps.
+  gaps. With `IBM_I_MOUSE_GUI=true` the query reply claims pointer-device
+  capability, so 5494-dialect hosts program the mouse per screen: right-click
+  opens the application's own menu, double-click runs its action
+  (Shift+right-click keeps the local menu).
 - **Connection menu**: the app opens on a retro green-screen *System
   Selection* panel (number keys / arrows + Enter, or tap) listing the remote
   systems an administrator maintains — each with its own host, port, TLS,

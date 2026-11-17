@@ -414,7 +414,7 @@ export class Tn5250Client {
   }
 
   /**
-   * GUI-discovery probe (experiment): send a candidate mouse/menu AID for a
+   * GUI-discovery probe (?mouseprobe=<hex>): send a candidate mouse/menu AID for a
    * right-click at (r1,c1). The reply is shaped exactly like a normal AID,
    * but the cursor position bytes report the CLICKED cell instead of the
    * screen cursor - that is where ACS-type emulators most plausibly carry

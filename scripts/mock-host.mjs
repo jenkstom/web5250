@@ -60,6 +60,7 @@ class HostSession {
     this.currentFields = [];
     this.lastReadCmd = CMD_RIF;
     this.savedCookie = null; // device screen-image cookie (save/restore dialect)
+    this.pointerClaimed = false; // query reply announced a pointer device
     this.gotTtype = false;
     this.gotDevname = false;
     this.started = false;
@@ -272,7 +273,7 @@ class HostSession {
       defs.push(this.field(7 + i, 7, 0x21, 2), this.text(7 + i, 12, null, `Demo item ${i + 1}`));
       this.currentFields.push({ row: 7 + i, col: 8, len: 2 });
     }
-    defs.push(MOUSE_SF);
+    if (this.pointerClaimed) defs.push(MOUSE_SF);
     defs.push(
       this.text(22, 6, 0x28, status),
       this.text(23, 6, 0x3a, 'F3=Exit  F6=Test window')
@@ -389,7 +390,7 @@ class HostSession {
     this.record(
       0x03,
       this.wtd(0x20, [
-        ...MOUSE_SF,
+        ...(this.pointerClaimed ? MOUSE_SF : []),
         ORDER_SBA, winRow, winCol, ...WIN_SF,
         ORDER_SBA, winRow + 1, winCol + 2, 0x22, ...e('Select Option'),
         ORDER_SBA, fieldRow, fieldCol, ...DSF_SF,
@@ -600,6 +601,16 @@ class HostSession {
   onRecord(rec) {
     if (rec.length < 10) return;
     const opcode = rec[9];
+    if (opcode === 0) {
+      // WSF query reply (payload at rec[10]): byte 2 = 0x88 inbound AID,
+      // byte 53 bit 4 (X'10') announces a pointer device. Like a real
+      // host, mouse-button programming is only sent to pointer devices.
+      if (rec.length > 63 && rec[12] === 0x88) {
+        this.pointerClaimed = (rec[63] & 0x10) !== 0;
+        this.log(`query reply: pointer device ${this.pointerClaimed ? 'claimed' : 'not claimed'}`);
+      }
+      return;
+    }
     if (opcode === 4) {
       // Device screen-image reply (save/restore dialect): X'04' X'12' <cookie>.
       if (rec[10] === 0x04 && rec[11] === 0x12) {

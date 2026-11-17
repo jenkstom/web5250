@@ -26,8 +26,9 @@ a real terminal (SysReq, Attn and Reset still work). The on-screen keypad
 ## Mouse selection and clipboard
 
 Right-click opens the local menu (**Copy selection** / **Copy screen** /
-**Paste**). Text can also be marked directly on the screen, the way a desktop
-terminal emulator does:
+**Paste**); **Shift+right-click** reaches it even on screens where the host
+programmed the right button. Text can also be marked directly on the screen,
+the way a desktop terminal emulator does:
 
 - **Left-drag** marks a text-flow selection and copies it to the clipboard on
   release. **Alt+drag** marks a column rectangle instead (handy for option
@@ -55,3 +56,14 @@ terminal emulator does:
 
 On plain-HTTP origins without the async clipboard API the copy falls back to
 `execCommand`, and to a selectable dialog box if the browser blocks that too.
+
+### Host-programmed mouse (5494 GUI)
+
+With `IBM_I_MOUSE_GUI=true` (see
+[Configuration](configuration.md#configuration)), the gateway claims
+pointer-device capability in its 5250 query reply. Hosts that speak the
+dialect then program the mouse per screen, exactly like IBM ACS: right-click
+opens the application's own context menu, double-click runs its action — and
+on such screens **Shift+right-click** is the way back to this app's local
+Copy/Paste menu. Hosts without the dialect simply keep treating the display
+as mouseless.

@@ -182,6 +182,11 @@ const userPages: HelpPage[] = [
           `Paste types the text at the cursor, line by line onto the screen's input fields ` +
           `(a command-line screen submits one line at a time); if the browser asks for read-permission, ` +
           `{{Ctrl+V|u-keyboard}} skips the prompt.`
+      ),
+      p(
+        `On screens where the host programs the mouse itself (its right-click menus), ` +
+          `the click goes to the application - **Shift+right-click** opens this terminal's ` +
+          `own menu instead.`
       )
     ]
   },

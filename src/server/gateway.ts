@@ -1039,7 +1039,7 @@ export class GatewaySession {
       return;
     }
     if (t === 'mouseprobe') {
-      // GUI-discovery experiment (?mouseprobe=<hex>): forward a candidate
+      // GUI-discovery probe (?mouseprobe=<hex>): forward a candidate
       // mouse/menu AID for the right-clicked cell; see client.sendMouseProbe.
       const aid = Number(msg.aid);
       const r = Number(msg.r);

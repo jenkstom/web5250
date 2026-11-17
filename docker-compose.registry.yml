@@ -43,6 +43,10 @@ services:
       # Fail sessions stuck at "negotiating" (dead proxy leg / host out of
       # devices) instead of holding them open forever. 0 disables.
       IBM_I_NEGOTIATE_TIMEOUT_MS: ${IBM_I_NEGOTIATE_TIMEOUT_MS:-60000}
+      # Claim pointer-device capability: hosts with 5494 GUI support program
+      # the mouse per screen (right-click host menus, double-click actions);
+      # Shift+right-click keeps the local Copy/Paste menu.
+      IBM_I_MOUSE_GUI: ${IBM_I_MOUSE_GUI:-}
       # Diag: the per-session protocol trace. CONSOLE mirrors it into the
       # container log, RECORDS caps how many inbound records it captures;
       # WEB5250_TRACE=1 additionally dumps raw socket bytes.

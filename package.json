@@ -36,6 +36,7 @@
     "test:printer": "node scripts/printer-test.mjs",
     "test:printer-real": "node scripts/printer-real-test.mjs",
     "test:console": "node scripts/console-test.mjs",
+    "test:mousegui": "node scripts/mouse-gui-test.mjs",
     "test:directory": "node scripts/directory-test.mjs",
     "test:signonpin": "node scripts/signonpin-test.mjs",
     "test:staleattr": "node scripts/stale-attr-test.ts",
