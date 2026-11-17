@@ -177,7 +177,7 @@ class HostSession {
         // before the 80 real characters land, and col 1 stays a painted
         // space instead of a black attribute cell.
         this.text(24, 80, 0x21, ''),
-        this.text(1, 1, null, 'Multi Vendor Messages'.padStart(51).padEnd(80, ' ')),
+        this.text(1, 1, null, 'MOCK400 Main Menu'.padStart(48).padEnd(80, ' ')),
         this.text(2, 33, 0x22, 'MAIN'),
         // Reset the mouse-button table: programming is per screen on real
         // hosts (length 7 = table reset per the 5494 FR).
