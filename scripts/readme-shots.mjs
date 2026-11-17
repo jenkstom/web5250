@@ -15,11 +15,11 @@ const DB = '/tmp/web5250-readme.db';
 const OUT = 'docs/screenshots';
 const PIN = '2026';
 const SQL = [
-  'select pucustomer  as id,',
-  '       pucustomer  as label,',
-  '       pucomm      as info',
-  '  from pucustomer',
-  " where pustat = 'A'"
+  'select partid      as id,',
+  '       partname    as label,',
+  '       partbin     as info',
+  '  from partmaster',
+  " where partclass = 'A'"
 ].join('\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -70,7 +70,7 @@ for (let i = 0; i < 50; i++) {
   };
   if (first) {
     await send(`${base}/admin/systems/${first.id}`, 'PUT', {
-      name: 'AOS iSeries',
+      name: 'MOCK400',
       description: 'Production partition - QINTER',
       host: '127.0.0.1',
       port: MOCK_PORT,

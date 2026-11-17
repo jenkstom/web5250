@@ -170,8 +170,14 @@ class HostSession {
     this.screen(
       [
         // Long reverse-video title bar, as on real IBM i menus: a wide
-        // same-attribute run (the rendering case for seamless fills).
-        this.text(1, 5, 0x21, 'Add On Systems Multi Vendor Messages'.padEnd(58, ' ')),
+        // same-attribute run (the rendering case for seamless fills),
+        // edge to edge. An attribute byte buffered in a WTD text stream
+        // occupies a cell of its own (rendered blank), so it parks in the
+        // screen's last cell - its forward sweep paints row 1 reverse
+        // before the 80 real characters land, and col 1 stays a painted
+        // space instead of a black attribute cell.
+        this.text(24, 80, 0x21, ''),
+        this.text(1, 1, null, 'Multi Vendor Messages'.padStart(51).padEnd(80, ' ')),
         this.text(2, 33, 0x22, 'MAIN'),
         // Reset the mouse-button table: programming is per screen on real
         // hosts (length 7 = table reset per the 5494 FR).
