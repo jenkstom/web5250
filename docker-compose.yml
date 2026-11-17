@@ -29,6 +29,9 @@ services:
       # always listens on 8080 inside (image default) and PORT below only
       # selects the published HOST port in the ports mapping. Passing PORT
       # here would move the app off the mapped container port.
+      # Everything else from .env (copy of .env.example) passes through; an
+      # empty :- default means "not set", so the app's own defaults apply and
+      # live in exactly one place (docs/configuration.md).
       # Target IBM i. Use a DNS name/IP reachable from this container
       # (the Pangolin connector network usually reaches the LAN/VLAN).
       IBM_I_HOST: ${IBM_I_HOST:-127.0.0.1}
@@ -43,16 +46,83 @@ services:
       # Fail sessions stuck at "negotiating" (dead proxy leg / host out of
       # devices) instead of holding them open forever. 0 disables.
       IBM_I_NEGOTIATE_TIMEOUT_MS: ${IBM_I_NEGOTIATE_TIMEOUT_MS:-60000}
+      # Diag: the per-session protocol trace. CONSOLE mirrors it into the
+      # container log, RECORDS caps how many inbound records it captures;
+      # WEB5250_TRACE=1 additionally dumps raw socket bytes.
+      IBM_I_TRACE_CONSOLE: ${IBM_I_TRACE_CONSOLE:-}
+      IBM_I_TRACE_RECORDS: ${IBM_I_TRACE_RECORDS:-}
       WEB5250_TRACE: ${WEB5250_TRACE:-}
-      # PIN for the admin editor in the connection menu (empty = admin disabled).
-      ADMIN_PIN: ${ADMIN_PIN:-}
+      # SOCKS5 egress proxy for the first-boot seed system (per-system
+      # afterwards in the admin editor).
+      IBM_I_PROXY_HOST: ${IBM_I_PROXY_HOST:-}
+      IBM_I_PROXY_PORT: ${IBM_I_PROXY_PORT:-}
+      IBM_I_PROXY_USER: ${IBM_I_PROXY_USER:-}
+      IBM_I_PROXY_PASSWORD: ${IBM_I_PROXY_PASSWORD:-}
+      # Printer sessions / spool for the first-boot seed system (per-system
+      # afterwards in the admin editor). See docs/printing.md.
+      IBM_I_PRINTER_ENABLED: ${IBM_I_PRINTER_ENABLED:-}
+      IBM_I_PRINTER_DEVNAME: ${IBM_I_PRINTER_DEVNAME:-}
+      IBM_I_PRINTER_MODE: ${IBM_I_PRINTER_MODE:-}
+      PRINTER_IDLE_MS: ${PRINTER_IDLE_MS:-}
+      PRINTJOBS_MAX_COUNT: ${PRINTJOBS_MAX_COUNT:-}
+      PRINTJOBS_MAX_BYTES: ${PRINTJOBS_MAX_BYTES:-}
+      PRINTJOBS_TTL_MS: ${PRINTJOBS_TTL_MS:-}
+      # Edge-injected identity header (Pangolin): names sessions, assist
+      # requests, the console, audit and History. Only set it when the
+      # container is reachable solely through the edge.
+      TRUSTED_USER_HEADER: ${TRUSTED_USER_HEADER:-}
+      # Remote assist leases and consent; break-glass is audited, default off.
+      ASSIST_ENABLED: ${ASSIST_ENABLED:-}
+      ASSIST_MAX_MS: ${ASSIST_MAX_MS:-}
+      ASSIST_IDLE_MS: ${ASSIST_IDLE_MS:-}
+      ASSIST_CONSENT_TIMEOUT_MS: ${ASSIST_CONSENT_TIMEOUT_MS:-}
+      ASSIST_CONSENT_DEFAULT: ${ASSIST_CONSENT_DEFAULT:-}
+      ADMIN_ASSIST_BREAKGLASS: ${ADMIN_ASSIST_BREAKGLASS:-}
+      # Retention (drop-oldest): recordings, audit rows.
+      RECORDINGS_MAX_COUNT: ${RECORDINGS_MAX_COUNT:-}
+      RECORDINGS_MAX_BYTES: ${RECORDINGS_MAX_BYTES:-}
+      RECORDINGS_TTL_MS: ${RECORDINGS_TTL_MS:-}
+      AUDIT_TTL_MS: ${AUDIT_TTL_MS:-}
       # Directory service (optional): menu entries + automatic sign-on from
       # your own host/account database via a small read-only microservice.
       # See docs/directory-service.md (a runnable reference service ships as
-      # docs/directory-service.mjs) and add any DIRECTORY_TEMPLATE_* vars you
-      # need. Empty DIRECTORY_URL = feature off.
+      # docs/directory-service.mjs); every DIRECTORY_TEMPLATE_* var passes
+      # through as well. Empty DIRECTORY_URL = feature off.
       DIRECTORY_URL: ${DIRECTORY_URL:-}
       DIRECTORY_TOKEN: ${DIRECTORY_TOKEN:-}
+      DIRECTORY_SYNC_INTERVAL_MS: ${DIRECTORY_SYNC_INTERVAL_MS:-}
+      DIRECTORY_TIMEOUT_MS: ${DIRECTORY_TIMEOUT_MS:-}
+      DIRECTORY_TLS_REJECT_UNAUTHORIZED: ${DIRECTORY_TLS_REJECT_UNAUTHORIZED:-}
+      DIRECTORY_TEMPLATE_NAME: ${DIRECTORY_TEMPLATE_NAME:-}
+      DIRECTORY_TEMPLATE_DESCRIPTION: ${DIRECTORY_TEMPLATE_DESCRIPTION:-}
+      DIRECTORY_TEMPLATE_PORT: ${DIRECTORY_TEMPLATE_PORT:-}
+      DIRECTORY_TEMPLATE_SSL: ${DIRECTORY_TEMPLATE_SSL:-}
+      DIRECTORY_TEMPLATE_TERM_TYPE: ${DIRECTORY_TEMPLATE_TERM_TYPE:-}
+      DIRECTORY_TEMPLATE_CODEPAGE: ${DIRECTORY_TEMPLATE_CODEPAGE:-}
+      DIRECTORY_TEMPLATE_DEV_PREFIX: ${DIRECTORY_TEMPLATE_DEV_PREFIX:-}
+      DIRECTORY_TEMPLATE_PROXY_HOST: ${DIRECTORY_TEMPLATE_PROXY_HOST:-}
+      DIRECTORY_TEMPLATE_PROXY_PORT: ${DIRECTORY_TEMPLATE_PROXY_PORT:-}
+      DIRECTORY_TEMPLATE_PROXY_USER: ${DIRECTORY_TEMPLATE_PROXY_USER:-}
+      DIRECTORY_TEMPLATE_PROXY_PASSWORD: ${DIRECTORY_TEMPLATE_PROXY_PASSWORD:-}
+      DIRECTORY_TEMPLATE_PRINTER_ENABLED: ${DIRECTORY_TEMPLATE_PRINTER_ENABLED:-}
+      DIRECTORY_TEMPLATE_PRINTER_DEVNAME: ${DIRECTORY_TEMPLATE_PRINTER_DEVNAME:-}
+      DIRECTORY_TEMPLATE_PRINTER_MODE: ${DIRECTORY_TEMPLATE_PRINTER_MODE:-}
+      DIRECTORY_TEMPLATE_RECORDING: ${DIRECTORY_TEMPLATE_RECORDING:-}
+      # ?auto=1 automated data-entry launches (docs/automation.md): the
+      # password is typed into the non-display field server-side only.
+      AUTO_SIGNON_USER: ${AUTO_SIGNON_USER:-}
+      AUTO_SIGNON_PASSWORD: ${AUTO_SIGNON_PASSWORD:-}
+      # Gateway behaviour: host-pushed STRPCCMD URIs, the Diag button, and
+      # which origins may embed the app in an iframe (frame-ancestors).
+      ALLOW_HOST_URL_OPEN: ${ALLOW_HOST_URL_OPEN:-}
+      SHOW_DIAG_BUTTON: ${SHOW_DIAG_BUTTON:-}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-}
+      # PIN for the admin editor in the connection menu (empty = admin disabled).
+      ADMIN_PIN: ${ADMIN_PIN:-}
+      # Session lifetime: WS liveness pings, and the re-attach grace window.
+      WS_PING_INTERVAL_MS: ${WS_PING_INTERVAL_MS:-}
+      WS_PING_MAX_MISSES: ${WS_PING_MAX_MISSES:-}
+      SESSION_GRACE_MS: ${SESSION_GRACE_MS:-}
       # SQLite system catalog; the named volume persists admin edits.
       WEB5250_DB: /data/web5250.db
     ports:
