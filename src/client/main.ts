@@ -10,6 +10,7 @@
 import './styles.css';
 import { SessionPane, SESSION_KEY, type SessionTarget, type PaneServices } from './pane.ts';
 import { attachKeyboard, mapEvent, type SendKey } from './keyboard.ts';
+import { bindingsFor } from './keymaps.ts';
 import { buildKeypad } from './keypad.ts';
 import { initSpool, spoolVisible, closeSpool } from './spool.ts';
 import { initPlayer } from './player.ts';
@@ -1131,7 +1132,9 @@ window.addEventListener(
   },
   { capture: true }
 );
-attachKeyboard(sendKey, () => !uiSurfaceOpen());
+// The focused pane's keymap overlay (custom bindings shadow the built-in
+// mapping; null pane / no keymaps = built-in only).
+attachKeyboard(sendKey, () => !uiSurfaceOpen(), () => bindingsFor(activePane?.systemId ?? null));
 buildKeypad(sendKey);
 initMenu();
 // The landing menu's split buttons split the focused pane like the per-pane
@@ -1390,7 +1393,7 @@ mobileInput.addEventListener('keydown', (e) => {
   // Mapped keys are suppressed so they are never also delivered as text
   // by the input event above.
   if (e.isComposing) return;
-  const mapped = mapEvent(e);
+  const mapped = mapEvent(e, bindingsFor(activePane?.systemId ?? null));
   if (mapped) {
     e.preventDefault();
     activePane?.sendKey(mapped.k, mapped.ch);

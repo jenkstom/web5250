@@ -122,6 +122,7 @@
               </div>
               <div id="admin-tabs" class="admin-tabs" role="tablist">
                 <button type="button" data-tab="systems" class="active">Systems</button>
+                <button type="button" data-tab="keymaps">Keymaps</button>
                 <button type="button" data-tab="sessions">Sessions</button>
                 <button type="button" data-tab="recordings">Recordings</button>
                 <button type="button" data-tab="audit">Audit</button>
@@ -177,6 +178,9 @@
                   <label for="f-signpass">Sign-on password</label>
                   <input id="f-signpass" type="password" maxlength="128" autocomplete="new-password"
                          title="Its password — stored in the gateway catalog (like the proxy password) and typed server-side at sign-on; it never reaches the browser." />
+                  <label for="f-keymap">Keymap</label>
+                  <select id="f-keymap"
+                          title="Custom keyboard map for sessions on this system — a named keymap, the gateway default, or always the built-in browser map. Manage keymaps in the Keymaps tab."></select>
                 </div>
                 <p id="admin-form-error" class="admin-error" role="alert"></p>
                 <div class="admin-actions">
@@ -190,12 +194,61 @@
                 <button id="admin-dirsync" type="button" class="hidden"
                         title="Pull the entry list from the directory service right now (it also re-syncs on a timer)">Sync directory</button>
                 <button id="admin-export" type="button"
-                        title="Download every stored system (with proxy and printer settings) as a JSON file — directory hosts are never stored, so they are never in here">Export</button>
+                        title="Download the stored systems and keymaps as a JSON file — directory hosts are never stored, so they are never in here">Export</button>
                 <button id="admin-import" type="button"
-                        title="Upload a JSON export — replaces the whole stored system list">Import</button>
+                        title="Upload a JSON export — replaces the whole stored system list and keymaps">Import</button>
               </div>
               <input id="admin-import-file" type="file" accept=".json,application/json"
                      class="hidden" tabindex="-1" aria-hidden="true" />
+              </div>
+
+              <div id="admin-tab-keymaps" class="hidden">
+                <p class="admin-lead">Keyboard maps for the sessions. Upload the .kmp file
+                  IBM i Access and Personal Communications export, or edit the bindings by
+                  hand — click a keycap, choose what it sends. One map can be the default
+                  for every host; a host can pick its own (Systems tab).</p>
+                <ul id="keymap-list"></ul>
+                <p id="keymap-empty" class="hidden"></p>
+                <p id="keymap-note" class="admin-note hidden" role="status"></p>
+                <div class="admin-actions" id="keymap-list-actions">
+                  <button id="keymap-add" type="button">New keymap</button>
+                  <button id="keymap-upload" type="button"
+                          title="Upload a .kmp keyboard file (an IBM i Access / PCOMM 'Keyboard Remap' export). Entries this emulator cannot translate are listed for review — nothing is guessed at.">Upload .kmp</button>
+                </div>
+                <input id="keymap-file" type="file" accept=".kmp,text/plain"
+                       class="hidden" tabindex="-1" aria-hidden="true" />
+                <form id="keymap-editor" class="hidden" autocomplete="off">
+                  <div class="admin-fields">
+                    <label for="km-name">Name *</label>
+                    <input id="km-name" required maxlength="40" placeholder="MIGRATION" />
+                    <label for="km-desc">Description</label>
+                    <input id="km-desc" maxlength="120" placeholder="IBM i Access layout — F9=Attn, Ctrl+Q=Clear" />
+                  </div>
+                  <div id="keymap-edit-body">
+                    <div id="keymap-grid-wrap">
+                      <div class="panel-title small">KEYBOARD</div>
+                      <div id="keymap-grid"></div>
+                    </div>
+                    <div id="keymap-keypanel">
+                      <div class="panel-title small" id="km-key-title">SELECT A KEY</div>
+                      <div class="km-pick">
+                        <label for="km-add-code">Key</label>
+                        <select id="km-add-code"></select>
+                      </div>
+                      <div id="km-states"></div>
+                    </div>
+                  </div>
+                  <div id="keymap-extra-wrap" class="hidden">
+                    <div class="panel-title small">OTHER BINDINGS</div>
+                    <ul id="keymap-extra"></ul>
+                  </div>
+                  <p id="km-error" class="admin-error" role="alert"></p>
+                  <div class="admin-actions">
+                    <button id="km-save" type="submit" class="primary">Save</button>
+                    <button id="km-cancel" type="button" class="ghost">Cancel</button>
+                    <span id="km-count" class="admin-note"></span>
+                  </div>
+                </form>
               </div>
 
               <div id="admin-tab-sessions" class="hidden">

@@ -8,6 +8,7 @@
 // layout, focus and what "Systems" means (which pane the shared system menu
 // targets).
 import { Terminal, type OiaState } from './term.ts';
+import { keyLabel } from './keymaps.ts';
 import {
   displayName,
   loadMeta,
@@ -91,42 +92,10 @@ const SHARE_ICON =
   '<circle cx="18" cy="5" r="2.7"/><circle cx="6" cy="12" r="2.7"/><circle cx="18" cy="19" r="2.7"/>' +
   '<line x1="8.5" y1="10.7" x2="15.5" y2="6.6"/><line x1="8.5" y1="13.3" x2="15.5" y2="17.4"/></svg>';
 
-/**
- * What a mirror calls the owner's key presses. Printable characters never
- * arrive as key events (they echo on the screen); everything else gets a
- * name a viewer can read at a glance.
- */
-const KEY_LABELS: Record<string, string> = {
-  enter: 'Enter',
-  clear: 'Clear',
-  rollup: 'Roll Up',
-  rolldown: 'Roll Down',
-  tab: 'Tab',
-  btab: 'Backtab',
-  fieldexit: 'Field Exit',
-  fieldplus: 'Field +',
-  fieldminus: 'Field −',
-  backspace: 'Backspace',
-  delete: 'Delete',
-  insert: 'Insert',
-  up: '↑ Up',
-  down: '↓ Down',
-  left: '← Left',
-  right: '→ Right',
-  home: 'Home',
-  end: 'End',
-  sysreq: 'SysReq',
-  attn: 'Attn',
-  reset: 'Reset',
-  print: 'Print',
-  help: 'Help',
-  paste: 'Paste'
-};
-function keyLabel(k: string): string {
-  const pf = /^pf(\d{1,2})$/.exec(k);
-  if (pf) return `F${pf[1]}`;
-  return KEY_LABELS[k] ?? k;
-}
+// Key display names live in keymaps.ts (shared with the keymap editor, which
+// cannot import from this file without a cycle) and are re-exported for the
+// modules that historically imported them from here.
+export { KEY_LABELS } from './keymaps.ts';
 
 export const SESSION_KEY = 'web5250.session';
 

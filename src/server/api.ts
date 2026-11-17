@@ -14,7 +14,15 @@
 //   PUT    /api/admin/systems/<id>          update           (Bearer token)
 //   DELETE /api/admin/systems/<id>          delete           (Bearer token)
 //   POST   /api/admin/systems/<id>/move     {dir: up|down}   (Bearer token)
-//   GET    /api/admin/config                export all systems as a JSON file
+//   GET    /api/keymaps                     keymap overlays (public: sessions need them)
+//   GET    /api/admin/keymaps               keymap list + default (Bearer token)
+//   POST   /api/admin/keymaps               create keymap       (Bearer token)
+//   POST   /api/admin/keymaps/import        upload a .kmp file  (Bearer token)
+//   PUT    /api/admin/keymaps/<id>          update bindings     (Bearer token)
+//   DELETE /api/admin/keymaps/<id>          delete keymap       (Bearer token)
+//   GET    /api/admin/keymaps/<id>/download .kmp download       (Bearer token)
+//   PUT    /api/admin/keymaps/default       {id|null} default   (Bearer token)
+//   GET    /api/admin/config                export systems+keymaps as a JSON file
 //   PUT    /api/admin/config                import a JSON file, replacing all
 //   GET    /api/admin/sessions              live session list  (Bearer token)
 //   POST   /api/admin/sessions/<id>/view    mint a mirror link (Bearer token)
@@ -59,7 +67,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { TERM_TYPES } from './tn5250/constants.ts';
 import { Ebcdic } from './tn5250/ebcdic.ts';
 import type { Config } from './config.ts';
-import type { Systems, SystemRow } from './systems.ts';
+import { parseSystemsImport, validateSystemInput, type Systems, type SystemRow } from './systems.ts';
+import { validateKeymapList, type Keymaps } from './keymaps.ts';
+import { parseKmp, serializeKmp } from './kmp.ts';
 import type { Printers } from './printers.ts';
 import type { Directory, DirectorySystem } from './directory.ts';
 import type { Audit } from './audit.ts';
@@ -72,6 +82,10 @@ import { allSessions, getSessionByConsoleId } from './sessions.ts';
 const MAX_BODY_BYTES = 32 * 1024;
 /** Import uploads carry every system row; 512 KB is ~1000 of them. */
 const MAX_IMPORT_BYTES = 512 * 1024;
+
+/** How a system's "pin to the built-in keyboard map" travels in export
+ *  documents (keymaps are referenced by name there). */
+const BUILTIN_KEYMAP_NAME = '(built-in)';
 
 export type ApiHandler = (req: IncomingMessage, res: ServerResponse, pathname: string) => boolean;
 
@@ -100,6 +114,8 @@ export interface ApiDeps {
   settings: Settings;
   /** Directory service integration (menu entries + auto sign-on). */
   directory: Directory;
+  /** Admin-managed keyboard maps (Keymaps tab). */
+  keymaps: Keymaps;
   /** Fires after any admin mutation that changed the systems list. */
   onSystemsChanged: () => void;
 }
@@ -136,9 +152,20 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
   };
 
   /** System id/name pairs for stamping job rows (jobs keep arriving after
-   * their system row is gone, so fall back to the stored device). */
+   *  their system row is gone, so fall back to the stored device). */
   const systemNames = (): Map<number | string, string> =>
     new Map([...systems.list(), ...deps.directory.list()].map((s) => [s.id, s.name]));
+
+  /** A system payload's keymap reference must name a stored keymap (0 = pin
+   *  to the built-in map needs no row). null = the payload is fine (or has
+   *  errors the create/update call will report with its own message). */
+  const keymapRefError = (raw: unknown, cfg: Config): string | null => {
+    const v = validateSystemInput(raw, cfg);
+    if (!v.ok) return null;
+    const id = v.value.keymapId;
+    return id && !deps.keymaps.get(id) ? `Keymap #${id} does not exist (it may have been deleted)` : null;
+  };
+
 
   const routes: Route[] = [
     {
@@ -297,6 +324,11 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       re: /(?:^|\/)api\/admin\/systems\/?$/,
       auth: true,
       run: ({ systems, cfg, deps, res, body }) => {
+        const refError = keymapRefError(body, cfg);
+        if (refError) {
+          json(res, 400, { error: refError });
+          return;
+        }
         const result = systems.create(body, cfg);
         if (!result.ok) json(res, 400, { error: result.error });
         else {
@@ -310,6 +342,11 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       re: /(?:^|\/)api\/admin\/systems\/(\d+)\/?$/,
       auth: true,
       run: ({ systems, cfg, deps, res, match, body }) => {
+        const refError = keymapRefError(body, cfg);
+        if (refError) {
+          json(res, 400, { error: refError });
+          return;
+        }
         const result = systems.update(Number(match[1]), body, cfg);
         if (!result.ok) json(res, result.error === 'System not found' ? 404 : 400, { error: result.error });
         else {
@@ -338,18 +375,150 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       }
     },
     {
-      // Export: the stored catalog as a download document (ids/positions are
-      // re-assigned on import; the array order is the menu order). Directory
-      // hosts are never stored, so there is nothing of theirs to leave out.
+      // ------------------------------------------------------ keymaps
+      // The overlays every session needs before its first keypress. Public
+      // like the systems list: bindings are not secrets, and session users
+      // never authenticate to the gateway itself (Pangolin fronts the edge).
+      method: 'GET',
+      re: /(?:^|\/)api\/keymaps\/?$/,
+      auth: false,
+      run: ({ deps, res }) =>
+        json(res, 200, {
+          keymaps: deps.keymaps.list().map((k) => ({ id: k.id, name: k.name, bindings: k.bindings })),
+          defaultKeymapId: deps.keymaps.defaultKeymapId()
+        })
+    },
+    {
+      method: 'GET',
+      re: /(?:^|\/)api\/admin\/keymaps\/?$/,
+      auth: true,
+      run: ({ deps, res }) =>
+        json(res, 200, {
+          keymaps: deps.keymaps.list().map((k) => ({ ...k, usedBy: deps.keymaps.usedBy(k.id).map((s) => s.name) })),
+          defaultKeymapId: deps.keymaps.defaultKeymapId()
+        })
+    },
+    {
+      method: 'POST',
+      re: /(?:^|\/)api\/admin\/keymaps\/?$/,
+      auth: true,
+      run: ({ deps, res, body }) => {
+        const result = deps.keymaps.create(body);
+        if (!result.ok) json(res, 400, { error: result.error });
+        else json(res, 201, { keymap: result.row });
+      }
+    },
+    {
+      // .kmp upload: the text of an IBM i Access / Personal Communications
+      // keyboard file, parsed server-side. Entries the emulator cannot
+      // express come back in "skipped" so the admin sees exactly what did
+      // not translate - nothing is guessed at. A name collision (the same
+      // file uploaded twice) gets a numbered name instead of an error.
+      method: 'POST',
+      re: /(?:^|\/)api\/admin\/keymaps\/import\/?$/,
+      auth: true,
+      run: ({ deps, res, body }) => {
+        const r = (body ?? {}) as { name?: unknown; description?: unknown; kmp?: unknown };
+        const parsed = parseKmp(String(r.kmp ?? ''));
+        if (!parsed.ok) {
+          json(res, 400, { error: parsed.error });
+          return;
+        }
+        const taken = new Set(deps.keymaps.list().map((k) => k.name));
+        let name = String(r.name ?? '').trim().slice(0, 40) || 'Imported';
+        for (let n = 2; taken.has(name); n++) name = `${String(r.name ?? '').trim().slice(0, 40) || 'Imported'} ${n}`;
+        const result = deps.keymaps.create({
+          name,
+          description: String(r.description ?? '').trim().slice(0, 120) || 'Imported .kmp keyboard file',
+          bindings: parsed.bindings
+        });
+        if (!result.ok) {
+          json(res, 400, { error: result.error });
+          return;
+        }
+        json(res, 201, { keymap: result.row, skipped: parsed.skipped });
+      }
+    },
+    {
+      method: 'PUT',
+      re: /(?:^|\/)api\/admin\/keymaps\/(\d+)\/?$/,
+      auth: true,
+      run: ({ deps, res, match, body }) => {
+        const result = deps.keymaps.update(Number(match[1]), body);
+        if (!result.ok) json(res, result.error === 'Keymap not found' ? 404 : 400, { error: result.error });
+        else json(res, 200, { keymap: result.row });
+      }
+    },
+    {
+      // Deleting a keymap drops its host assignments back to the default and
+      // clears the default itself when needed (keymaps.ts remove()).
+      method: 'DELETE',
+      re: /(?:^|\/)api\/admin\/keymaps\/(\d+)\/?$/,
+      auth: true,
+      run: ({ deps, res, match }) => {
+        const ok = deps.keymaps.remove(Number(match[1]));
+        json(res, ok ? 200 : 404, { ok: true });
+      }
+    },
+    {
+      // Download as a .kmp that opens in ACS / Personal Communications.
+      method: 'GET',
+      re: /(?:^|\/)api\/admin\/keymaps\/(\d+)\/download\/?$/,
+      auth: true,
+      run: ({ deps, res, match }) => {
+        const row = deps.keymaps.get(Number(match[1]));
+        if (!row) {
+          json(res, 404, { error: 'Keymap not found' });
+          return;
+        }
+        const slug = row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'keymap';
+        res.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+          'content-disposition': `attachment; filename="${slug}.kmp"`
+        });
+        res.end(serializeKmp(row.bindings));
+      }
+    },
+    {
+      method: 'PUT',
+      re: /(?:^|\/)api\/admin\/keymaps\/default\/?$/,
+      auth: true,
+      run: ({ deps, res, body }) => {
+        const raw = (body as { id?: unknown }).id;
+        const id =
+          raw === null || raw === undefined || raw === ''
+            ? null
+            : Number(raw);
+        if (id !== null && (!Number.isInteger(id) || id <= 0)) {
+          json(res, 400, { error: 'id must be a keymap id or null' });
+          return;
+        }
+        if (!deps.keymaps.setDefaultKeymapId(id)) {
+          json(res, 404, { error: 'Keymap not found' });
+          return;
+        }
+        json(res, 200, { ok: true, defaultKeymapId: deps.keymaps.defaultKeymapId() });
+      }
+    },
+    {
+      // Export: the stored catalog and keymaps as a download document
+      // (ids/positions are re-assigned on import; the systems array is the
+      // menu order, keymaps are referenced by name so imports remap
+      // cleanly). Directory hosts are never stored, so there is nothing of
+      // theirs to leave out.
       method: 'GET',
       re: /(?:^|\/)api\/admin\/config\/?$/,
       auth: true,
-      run: ({ systems, res }) => {
+      run: ({ systems, deps, res }) => {
         const stamp = new Date();
         const p2 = (n: number): string => String(n).padStart(2, '0');
         const name =
-          `web5250-systems-${stamp.getFullYear()}${p2(stamp.getMonth() + 1)}${p2(stamp.getDate())}` +
+          `web5250-config-${stamp.getFullYear()}${p2(stamp.getMonth() + 1)}${p2(stamp.getDate())}` +
           `-${p2(stamp.getHours())}${p2(stamp.getMinutes())}${p2(stamp.getSeconds())}.json`;
+        const keymaps = deps.keymaps.list();
+        const keymapName = new Map(keymaps.map((k) => [k.id, k.name]));
+        const defaultId = deps.keymaps.defaultKeymapId();
         res.writeHead(200, {
           'content-type': 'application/json',
           'cache-control': 'no-store',
@@ -358,14 +527,24 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
         res.end(
           JSON.stringify(
             {
-              kind: 'web5250-systems',
-              version: 1,
+              kind: 'web5250-config',
+              version: 2,
               exportedAt: stamp.toISOString(),
+              defaultKeymap: defaultId === null ? null : keymapName.get(defaultId) ?? null,
+              keymaps: keymaps.map(({ id: _i, createdAt: _c, updatedAt: _u, ...km }) => km),
               systems: systems.list().map(
                 ({
                   id: _id, position: _pos, directory: _d, directoryRef: _dr,
-                  directoryAutoSignOn: _da, ...system
-                }) => system
+                  directoryAutoSignOn: _da, keymapId: _km, ...system
+                }) => ({
+                  ...system,
+                  keymap:
+                    _km === 0
+                      ? BUILTIN_KEYMAP_NAME
+                      : _km === null
+                        ? null
+                        : keymapName.get(_km) ?? null
+                })
               )
             },
             null,
@@ -375,17 +554,63 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
       }
     },
     {
-      // Import: replace the whole catalog (auth-gated like every mutation).
+      // Import: replace the catalog (and, in v2 documents, the keymaps and
+      // the default keymap). Both sections fully validate before anything
+      // changes, so a bad file leaves the existing configuration untouched;
+      // v1 documents (systems only) still import as-is.
       method: 'PUT',
       re: /(?:^|\/)api\/admin\/config\/?$/,
       auth: true,
       run: ({ systems, cfg, deps, res, body }) => {
-        const result = systems.replaceAll(body, cfg);
+        const doc = (Array.isArray(body) ? null : ((body ?? {}) as Record<string, unknown>)) ?? {};
+        const withKeymaps = doc.kind === 'web5250-config' && doc.keymaps !== undefined;
+        if (withKeymaps && !Array.isArray(doc.keymaps)) {
+          json(res, 400, { error: 'keymaps must be a list' });
+          return;
+        }
+        const kmList = withKeymaps ? validateKeymapList(doc.keymaps) : null;
+        if (kmList && !kmList.ok) {
+          json(res, 400, { error: kmList.error });
+          return;
+        }
+        // Pre-flight the systems rows against the incoming keymap names (a
+        // v2 doc swaps both sections, and a bad systems array must fail
+        // before the keymaps half is committed).
+        const incoming = new Map<string, number>();
+        if (kmList?.ok) {
+          for (const km of kmList.values) incoming.set(km.name, 1);
+          incoming.set(BUILTIN_KEYMAP_NAME, 0);
+          const dn = String(doc.defaultKeymap ?? '').trim();
+          if (dn && !incoming.has(dn)) {
+            json(res, 400, { error: `defaultKeymap "${dn}" is not in this file` });
+            return;
+          }
+        }
+        const pre = parseSystemsImport(body, cfg, withKeymaps ? (n) => incoming.get(n) : undefined);
+        if (!pre.ok) {
+          json(res, 400, { error: pre.error });
+          return;
+        }
+        let idsByName: Map<string, number> | undefined;
+        if (kmList?.ok) {
+          const swapped = deps.keymaps.replaceAll(doc.keymaps);
+          if (!swapped.ok) {
+            json(res, 400, { error: swapped.error });
+            return;
+          }
+          idsByName = new Map(swapped.rows.map((r) => [r.name, r.id]));
+          idsByName.set(BUILTIN_KEYMAP_NAME, 0);
+        }
+        const result = systems.replaceAll(body, cfg, idsByName);
         if (!result.ok) {
           json(res, 400, { error: result.error });
           return;
         }
         deps.onSystemsChanged();
+        if (kmList?.ok && idsByName) {
+          const dn = String(doc.defaultKeymap ?? '').trim();
+          deps.keymaps.setDefaultKeymapId(dn ? idsByName.get(dn) ?? null : null);
+        }
         json(res, 200, {
           ok: true,
           count: result.rows.length,
@@ -748,7 +973,9 @@ export function createApiHandler(cfg: Config, systems: Systems, deps: ApiDeps): 
 
     // /api/* never falls through to the SPA: unknown API paths 404 as JSON.
     if (method !== 'GET' && method !== 'HEAD') {
-      const limit = /(?:^|\/)api\/admin\/config\/?$/.test(pathname) ? MAX_IMPORT_BYTES : MAX_BODY_BYTES;
+      const limit = /(?:^|\/)api\/admin\/(config|keymaps\/import)\/?$/.test(pathname)
+        ? MAX_IMPORT_BYTES
+        : MAX_BODY_BYTES;
       readBody(req, limit)
         .then((body) => {
           if (!body.ok) {

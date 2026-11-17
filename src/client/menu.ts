@@ -6,6 +6,8 @@
 // server via ADMIN_PIN) manages that list: add, edit, delete, reorder.
 import { recheckSpool } from './spool.ts';
 import { openHelp } from './help/help.ts';
+import { loadKeymaps, keyLabel, KEY_LABELS, type KeyBinding } from './keymaps.ts';
+import { mapEvent } from './keyboard.ts';
 export interface MenuSystem {
   /**
    * The system's menu id: a stored system's numeric catalog id, or a
@@ -44,6 +46,8 @@ export interface MenuSystem {
   /** Admin-only copy: a stored sign-on pair (present on the authenticated rows). */
   signOnUser?: string | null;
   signOnPassword?: string | null;
+  /** Custom keymap overlay: null = gateway default, 0 = built-in map, n = keymap. */
+  keymapId?: number | null;
 }
 
 interface Meta {
@@ -169,6 +173,9 @@ export async function signOnPinArmed(): Promise<boolean> {
 /** Show the menu and (re)load its data. Called on first start and whenever a session ends. */
 export async function showMenu(callback: (s: MenuSystem) => void): Promise<void> {
   onSelect = callback;
+  // Keymap overlays ride along (admin edits land the next time the menu
+  // appears; a failed fetch quietly keeps the last good catalog).
+  void loadKeymaps();
   const menu = $('menu');
   menu.classList.remove('hidden');
   if (!booted) {
@@ -877,8 +884,14 @@ function closeAdmin(): void {
   $('admin-modal').classList.add('hidden');
   $('admin-form').classList.add('hidden');
   $('admin-list-actions').classList.remove('hidden');
+  $('admin-card').classList.remove('wide'); // keymap editor closed with it
+  // Keymap edits and host assignments made in here take effect now - the
+  // catalog re-fetch is cheap and the menu (still open behind the console)
+  // is the natural "admin is done" moment.
+  void loadKeymaps();
   hideFormError();
   transferNote(null);
+  keymapNote(null);
   stopConsolePoll();
   $('menu-option').focus();
 }
@@ -902,6 +915,7 @@ function showEditorPane(): void {
   $('admin-dirsync').classList.toggle('hidden', meta?.directory !== true);
   switchAdminTab('systems');
   void refreshAdminList();
+  void refreshKeymaps(); // the system form's Keymap select works from this list
 }
 
 function upDownButton(label: string, title: string, disabled: boolean, fn: () => void): HTMLButtonElement {
@@ -1104,7 +1118,7 @@ function switchAdminTab(tab: string): void {
   for (const b of $('admin-tabs').querySelectorAll('button')) {
     b.classList.toggle('active', (b as HTMLElement).dataset.tab === tab);
   }
-  for (const t of ['systems', 'sessions', 'recordings', 'audit', 'settings']) {
+  for (const t of ['systems', 'sessions', 'recordings', 'audit', 'settings', 'keymaps']) {
     $(`admin-tab-${t}`).classList.toggle('hidden', t !== tab);
   }
   if (tab === 'sessions') {
@@ -1117,6 +1131,8 @@ function switchAdminTab(tab: string): void {
     void refreshAudit();
   } else if (tab === 'settings') {
     void refreshSettings();
+  } else if (tab === 'keymaps') {
+    void refreshKeymaps();
   }
 }
 
@@ -1522,10 +1538,10 @@ async function exportConfig(): Promise<void> {
   a.href = url;
   // Same-origin responses carry the header; anything between may strip it.
   a.download = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1]
-    ?? 'web5250-systems.json';
+    ?? 'web5250-config.json';
   a.click();
   URL.revokeObjectURL(url);
-  transferNote('System list exported — check your downloads.');
+  transferNote('Configuration exported (systems, keymaps, default keymap) — check your downloads.');
 }
 
 /** Arm-then-open the file picker: import replaces the whole list. */
@@ -1596,9 +1612,12 @@ function fillForm(s: AdminSystem | null): void {
   $<HTMLSelectElement>('f-printermode').value = s?.printerMode ?? 'text';
   $<HTMLInputElement>('f-recording').checked = s ? Boolean(s.recording) : false;
   // Stored sign-on account (same authenticated-copy rule as the proxy
-  // fields): the masked password round-trips through the form.
+  // fields): the masked password round-trips through the form like any field.
   $<HTMLInputElement>('f-signuser').value = s?.signOnUser ?? '';
   $<HTMLInputElement>('f-signpass').value = s?.signOnPassword ?? '';
+  // Custom keymap overlay (options come from the last keymap-list fetch; a
+  // missing list leaves "gateway default", the pre-feature behavior).
+  keymapOptions(s?.keymapId ?? null);
 }
 
 function editSystem(s: AdminSystem): void {
@@ -1629,7 +1648,8 @@ function formPayload(): Record<string, unknown> {
     printerMode: $<HTMLSelectElement>('f-printermode').value,
     recording: $<HTMLInputElement>('f-recording').checked,
     signOnUser: $<HTMLInputElement>('f-signuser').value,
-    signOnPassword: $<HTMLInputElement>('f-signpass').value
+    signOnPassword: $<HTMLInputElement>('f-signpass').value,
+    keymapId: $<HTMLSelectElement>('f-keymap').value
   };
 }
 
@@ -1652,6 +1672,629 @@ async function saveForm(e: Event): Promise<void> {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     $('admin-form-error').textContent = err.error ?? `save failed (${res.status})`;
   }
+}
+
+// -------------------------------------------------------------- keymaps tab
+// Admin-managed keyboard maps. The list handles upload (.kmp files from
+// IBM i Access / PCOMM), download, default and delete; the editor is a
+// visual keyboard - click a keycap (or pick a key), set what its four
+// modifier states send. Bindings overlay the built-in browser mapping:
+// "(default)" falls through to it, "(browser)" hands the key back.
+interface AdminKeymap {
+  id: number;
+  name: string;
+  description: string;
+  bindings: KeyBinding[];
+  usedBy?: string[];
+}
+
+let keymapRows: AdminKeymap[] = [];
+let defaultKeymapId: number | null = null;
+let editingKeymapId: number | null = null;
+/** Working copy of the edited keymap's bindings (saved on submit). */
+let editBindings: KeyBinding[] = [];
+/** Physical key currently selected in the editor (grid cap or Key picker). */
+let gridSel: string | null = null;
+
+const STATES: { label: string; shift: boolean; ctrl: boolean; alt: boolean }[] = [
+  { label: 'Plain', shift: false, ctrl: false, alt: false },
+  { label: 'Shift', shift: true, ctrl: false, alt: false },
+  { label: 'Ctrl', shift: false, ctrl: true, alt: false },
+  { label: 'Alt', shift: false, ctrl: false, alt: true }
+];
+
+/** Action menu groups (values are the gateway's logical key names). */
+const ACTION_GROUPS: { label: string; actions: string[] }[] = [
+  { label: 'AID keys', actions: ['enter', 'clear', 'rollup', 'rolldown', 'help'] },
+  {
+    label: 'Function keys',
+    actions: Array.from({ length: 24 }, (_, i) => `pf${i + 1}`)
+  },
+  {
+    label: 'Field editing',
+    actions: [
+      'tab', 'btab', 'fieldexit', 'fieldplus', 'fieldminus', 'backspace',
+      'delete', 'insert', 'up', 'down', 'left', 'right', 'home', 'end'
+    ]
+  },
+  { label: 'Keys while locked', actions: ['reset', 'sysreq', 'attn', 'print'] }
+];
+
+interface KeycapDef {
+  code: string;
+  label: string;
+  /** Flex grow - wider caps (Backspace, Space) keep the rows readable. */
+  w?: number;
+}
+
+const cap = (code: string, label: string, w?: number): KeycapDef => ({ code, label, w });
+
+/** The editor's keyboard: physical codes that cover the built-in mapping. */
+const KEYGRID_ROWS: KeycapDef[][] = [
+  [
+    cap('Escape', 'Esc'),
+    ...Array.from({ length: 12 }, (_, i) => cap(`F${i + 1}`, `F${i + 1}`))
+  ],
+  [
+    cap('Backquote', '` ~'), cap('Digit1', '1'), cap('Digit2', '2'), cap('Digit3', '3'),
+    cap('Digit4', '4'), cap('Digit5', '5'), cap('Digit6', '6'), cap('Digit7', '7'),
+    cap('Digit8', '8'), cap('Digit9', '9'), cap('Digit0', '0'),
+    cap('Minus', '- _'), cap('Equal', '= +'), cap('Backspace', 'Backsp', 2)
+  ],
+  [
+    cap('Tab', 'Tab', 1.5), cap('KeyQ', 'Q'), cap('KeyW', 'W'), cap('KeyE', 'E'),
+    cap('KeyR', 'R'), cap('KeyT', 'T'), cap('KeyY', 'Y'), cap('KeyU', 'U'),
+    cap('KeyI', 'I'), cap('KeyO', 'O'), cap('KeyP', 'P'),
+    cap('BracketLeft', '[ {'), cap('BracketRight', '] }'), cap('Backslash', '\\ |', 1.5)
+  ],
+  [
+    cap('KeyA', 'A'), cap('KeyS', 'S'), cap('KeyD', 'D'), cap('KeyF', 'F'),
+    cap('KeyG', 'G'), cap('KeyH', 'H'), cap('KeyJ', 'J'), cap('KeyK', 'K'),
+    cap('KeyL', 'L'), cap('Semicolon', '; :'), cap('Quote', "' \""), cap('Enter', 'Enter', 2)
+  ],
+  [
+    cap('KeyZ', 'Z'), cap('KeyX', 'X'), cap('KeyC', 'C'), cap('KeyV', 'V'),
+    cap('KeyB', 'B'), cap('KeyN', 'N'), cap('KeyM', 'M'),
+    cap('Comma', ', <'), cap('Period', '. >'), cap('Slash', '/ ?')
+  ],
+  [
+    cap('Space', 'Space', 5),
+    cap('PageUp', 'PgUp'), cap('PageDown', 'PgDn'),
+    cap('Home', 'Home'), cap('End', 'End'),
+    cap('Insert', 'Ins'), cap('Delete', 'Del'),
+    cap('ArrowUp', '↑'), cap('ArrowLeft', '←'), cap('ArrowDown', '↓'), cap('ArrowRight', '→')
+  ],
+  [
+    cap('NumpadEnter', 'NumEnt'), cap('NumpadAdd', 'Num +'), cap('NumpadSubtract', 'Num −'),
+    cap('NumpadMultiply', 'Num *'), cap('NumpadDivide', 'Num /'), cap('NumpadDecimal', 'Num .')
+  ]
+];
+
+const GRID_CODES = new Set(KEYGRID_ROWS.flat().map((c) => c.code));
+
+/** Codes without a keycap (off-grid function keys, numpad digits) - the Key
+ *  picker offers them so imported bindings stay editable. */
+const PICK_GROUPS: { label: string; codes: string[] }[] = [
+  { label: 'Function keys', codes: Array.from({ length: 24 }, (_, i) => `F${i + 1}`) },
+  { label: 'Letters', codes: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((c) => `Key${c}`) },
+  { label: 'Number row', codes: '1234567890'.split('').map((d) => `Digit${d}`) },
+  {
+    label: 'Navigation',
+    codes: [
+      'Enter', 'Tab', 'Backspace', 'Delete', 'Insert', 'Escape', 'Space',
+      'Home', 'End', 'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'
+    ]
+  },
+  {
+    label: 'Numeric keypad',
+    codes: [
+      ...'0123456789'.split('').map((d) => `Numpad${d}`),
+      'NumpadEnter', 'NumpadAdd', 'NumpadSubtract', 'NumpadMultiply', 'NumpadDivide', 'NumpadDecimal'
+    ]
+  },
+  {
+    label: 'Punctuation',
+    codes: ['Backquote', 'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash', 'Semicolon', 'Quote', 'Comma', 'Period', 'Slash']
+  }
+];
+
+/** Human name for a physical code ("KeyQ" -> "Q", "Numpad7" -> "Num 7"). */
+function codeLabel(code: string): string {
+  const grid = KEYGRID_ROWS.flat().find((c) => c.code === code);
+  if (grid) return grid.label;
+  const m = /^(Key|Digit|Numpad)([A-Za-z0-9])$/.exec(code);
+  if (m) return m[1] === 'Numpad' ? `Num ${m[2]}` : m[2];
+  return code;
+}
+
+/** Modifier prefix for labels and tooltips ("Ctrl+Shift+F9"). */
+const modLabel = (shift: boolean, ctrl: boolean, alt: boolean): string =>
+  `${ctrl ? 'Ctrl+' : ''}${alt ? 'Alt+' : ''}${shift ? 'Shift+' : ''}`;
+
+const actionLabel = (b: KeyBinding): string =>
+  b.action === 'char'
+    ? `type '${b.ch === ' ' ? 'space' : b.ch}'`
+    : b.action === 'browser'
+      ? '(browser)'
+      : keyLabel(b.action);
+
+/** The keycap's second legend line: the same actions, compressed to fit a
+ *  cap (the tooltip keeps the full wording). */
+const COMPACT_LABELS: Record<string, string> = {
+  fieldexit: 'FldExit',
+  fieldplus: 'Fld +',
+  fieldminus: 'Fld −',
+  backspace: 'Bksp',
+  rollup: 'RollUp',
+  rolldown: 'RollDn',
+  sysreq: 'SysRq'
+};
+const compactAction = (b: KeyBinding): string =>
+  b.action === 'char'
+    ? `'${b.ch === ' ' ? 'spc' : b.ch}'`
+    : b.action === 'browser'
+      ? 'browser'
+      : COMPACT_LABELS[b.action] ?? keyLabel(b.action);
+
+/** The built-in mapping's behavior for a key state, for the editor's hints
+ *  (mapEvent reads only these fields, so a synthetic event is safe). */
+const SYNTH_KEY: Record<string, string> = {
+  Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
+  Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft',
+  ArrowRight: 'ArrowRight', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+  Space: ' ', Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+  Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+  NumpadEnter: 'Enter', NumpadAdd: '+', NumpadSubtract: '-', NumpadMultiply: '*',
+  NumpadDivide: '/', NumpadDecimal: '.'
+};
+const synthKeyFor = (code: string): string => {
+  if (SYNTH_KEY[code] !== undefined) return SYNTH_KEY[code];
+  const m = /^(?:Key|Digit|Numpad)([A-Za-z0-9])$/.exec(code);
+  if (m) return m[1].toLowerCase();
+  return code; // unknown: nothing in the built-in map matches it
+};
+function builtInLabel(code: string, st: { shift: boolean; ctrl: boolean; alt: boolean }): string {
+  const mapped = mapEvent({
+    code,
+    key: synthKeyFor(code),
+    shiftKey: st.shift,
+    ctrlKey: st.ctrl,
+    altKey: st.alt,
+    metaKey: false
+  } as unknown as KeyboardEvent);
+  if (!mapped) return 'browser';
+  if (mapped.k === 'char') return mapped.ch === ' ' ? 'space' : `'${mapped.ch}'`;
+  return keyLabel(mapped.k);
+}
+
+const findBinding = (
+  code: string,
+  st: { shift: boolean; ctrl: boolean; alt: boolean }
+): KeyBinding | undefined =>
+  editBindings.find(
+    (b) => b.code === code && b.shift === st.shift && b.ctrl === st.ctrl && b.alt === st.alt
+  );
+
+/** Set (or, with null action, remove) one key state in the working copy. */
+function setBinding(
+  code: string,
+  st: { shift: boolean; ctrl: boolean; alt: boolean },
+  action: string | null,
+  ch?: string
+): void {
+  editBindings = editBindings.filter(
+    (b) => !(b.code === code && b.shift === st.shift && b.ctrl === st.ctrl && b.alt === st.alt)
+  );
+  if (action === 'char' && ch !== undefined && [...ch].length === 1) {
+    editBindings.push({ code, shift: st.shift, ctrl: st.ctrl, alt: st.alt, action, ch });
+  } else if (action && action !== 'char') {
+    editBindings.push({ code, shift: st.shift, ctrl: st.ctrl, alt: st.alt, action });
+  }
+  renderKeyGrid();
+  renderKeyStates();
+  renderKeyExtra();
+  updateKmCount();
+}
+
+function keymapNote(msg: string | null): void {
+  const el = $('keymap-note');
+  el.textContent = msg ?? '';
+  el.classList.toggle('hidden', !msg);
+}
+
+async function refreshKeymaps(): Promise<void> {
+  try {
+    const res = await adminCall('GET', 'api/admin/keymaps');
+    if (!res.ok) return;
+    const data = (await res.json()) as { keymaps?: AdminKeymap[]; defaultKeymapId?: number | null };
+    keymapRows = data.keymaps ?? [];
+    defaultKeymapId = data.defaultKeymapId ?? null;
+  } catch {
+    return; // keep the last good list; the next tab open retries
+  }
+  renderKeymapList();
+}
+
+function renderKeymapList(): void {
+  const list = $('keymap-list');
+  const editorOpen = !$('keymap-editor').classList.contains('hidden');
+  list.replaceChildren(
+    ...keymapRows.map((km) => {
+      const li = document.createElement('li');
+      li.className = 'admin-row keymap-row';
+
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      const b = document.createElement('b');
+      b.textContent = km.name;
+      const small = document.createElement('small');
+      const used = km.usedBy ?? [];
+      small.textContent =
+        `${km.bindings.length} binding(s)` +
+        (used.length > 0 ? ` · on ${used.join(', ')}` : ' · not assigned') +
+        (km.description ? ` · ${km.description}` : '');
+      nm.append(b, small);
+      if (km.id === defaultKeymapId) {
+        const chip = document.createElement('span');
+        chip.className = 'km-badge';
+        chip.textContent = 'DEFAULT';
+        chip.title = 'Applied to every host that has no keymap of its own';
+        b.append(chip); // on the name line, like a real keycap legend
+      }
+
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.textContent = 'Edit';
+      edit.title = `Edit ${km.name}`;
+      edit.addEventListener('click', () => editKeymap(km));
+
+      const dl = document.createElement('button');
+      dl.type = 'button';
+      dl.textContent = '.kmp';
+      dl.title = 'Download as a .kmp keyboard file (opens in IBM i Access / PCOMM)';
+      dl.addEventListener('click', () => void downloadKeymap(km));
+
+      const def = document.createElement('button');
+      def.type = 'button';
+      if (km.id === defaultKeymapId) {
+        def.textContent = 'Unset default';
+        def.title = 'Stop applying this keymap to hosts without their own';
+        def.addEventListener('click', () => void setKeymapDefault(null));
+      } else {
+        def.textContent = 'Default';
+        def.title = 'Apply this keymap to every host that has no keymap of its own';
+        def.addEventListener('click', () => void setKeymapDefault(km.id));
+      }
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = 'Del';
+      del.title = `Delete ${km.name}`;
+      del.className = 'danger';
+      del.addEventListener('click', () => void deleteKeymap(km, del));
+
+      li.append(nm, edit, dl, def, del);
+      return li;
+    })
+  );
+  const empty = $('keymap-empty');
+  if (keymapRows.length === 0 && !editorOpen) {
+    empty.textContent =
+      'No keymaps yet. Upload the .kmp file IBM i Access exports (Keyboard Remap), or build one by hand.';
+    empty.classList.remove('hidden');
+  } else {
+    empty.classList.add('hidden');
+  }
+}
+
+async function setKeymapDefault(id: number | null): Promise<void> {
+  const res = await adminCall('PUT', 'api/admin/keymaps/default', { id });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    keymapNote(`Could not set the default — ${err.error ?? res.status}`);
+    return;
+  }
+  await refreshKeymaps();
+  keymapNote(id === null ? 'Default keymap cleared — hosts without their own use the built-in map.' : 'Default keymap set.');
+}
+
+async function deleteKeymap(km: AdminKeymap, btn: HTMLButtonElement): Promise<void> {
+  // Two-step confirm without a native dialog (the Del pattern above).
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Sure?';
+    window.setTimeout(() => {
+      btn.dataset.armed = '';
+      btn.textContent = 'Del';
+    }, 3000);
+    return;
+  }
+  const res = await adminCall('DELETE', `api/admin/keymaps/${km.id}`);
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    keymapNote(`Could not delete — ${err.error ?? res.status}`);
+    return;
+  }
+  keymapNote(`Deleted ${km.name} — its hosts fall back to the default keymap.`);
+  await refreshKeymaps();
+}
+
+async function downloadKeymap(km: AdminKeymap): Promise<void> {
+  const res = await adminCall('GET', `api/admin/keymaps/${km.id}/download`);
+  if (!res.ok) {
+    keymapNote(`Download failed (${res.status}).`);
+    return;
+  }
+  const blob = new Blob([await res.text()], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download =
+    /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ??
+    `${km.name.replace(/[^A-Za-z0-9_-]+/g, '-').toLowerCase() || 'keymap'}.kmp`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Arm-free upload (it only adds a keymap, never replaces anything). */
+function pickKeymapFile(): void {
+  $<HTMLInputElement>('keymap-file').click();
+}
+
+async function importKeymapFile(file: File): Promise<void> {
+  const fallback = file.name.replace(/\.kmp$/i, '').trim().slice(0, 40) || 'Imported';
+  const res = await adminCall('POST', 'api/admin/keymaps/import', {
+    name: fallback,
+    kmp: await file.text()
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    keymapNote(`Upload failed — ${err.error ?? res.status}`);
+    return;
+  }
+  const data = (await res.json()) as { keymap: AdminKeymap; skipped?: string[] };
+  await refreshKeymaps();
+  const skipped = data.skipped ?? [];
+  const detail =
+    skipped.length === 0
+      ? ''
+      : ` — ${skipped.length} entr${skipped.length === 1 ? 'y' : 'ies'} not translatable (${skipped
+          .slice(0, 3)
+          .map((s) => s.split('(')[0].trim())
+          .join('; ')}${skipped.length > 3 ? '…' : ''})`;
+  keymapNote(`Imported ${data.keymap.name} (${data.keymap.bindings.length} bindings)${detail}.`);
+  editKeymap(data.keymap); // straight into the editor for a look
+}
+
+function editKeymap(km: AdminKeymap | null): void {
+  editingKeymapId = km?.id ?? null;
+  editBindings = structuredClone(km?.bindings ?? []);
+  gridSel = null;
+  $<HTMLInputElement>('km-name').value = km?.name ?? '';
+  $<HTMLInputElement>('km-desc').value = km?.description ?? '';
+  $('km-error').textContent = '';
+  $('keymap-editor').classList.remove('hidden');
+  $('keymap-list-actions').classList.add('hidden');
+  $('keymap-list').classList.add('hidden');
+  $('keymap-empty').classList.add('hidden');
+  $('admin-card').classList.add('wide'); // the keyboard wants the room
+  renderKeyGrid();
+  renderKeyStates();
+  renderKeyExtra();
+  updateKmCount();
+}
+
+function closeKeymapEditor(): void {
+  $('keymap-editor').classList.add('hidden');
+  $('keymap-list-actions').classList.remove('hidden');
+  $('keymap-list').classList.remove('hidden');
+  $('admin-card').classList.remove('wide');
+  renderKeymapList(); // restores the list/empty state honestly
+}
+
+function updateKmCount(): void {
+  $('km-count').textContent = `${editBindings.length} binding(s)`;
+}
+
+/** The visual keyboard: a cap per key, glowing when customized, its current
+ *  action as a second legend line (real keycaps work that way). */
+function renderKeyGrid(): void {
+  const grid = $('keymap-grid');
+  grid.replaceChildren(
+    ...KEYGRID_ROWS.map((row) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'keyrow';
+      for (const c of row) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'keycap';
+        b.style.flexGrow = String(c.w ?? 1);
+        b.dataset.code = c.code;
+        const mine = editBindings.filter((x) => x.code === c.code);
+        b.classList.toggle('bound', mine.length > 0);
+        b.classList.toggle('sel', gridSel === c.code);
+        const main = document.createElement('span');
+        main.className = 'cap-label';
+        main.textContent = c.label;
+        const sub = document.createElement('span');
+        sub.className = 'cap-sub';
+        if (mine.length > 0) {
+          sub.textContent =
+            mine.length === 1 ? compactAction(mine[0]) : `${compactAction(mine[0])} +${mine.length - 1}`;
+        }
+        b.title =
+          mine.length === 0
+            ? `${c.code} — not customized (click to bind)`
+            : mine
+                .map((x) => `${modLabel(x.shift, x.ctrl, x.alt)}${codeLabel(x.code)} → ${actionLabel(x)}`)
+                .join('\n');
+        b.append(main, sub);
+        b.addEventListener('click', () => {
+          gridSel = c.code;
+          $<HTMLSelectElement>('km-add-code').value = c.code;
+          renderKeyGrid();
+          renderKeyStates();
+        });
+        rowEl.appendChild(b);
+      }
+      return rowEl;
+    })
+  );
+}
+
+/** Side panel: the four modifier states of the selected key. */
+function renderKeyStates(): void {
+  const title = $('km-key-title');
+  const wrap = $('km-states');
+  const picker = $<HTMLSelectElement>('km-add-code');
+  const code = gridSel;
+  if (!code) {
+    title.textContent = 'SELECT A KEY';
+    wrap.replaceChildren();
+    picker.value = '';
+    return;
+  }
+  title.textContent = `KEY: ${codeLabel(code).toUpperCase()}`;
+  wrap.replaceChildren(
+    ...STATES.map((st) => {
+      const row = document.createElement('div');
+      row.className = 'km-state';
+
+      const name = document.createElement('span');
+      name.className = 'km-state-name';
+      name.textContent = st.label;
+
+      const sel = document.createElement('select');
+      sel.className = 'km-state-action';
+      const current = findBinding(code, st);
+      // Short labels: the built-in hint line right under the select says what
+      // "default" does, so the option text can stay narrow enough to read.
+      sel.add(new Option('— default —', ''));
+      sel.add(new Option('(browser)', 'browser'));
+      sel.add(new Option('character…', 'char'));
+      for (const g of ACTION_GROUPS) {
+        const og = document.createElement('optgroup');
+        og.label = g.label;
+        for (const a of g.actions) og.append(new Option(keyLabel(a), a));
+        sel.append(og);
+      }
+      sel.value = current ? current.action : '';
+
+      const chInput = document.createElement('input');
+      chInput.className = 'km-char';
+      chInput.type = 'text';
+      chInput.maxLength = 2;
+      chInput.value = current?.action === 'char' ? (current.ch ?? '') : '';
+      chInput.placeholder = 'ch';
+      chInput.title = 'The character this key types';
+      const showChar = (): void => {
+        chInput.classList.toggle('hidden', sel.value !== 'char');
+      };
+      showChar();
+      chInput.addEventListener('input', () => {
+        setBinding(code, st, 'char', chInput.value);
+      });
+      sel.addEventListener('change', () => {
+        if (sel.value === 'char') {
+          // Wait for the character before rebuilding the panel: the binding
+          // lands on the input event, so the field must stay usable now.
+          editBindings = editBindings.filter(
+            (b) => !(b.code === code && b.shift === st.shift && b.ctrl === st.ctrl && b.alt === st.alt)
+          );
+          chInput.classList.remove('hidden');
+          chInput.value = '';
+          chInput.focus();
+          renderKeyGrid();
+          renderKeyExtra();
+          updateKmCount();
+          return;
+        }
+        setBinding(code, st, sel.value, chInput.value);
+      });
+
+      const hint = document.createElement('small');
+      hint.className = 'km-builtin';
+      hint.textContent = `built-in: ${builtInLabel(code, st)}`;
+
+      row.append(name, sel, chInput, hint);
+      return row;
+    })
+  );
+}
+
+/** Bindings on keys the grid has no cap for (numpad digits, F13+...). */
+function renderKeyExtra(): void {
+  const wrap = $('keymap-extra');
+  const section = $('keymap-extra-wrap');
+  const extras = editBindings.filter((b) => !GRID_CODES.has(b.code));
+  section.classList.toggle('hidden', extras.length === 0);
+  wrap.replaceChildren(
+    ...extras.map((b) => {
+      const li = document.createElement('li');
+      li.className = 'km-extra-row';
+      const label = document.createElement('span');
+      label.textContent = `${modLabel(b.shift, b.ctrl, b.alt)}${codeLabel(b.code)} → ${actionLabel(b)}`;
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.textContent = '✕';
+      rm.title = 'Remove this binding';
+      rm.addEventListener('click', () => setBinding(b.code, b, null));
+      li.append(label, rm);
+      return li;
+    })
+  );
+}
+
+/** Fill the Key picker once (grouped physical codes). */
+function buildKeyPicker(): void {
+  const sel = $<HTMLSelectElement>('km-add-code');
+  if (sel.options.length > 0) return;
+  sel.add(new Option('— pick a key —', ''));
+  for (const g of PICK_GROUPS) {
+    const og = document.createElement('optgroup');
+    og.label = g.label;
+    for (const c of g.codes) og.append(new Option(codeLabel(c), c));
+    sel.append(og);
+  }
+  sel.addEventListener('change', () => {
+    gridSel = sel.value || null;
+    renderKeyGrid();
+    renderKeyStates();
+  });
+}
+
+async function saveKeymap(e: Event): Promise<void> {
+  e.preventDefault();
+  const payload = {
+    name: $<HTMLInputElement>('km-name').value,
+    description: $<HTMLInputElement>('km-desc').value,
+    bindings: editBindings
+  };
+  const res = await adminCall(
+    editingKeymapId === null ? 'POST' : 'PUT',
+    editingKeymapId === null ? 'api/admin/keymaps' : `api/admin/keymaps/${editingKeymapId}`,
+    payload
+  );
+  if (res.ok) {
+    const saved = editingKeymapId === null ? 'created' : 'saved';
+    closeKeymapEditor();
+    await refreshKeymaps();
+    keymapNote(`Keymap ${saved}. Open sessions pick it up the next time the menu appears.`);
+  } else {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    $('km-error').textContent = err.error ?? `save failed (${res.status})`;
+  }
+}
+
+/** Options for the system form's Keymap select (called by fillForm). */
+function keymapOptions(selected: number | null | undefined): void {
+  const sel = $<HTMLSelectElement>('f-keymap');
+  sel.replaceChildren(
+    new Option('(gateway default)', ''),
+    new Option('(built-in map)', '0'),
+    ...keymapRows.map((k) => new Option(k.name, String(k.id)))
+  );
+  sel.value = selected === undefined || selected === null ? '' : String(selected);
 }
 
 async function submitPin(): Promise<void> {
@@ -1726,10 +2369,24 @@ function initAdmin(): void {
     if (f) void importConfigFile(f);
   });
 
-  // Console tabs: Systems (the editor above) / Sessions / Recordings / Audit.
+  // Console tabs: Systems (the editor above) / Keymaps / Sessions / Recordings / Audit.
   for (const b of $('admin-tabs').querySelectorAll('button')) {
     b.addEventListener('click', () => switchAdminTab((b as HTMLElement).dataset.tab ?? 'systems'));
   }
+
+  // Keymaps tab: upload opens the picker directly (it only ever adds);
+  // the editor's grid/picker/extra list rebuild from the working copy.
+  buildKeyPicker();
+  $('keymap-add').addEventListener('click', () => editKeymap(null));
+  $('km-cancel').addEventListener('click', closeKeymapEditor);
+  $('keymap-editor').addEventListener('submit', (e) => void saveKeymap(e));
+  $('keymap-upload').addEventListener('click', pickKeymapFile);
+  $('keymap-file').addEventListener('change', () => {
+    const input = $<HTMLInputElement>('keymap-file');
+    const f = input.files?.[0];
+    input.value = ''; // picking the same file twice must still fire change
+    if (f) void importKeymapFile(f);
+  });
   $('recordings-refresh').addEventListener('click', () => void refreshRecordings());
   // Settings tab: arm or disarm the automatic sign-on protection PIN.
   $('settings-save').addEventListener('click', () => void saveSettingsPin());

@@ -133,6 +133,7 @@ const userPages: HelpPage[] = [
     subtitle: 'Every mapped key',
     blocks: [
       p(`The window behaves like a desktop emulator - browser defaults (F1 help, F5 reload, Tab focus moves, backspace navigation) are suppressed while a session is focused.`),
+      p(`The tables below are the built-in mapping. Your administrator can layer a custom keymap on top - per host or for the whole gateway - so a key here may send a different function where you work: a custom binding always wins, and keys left alone keep these meanings. If a key surprises you, ask which keymap your host uses.`),
       h('AID keys'),
       keys(
         ['Enter', 'Enter (transmit the screen)'],
@@ -350,10 +351,10 @@ const adminPages: HelpPage[] = [
     subtitle: 'The PIN-gated console',
     blocks: [
       p(
-        `The console manages the {{system list|a-systems}}, live {{sessions|a-sessions}} and ` +
-          `{{maintenance windows|a-maintenance}}, {{recordings|a-recordings}} and the ` +
-          `{{audit trail|a-audit}} - plus {{gateway settings|a-settings}} and ` +
-          `{{config transfer|a-transfer}}.`
+        `The console manages the {{system list|a-systems}}, {{keymaps|a-keymaps}}, live ` +
+          `{{sessions|a-sessions}} and {{maintenance windows|a-maintenance}}, ` +
+          `{{recordings|a-recordings}} and the {{audit trail|a-audit}} - plus ` +
+          `{{gateway settings|a-settings}} and {{config transfer|a-transfer}}.`
       ),
       h('Signing on'),
       ul(
@@ -388,7 +389,8 @@ const adminPages: HelpPage[] = [
         ['TLS', 'Encrypt the host connection (self-signed certs are accepted by default)'],
         ['Terminal model', 'IBM-3477-FC (27x132 color) or IBM-3179-2 (24x80)'],
         ['Code page', 'Must match the host CCSID (cp037 US, cp273 German, ...)'],
-        ['Device prefix', 'Sessions on this system get device names from this prefix']
+        ['Device prefix', 'Sessions on this system get device names from this prefix'],
+        ['Keymap', 'Custom keyboard map for sessions here: {{Keymaps|a-keymaps}}, the gateway default, or always the built-in map']
       ),
       p(`Per-row {{SOCKS5 proxy|a-proxy}}, {{printer session|a-printer}}, {{recording|a-recording}} and {{sign-on account|a-signon}} have their own pages.`)
     ]
@@ -413,6 +415,51 @@ const adminPages: HelpPage[] = [
           `rejected sign-on ends the session with "Sign-on failed".`
       ),
       p(`The optional {{protection PIN|a-settings}} gates these sign-ons behind a shared secret.`)
+    ]
+  },
+  {
+    id: 'a-keymaps',
+    title: 'Keymaps',
+    subtitle: 'Custom keyboard maps',
+    blocks: [
+      p(
+        `Users coming from a desktop emulator expect their keys where their fingers know them. ` +
+          `A keymap is a set of per-key overrides layered over the built-in browser mapping: a ` +
+          `bound key sends its configured function, anything left alone keeps the built-in ` +
+          `meaning, and a key set to (browser) goes back to the browser.`
+      ),
+      h('The list'),
+      keys(
+        ['Upload .kmp', 'Import an IBM i Access / PCOMM Keyboard Remap file (nothing is replaced; the same file twice gets a numbered name)'],
+        ['New keymap', 'Build one by hand in the visual editor'],
+        ['Edit', 'Open the visual editor on that map'],
+        ['.kmp', 'Download the map as a .kmp file that opens in IBM i Access / PCOMM'],
+        ['Default', 'Apply this map to every host that has no map of its own (Unset default clears it)'],
+        ['Del (Sure?)', 'Two-step delete; its hosts fall back to the default map']
+      ),
+      h('The visual editor'),
+      p(
+        `Click a keycap - or pick a key from the list - and set what its Plain, Shift, Ctrl and ` +
+          `Alt states send. The keycap glows once it carries a binding and shows the current ` +
+          `action as a second legend, like a real keycap. (default) falls through to the built-in ` +
+          `mapping, whose behavior is shown next to every state; the function list includes ` +
+          `actions the built-in map never reaches (Clear, Field+).`
+      ),
+      h('Where a map applies'),
+      ul(
+        `Default: every host without its own map (the DEFAULT chip in the list)`,
+        `Per host: the Keymap select in the system editor - a named map, the gateway default, or the built-in map pinned on purpose`,
+        `Precedence: the host's map, then the default, then the built-in mapping`,
+        `Open sessions pick up changes the next time the system menu appears (a reload always works)`
+      ),
+      h('About .kmp files'),
+      p(
+        `The file IBM i Access and Personal Communications write for Keyboard Remap - plain text, ` +
+          `one [KeyRemap] section (a sample ships with the gateway at data/IBMi.kmp). Entries this ` +
+          `emulator cannot express - macros, key-to-key translations, host functions without a ` +
+          `5250 equivalent here - are listed on import rather than guessed at. Downloads are ` +
+          `written in the same format, so a map round-trips between here and ACS.`
+      )
     ]
   },
   {
@@ -584,9 +631,10 @@ const adminPages: HelpPage[] = [
     subtitle: 'Moving the system list around',
     blocks: [
       ul(
-        `Export downloads every manual system - including proxy, printer and sign-on settings - as a JSON file`,
+        `Export downloads every manual system - including proxy, printer and sign-on settings - plus every {{keymap|a-keymaps}} and the default keymap, as a JSON file`,
         `Directory rows are excluded and the file says how many`,
-        `Import replaces the whole manual list; every row is validated first, and a bad file changes nothing`,
+        `Import replaces the whole manual list and the keymaps; every row is validated first, and a bad file changes nothing`,
+        `Older exports without a keymaps section still import (the stored keymaps are left alone)`,
         `Directory rows survive an import untouched`
       ),
       p(`Treat export files as secrets: they contain proxy and sign-on passwords.`)

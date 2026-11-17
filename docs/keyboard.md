@@ -23,6 +23,19 @@ While the OIA shows `X SYSTEM` or `X II`, data keys are blocked exactly like
 a real terminal (SysReq, Attn and Reset still work). The on-screen keypad
 (button in the top bar) mirrors everything for touch devices.
 
+## Custom keymaps
+
+The table above is the **built-in** mapping — what every session uses until
+an administrator configures otherwise. A custom keymap (see
+[Systems, admin & console](admin.md#system-selection--admin), Keymaps tab)
+**overrides it key by key**: a bound key sends its configured 5250 function
+(including ones the built-in map never reaches, like *Clear* and *Field+*),
+a key left on `(default)` keeps its built-in meaning, and `(browser)` hands
+a key back to the browser. One keymap can be the gateway default; a host
+can use its own instead, or pin itself to the built-in map. If your keys
+suddenly send different functions than this table, that is why — ask the
+administrator which map your host uses.
+
 ## Mouse selection and clipboard
 
 Right-click opens the local menu (**Copy selection** / **Copy screen** /

@@ -42,13 +42,34 @@ details are visible only inside the authenticated editor; the public menu
 list shows just a `SOCKS5` / `printer` marker.
 
 **Export / import**: the editor's `Export` button downloads every system —
-proxy and printer settings included — as a JSON file to your computer;
-`Import` uploads such a file back and **replaces the whole list** (the
-Import button asks for a second click first, since the previous list is
-gone). Every row is validated before anything changes, so a file with one
-bad system imports nothing; a good file's rows land in menu order. Handy
-for backing up before an experiment, cloning one deployment into another,
-or moving the catalog out of a throwaway container's volume.
+proxy and printer settings included — and every custom keymap as a JSON
+file to your computer; `Import` uploads such a file back and **replaces
+the whole list** (the Import button asks for a second click first, since
+the previous list is gone). Every row is validated before anything
+changes, so a file with one bad system or keymap imports nothing; a good
+file's rows land in menu order. Handy for backing up before an experiment,
+cloning one deployment into another, or moving the catalog out of a
+throwaway container's volume. Older exports (systems only, no `keymaps`
+section) still import and leave the stored keymaps alone.
+
+**Keymaps** (the `Keymaps` tab): custom keyboard maps for the sessions —
+users migrating from a thick-client emulator get their muscle memory back.
+Upload the `.kmp` file IBM i Access / Personal Communications exports
+(Keyboard Remap → Save as; the repo ships a sample at `data/IBMi.kmp`),
+download any stored map back as a `.kmp`, or edit bindings by hand in the
+visual keyboard: click a keycap (or pick a key), then set what its Plain /
+Shift / Ctrl / Alt states send. A binding **overrides the built-in
+[browser mapping](keyboard.md)** for that one key; anything left on
+`(default)` falls through to it, and `(browser)` hands the key back to the
+browser. Entries a `.kmp` carries that this emulator cannot express (macros,
+key-to-key translations, host functions with no 5250 equivalent) are
+reported on import — nothing is guessed at. One map can be the **default**
+applied to every host; each system's editor has a *Keymap* select for a
+map of its own (or *built-in map*, which ignores the default). Precedence:
+host-assigned map → default keymap → built-in mapping. Sessions pick up
+keymap changes the next time the system menu appears; deleting a map drops
+its hosts back to the default. Keymaps live in the SQLite catalog with
+everything else and ride the export above.
 
 **Display name** (the `Display` field on the menu): an optional 5250
 device name for this browser's sessions, saved in `localStorage` and sent
@@ -74,7 +95,15 @@ The JSON API behind it (all sub-path tolerant, like `/healthz`):
 | `PUT /api/admin/systems/<id>` | token | update |
 | `DELETE /api/admin/systems/<id>` | token | delete |
 | `POST /api/admin/systems/<id>/move` | token | `{dir: up\|down}` reorder |
-| `GET /api/admin/config` | token | export all systems as a JSON download (attachment) |
+| `GET /api/keymaps` | – | keymap overlays + the default id (sessions need them pre-connect) |
+| `GET /api/admin/keymaps` | token | keymaps with bindings + which hosts use them |
+| `POST /api/admin/keymaps` | token | create (`{name, description, bindings}`) |
+| `POST /api/admin/keymaps/import` | token | upload `{name, kmp}` — the text of a `.kmp` file |
+| `PUT /api/admin/keymaps/<id>` | token | update bindings |
+| `DELETE /api/admin/keymaps/<id>` | token | delete (hosts fall back to the default) |
+| `GET /api/admin/keymaps/<id>/download` | token | download as a `.kmp` file (attachment) |
+| `PUT /api/admin/keymaps/default` | token | `{id\|null}` set / clear the default keymap |
+| `GET /api/admin/config` | token | export systems + keymaps as a JSON download (attachment) |
 | `PUT /api/admin/config` | token | import a JSON export — replaces the whole list |
 | `GET /api/admin/sessions` | token | live session list (internal ids, no tokens) |
 | `POST /api/admin/sessions/<id>/view` | token | mint a `?view=` mirror link for one session |
@@ -99,8 +128,10 @@ attempts lock administration for 60 s after 5 tries.
 
 ## Session console
 
-The admin editor grows three tabs next to Systems (one PIN, one token):
+The admin editor grows tabs next to Systems (one PIN, one token):
 
+- **Keymaps** — the custom keyboard maps above: upload / edit / download /
+  default / delete, with a visual keyboard for hand-editing bindings.
 - **Sessions** — every live session on this gateway: device name, the
   signed-on IBM i user (captured from the sign-on screen as it is
   submitted), the edge identity or source address, state (active /

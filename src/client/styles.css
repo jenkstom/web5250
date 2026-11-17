@@ -1157,6 +1157,174 @@ button.primary { border-color: var(--green); color: var(--green); }
 .pager button:disabled:hover { background: none; }
 #audit-page-label { color: var(--dim); font-size: 0.82rem; white-space: nowrap; }
 
+/* ------------------------------------------------------------ keymaps ---
+   The Keymaps tab's editor is a visual keyboard: dark keycaps with chunky
+   bottom edges (the 3D press look), phosphor glow on customized keys, and
+   the current action as a second legend line - the way a real keycap wears
+   its alternate function. Same green-on-dark language as the landing menu. */
+
+/* Default-keymap chip in the list rows */
+.km-badge {
+  display: inline-block;
+  margin-left: 0.45rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--green);
+  color: var(--green);
+  font-size: 0.54rem;
+  letter-spacing: 0.14em;
+  vertical-align: 2px;
+}
+
+/* Editor body: the keyboard beside the selected key's modifier states;
+   stacks below on narrow screens. */
+#keymap-edit-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(13rem, 15rem);
+  gap: 0.8rem;
+  margin: 0.6rem 0;
+  align-items: start;
+}
+@media (max-width: 660px) {
+  #keymap-edit-body { grid-template-columns: 1fr; }
+}
+
+/* The visual editor needs more width than a system form: the card widens
+   for the keymap editor (menu.ts adds/removes the class). */
+#admin-card.wide { width: min(96vw, 64rem); }
+
+/* The keyboard panel: a CRT frame like the landing menu's, scanlines and
+   all, just quieter (the caps need to stay readable at this size). */
+#keymap-grid-wrap {
+  position: relative;
+  border: 3px double var(--line);
+  background: #040705;
+  padding: 0.55rem;
+}
+#keymap-grid-wrap .panel-title.small { margin: 0 0 0.45rem; }
+#keymap-grid-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0 1px, transparent 1px 3px);
+}
+#keymap-grid { display: flex; flex-direction: column; gap: 0.25rem; }
+.keyrow { display: flex; gap: 0.25rem; }
+
+.keycap {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0.3rem 0.12rem 0.24rem;
+  background: #0a0f0c;
+  border: 1px solid #2a3c31; /* a notch brighter than --line: unbound keys stay readable */
+  border-bottom: 3px solid #1c2b22; /* the cap's thick bottom edge */
+  border-radius: 3px;
+  color: #9db3a6;
+  font: inherit;
+  font-size: 0.62rem;
+  line-height: 1.15;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 60ms ease, border-color 60ms ease, color 60ms ease;
+}
+.keycap:hover { color: var(--text); border-color: #2f4a3b; transform: translateY(-1px); }
+.keycap:active { transform: translateY(1px); border-bottom-width: 1px; padding-bottom: calc(0.24rem + 2px); }
+.keycap .cap-label { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.keycap .cap-sub {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.52rem;
+  color: var(--warn);
+  text-transform: none;
+}
+.keycap.bound {
+  color: var(--green);
+  border-color: var(--green);
+  text-shadow: 0 0 6px rgba(75, 228, 99, 0.28);
+  box-shadow: 0 0 9px rgba(75, 228, 99, 0.16), inset 0 0 5px rgba(75, 228, 99, 0.07);
+}
+.keycap.sel,
+.keycap.sel:hover {
+  background: var(--green);
+  border-color: var(--green);
+  border-bottom-color: #2b9b41;
+  color: #04140a;
+  text-shadow: none;
+  box-shadow: 0 0 14px rgba(75, 228, 99, 0.3);
+}
+.keycap.sel .cap-sub { color: #0b2a14; }
+
+/* Selected key's panel: the Key picker plus one row per modifier state. */
+#keymap-keypanel {
+  border: 1px solid var(--line);
+  background: rgba(4, 7, 5, 0.5);
+  padding: 0.55rem;
+}
+#keymap-keypanel .panel-title.small { margin: 0 0 0.45rem; }
+#keymap-keypanel select,
+#keymap-keypanel input {
+  background: #040705;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.22rem 0.3rem;
+}
+#keymap-keypanel select:focus,
+#keymap-keypanel input:focus { outline: none; border-color: var(--green); }
+.km-pick { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem; }
+.km-pick label { color: var(--dim); font-size: 0.72rem; }
+.km-pick select { flex: 1; min-width: 0; }
+.km-state {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr) auto;
+  gap: 0.22rem 0.4rem;
+  padding: 0.38rem 0;
+  align-items: center;
+}
+.km-state + .km-state { border-top: 1px solid var(--line); }
+.km-state-name {
+  color: var(--dim);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.km-state-action { width: 100%; }
+.km-char { width: 2.6rem; text-align: center; }
+.km-builtin { grid-column: 2 / -1; color: var(--dim); font-size: 0.62rem; }
+
+/* Bindings on keys the grid has no cap for (numpad digits, F13+) */
+.km-extra-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.22rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+  list-style: none;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.km-extra-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.km-extra-row button {
+  border: 0;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 0.2rem;
+}
+.km-extra-row button:hover { color: var(--err); }
+#keymap-extra-wrap .panel-title.small { margin-bottom: 0.2rem; }
+
 /* ------------------------------------------------- sign-on PIN modal ----- */
 /* Shown before a connection when the system signs on automatically and the
    admin armed the protection PIN: prove it, sign on yourself, or cancel. */

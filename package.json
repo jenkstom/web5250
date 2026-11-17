@@ -39,6 +39,7 @@
     "test:mousegui": "node scripts/mouse-gui-test.mjs",
     "test:directory": "node scripts/directory-test.mjs",
     "test:signonpin": "node scripts/signonpin-test.mjs",
+    "test:keymaps": "node scripts/keymap-test.mjs",
     "test:staleattr": "node scripts/stale-attr-test.ts",
     "test:menuscale": "node scripts/menu-scale-test.mjs",
     "test:help": "node scripts/help-test.mjs"

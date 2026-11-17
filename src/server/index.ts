@@ -25,6 +25,7 @@ import { Maintenance } from './maintenance.ts';
 import { Recordings } from './recordings.ts';
 import { AdminAuth } from './admin-auth.ts';
 import { Settings } from './settings.ts';
+import { Keymaps } from './keymaps.ts';
 import { createApiHandler } from './api.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -54,6 +55,9 @@ recordings.start();
 const adminAuth = new AdminAuth(cfg);
 // Gateway-wide console settings (same SQLite file as the catalog).
 const settings = new Settings(cfg.dbPath);
+// Admin-managed keyboard maps, applied per system or gateway-wide (the
+// Keymaps tab; overlays the client's built-in browser mapping).
+const keymaps = new Keymaps(cfg.dbPath);
 const api = createApiHandler(cfg, systems, {
   printers,
   audit,
@@ -62,6 +66,7 @@ const api = createApiHandler(cfg, systems, {
   adminAuth,
   settings,
   directory,
+  keymaps,
   onSystemsChanged: () => printers.sync()
 });
 

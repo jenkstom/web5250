@@ -50,6 +50,9 @@ npm run test:share      # share button + ?view= mirror: link copy, live
 npm run test:admin      # admin PIN/editor keyboard: Enter in the PIN form
                         #   opens the editor (not a connection), menu keys
                         #   intact (gateway needs ADMIN_PIN=1234)
+npm run test:keymaps    # Keymaps tab: .kmp import/download round-trip,
+                        #   CRUD + per-host/default assignment, config
+                        #   export/import, visual editor + live overlay key
 npm run test:socks      # SOCKS5 per-system proxy: tunnelled session,
                         #   username/password auth, failure paths, proxy
                         #   credentials kept off the public API, SQLite

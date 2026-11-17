@@ -56,6 +56,13 @@ export interface SystemRow {
    */
   signOnUser: string | null;
   signOnPassword: string | null;
+  /**
+   * Custom keymap applied to sessions on this system: null = inherit the
+   * gateway default keymap (or the built-in map when there is none), 0 = pin
+   * to the built-in browser map even when a default exists, >0 = that stored
+   * keymap (see keymaps.ts).
+   */
+  keymapId: number | null;
 }
 
 /** Payload shape for manual create/update: connection settings only (the
@@ -161,6 +168,18 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
     return { ok: false, error: 'Sign-on user may only contain A-Z 0-9 # $ @ _ (max 10 chars)' };
   }
 
+  // Keymap overlay assignment (the editor's select): blank = inherit the
+  // gateway default keymap, 0 = pin to the built-in map, n = a stored keymap
+  // (its existence is checked by the route, which has the keymap store).
+  let keymapId: number | null = null;
+  if (r.keymapId !== undefined && r.keymapId !== null && r.keymapId !== '') {
+    const n = Number.parseInt(String(r.keymapId), 10);
+    if (!Number.isFinite(n) || n < 0) {
+      return { ok: false, error: 'Keymap must be a keymap id, "built-in", or blank (inherit)' };
+    }
+    keymapId = n;
+  }
+
   return {
     ok: true,
     value: {
@@ -181,7 +200,8 @@ export function validateSystemInput(raw: unknown, cfg: Config): ValidationResult
       printerMode,
       recording,
       signOnUser: signOnUser || null,
-      signOnPassword: signOnPassword || null
+      signOnPassword: signOnPassword || null,
+      keymapId
     }
   };
 }
@@ -209,6 +229,7 @@ interface Row {
   directory_autosignon: number;
   sign_on_user: string | null;
   sign_on_password: string | null;
+  keymap_id: number | null;
   position: number;
 }
 
@@ -235,8 +256,45 @@ const mapRow = (r: Row): SystemRow => ({
   directoryAutoSignOn: Number(r.directory_autosignon ?? 0) !== 0,
   signOnUser: r.sign_on_user ?? null,
   signOnPassword: r.sign_on_password ?? null,
+  keymapId: r.keymap_id === null || r.keymap_id === undefined ? null : Number(r.keymap_id),
   position: Number(r.position)
 });
+
+/**
+ * Validate an import document into SystemInputs without touching the store:
+ * the pre-flight half of replaceAll, so the config-import route can check
+ * systems *and* keymaps before committing either. Keymap references arrive
+ * by name; resolve maps them to stored ids (undefined = unknown name, which
+ * fails like any other bad row).
+ */
+export function parseSystemsImport(
+  raw: unknown,
+  cfg: Config,
+  resolveKeymap?: (name: string) => number | undefined
+): { ok: true; inputs: SystemInput[] } | { ok: false; error: string } {
+  const arr = Array.isArray(raw)
+    ? raw
+    : Array.isArray((raw as { systems?: unknown } | null)?.systems)
+      ? ((raw as { systems: unknown[] }).systems)
+      : null;
+  if (!arr) return { ok: false, error: 'Expected a web5250 export file with a "systems" array' };
+  const inputs: SystemInput[] = [];
+  for (let i = 0; i < arr.length; i++) {
+    const v = validateSystemInput(arr[i], cfg);
+    if (!v.ok) return { ok: false, error: `System ${i + 1}: ${v.error}` };
+    let { keymapId } = v.value!;
+    const ref = (arr[i] as { keymap?: unknown }).keymap;
+    if (ref !== undefined && ref !== null && ref !== '') {
+      const resolved = resolveKeymap?.(String(ref));
+      if (resolved === undefined) {
+        return { ok: false, error: `System ${i + 1}: no keymap named "${String(ref)}" in this file` };
+      }
+      keymapId = resolved;
+    }
+    inputs.push({ ...v.value!, keymapId });
+  }
+  return { ok: true, inputs };
+}
 
 export class Systems {
   private readonly db: DatabaseSync;
@@ -297,6 +355,9 @@ export class Systems {
     // Databases from before per-system sign-on accounts: no stored credential.
     addColumn('sign_on_user', 'TEXT');
     addColumn('sign_on_password', 'TEXT');
+    // Databases from before custom keymaps: sessions follow the gateway
+    // default keymap (null), exactly the pre-feature behavior.
+    addColumn('keymap_id', 'INTEGER');
     // Legacy from the era when directory hosts were materialized into this
     // table: they are in-memory now, so any surviving rows are stale copies
     // that would linger on the menu forever. The index is left in place (a
@@ -359,7 +420,7 @@ export class Systems {
          term_type = ?, code_page = ?, dev_prefix = ?,
          proxy_host = ?, proxy_port = ?, proxy_user = ?, proxy_pass = ?,
          printer_enabled = ?, printer_device_name = ?, printer_mode = ?,
-         recording = ?, sign_on_user = ?, sign_on_password = ?,
+         recording = ?, sign_on_user = ?, sign_on_password = ?, keymap_id = ?,
          updated_at = datetime('now') WHERE id = ?`
       )
       .run(
@@ -381,6 +442,7 @@ export class Systems {
         input.recording ? 1 : 0,
         input.signOnUser,
         input.signOnPassword,
+        input.keymapId,
         id
       );
     return { ok: true, row: this.get(id)! };
@@ -399,21 +461,18 @@ export class Systems {
    * validates before anything changes; the swap is one transaction with menu
    * positions following the array order, so a bad file leaves the existing
    * configuration untouched. (Directory hosts are not stored here and are
-   * unaffected.)
+   * unaffected.) Export documents reference keymaps by name; the caller -
+   * which imports the keymaps first - passes the fresh name->id map in, and a
+   * dangling name fails validation like any other bad row.
    */
-  replaceAll(raw: unknown, cfg: Config): { ok: true; rows: SystemRow[] } | { ok: false; error: string } {
-    const arr = Array.isArray(raw)
-      ? raw
-      : Array.isArray((raw as { systems?: unknown } | null)?.systems)
-        ? ((raw as { systems: unknown[] }).systems)
-        : null;
-    if (!arr) return { ok: false, error: 'Expected a web5250 export file with a "systems" array' };
-    const inputs: SystemInput[] = [];
-    for (let i = 0; i < arr.length; i++) {
-      const v = validateSystemInput(arr[i], cfg);
-      if (!v.ok) return { ok: false, error: `System ${i + 1}: ${v.error}` };
-      inputs.push(v.value!);
-    }
+  replaceAll(
+    raw: unknown,
+    cfg: Config,
+    keymapIdsByName?: Map<string, number>
+  ): { ok: true; rows: SystemRow[] } | { ok: false; error: string } {
+    const parsed = parseSystemsImport(raw, cfg, keymapIdsByName?.get.bind(keymapIdsByName));
+    if (!parsed.ok) return parsed;
+    const inputs = parsed.inputs;
     this.db.exec('BEGIN');
     try {
       this.db.exec('DELETE FROM systems');
@@ -421,8 +480,8 @@ export class Systems {
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
          printer_enabled, printer_device_name, printer_mode, recording,
-         sign_on_user, sign_on_password, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         sign_on_user, sign_on_password, keymap_id, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       inputs.forEach((input, i) =>
         stmt.run(
@@ -444,6 +503,7 @@ export class Systems {
           input.recording ? 1 : 0,
           input.signOnUser,
           input.signOnPassword,
+          input.keymapId,
           i + 1
         )
       );
@@ -477,8 +537,8 @@ export class Systems {
         `INSERT INTO systems (name, description, host, port, ssl, term_type, code_page, dev_prefix,
          proxy_host, proxy_port, proxy_user, proxy_pass,
          printer_enabled, printer_device_name, printer_mode, recording,
-         sign_on_user, sign_on_password, position)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         sign_on_user, sign_on_password, keymap_id, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.name,
@@ -499,6 +559,7 @@ export class Systems {
         input.recording ? 1 : 0,
         input.signOnUser,
         input.signOnPassword,
+        input.keymapId,
         Number(max.m) + 1
       );
     return this.get(Number(res.lastInsertRowid))!;

@@ -1,6 +1,8 @@
 // 5250 keyboard mapping. Intercepts and suppresses browser defaults
 // (F1 help, F3 find, F5 reload, Tab focus moves, backspace navigation...)
 // exactly as a thick-client emulator would.
+import { matchBinding, type KeyBinding } from './keymaps.ts';
+
 export type SendKey = (k: string, ch?: string) => void;
 
 const isTypingTarget = (e: EventTarget | null): boolean => {
@@ -10,8 +12,18 @@ const isTypingTarget = (e: EventTarget | null): boolean => {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 };
 
-/** Maps a KeyboardEvent to a gateway key name, or null to let the browser win. */
-export function mapEvent(e: KeyboardEvent): { k: string; ch?: string } | null {
+/**
+ * Maps a KeyboardEvent to a gateway key name, or null to let the browser win.
+ * Custom keymap bindings (the admin Keymaps tab) are consulted first and
+ * shadow the built-in map per key: a hit sends its action ("browser" hands
+ * the key back to the browser), anything unbound falls through unchanged.
+ */
+export function mapEvent(e: KeyboardEvent, bindings?: KeyBinding[] | null): { k: string; ch?: string } | null {
+  if (bindings && bindings.length > 0) {
+    const hit = matchBinding(e, bindings);
+    if (hit === 'browser') return null;
+    if (hit) return hit;
+  }
   const code = e.code;
   const key = e.key;
 
@@ -89,13 +101,18 @@ export function mapEvent(e: KeyboardEvent): { k: string; ch?: string } | null {
   return null;
 }
 
-export function attachKeyboard(send: SendKey, enabled?: () => boolean): void {
+export function attachKeyboard(
+  send: SendKey,
+  enabled?: () => boolean,
+  getBindings?: () => KeyBinding[] | null
+): void {
   const active = (): boolean => (enabled ? enabled() : true);
+  const overlay = (): KeyBinding[] | null => (getBindings ? getBindings() : null);
   window.addEventListener(
     'keydown',
     (e) => {
       if (!active() || isTypingTarget(e.target)) return;
-      const mapped = mapEvent(e);
+      const mapped = mapEvent(e, overlay());
       if (!mapped) return;
       e.preventDefault();
       e.stopPropagation();
@@ -106,6 +123,6 @@ export function attachKeyboard(send: SendKey, enabled?: () => boolean): void {
   // Keep Tab/F-keys from doing anything on keyup after we ate the keydown.
   window.addEventListener('keyup', (e) => {
     if (!active() || isTypingTarget(e.target)) return;
-    if (mapEvent(e)) e.preventDefault();
+    if (mapEvent(e, overlay())) e.preventDefault();
   });
 }
