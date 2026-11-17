@@ -62,7 +62,7 @@ the system catalog is mocked up through the admin API.
   page (10 rows on the menu, 6 in the split-pane picker) and the option field
   doubles as a live filter — letters narrow the list by name, description or
   host, digits keep the classic jump-to-row; see
-  [System selection & admin](#system-selection--admin). Systems live
+  [Systems, admin & console](docs/admin.md). Systems live
   in a SQLite file on a persistent volume; the list is seeded from `IBM_I_*`
   on first boot, so upgrading deployments keep working unchanged.
 - **Admin editor**: a PIN-protected (`ADMIN_PIN`) editor manages the system
@@ -111,7 +111,7 @@ the system catalog is mocked up through the admin API.
   is on the clipboard when you release (Alt+drag marks a column rectangle,
   double-click a word, Ctrl+C re-copies) — with hidden-field contents always
   copying as blanks; see
-  [Mouse selection and clipboard](#mouse-selection-and-clipboard).
+  [Keyboard & mouse](docs/keyboard.md).
 - **Split view — several sessions on one page, one chrome**: every pane
   carries **↔ / ↕ split buttons** (side by side / top and bottom), a **☰
   system picker**, a **share button** (view-only mirror link), **↗ pop-out
@@ -119,23 +119,24 @@ the system catalog is mocked up through the admin API.
   included. Splitting divides that pane in two, nesting into any layout (up
   to 6 panes), and every divider line is **draggable to resize**
   (double-click resets); see
-  [Multiple sessions on one page](#multiple-sessions-on-one-page).
+  [Sessions](docs/sessions.md).
 - **Share a session as a live view-only mirror**: the pane-header share
   button copies a URL; anyone who opens it — on another window, another
   machine, anywhere that can reach the gateway — watches the session's
   screen update in real time but cannot type. Any number of viewers at
-  once; see [Sharing a session (view-only mirror)](#sharing-a-session-view-only-mirror).
+  once; see [Sharing & remote assist](docs/sharing-and-assist.md).
 - **Sessions outlive their window**: every session carries an unguessable
   re-attach token; a closed tab, a reload, a dropped connection or a split
   pop-out leaves the host session running for `SESSION_GRACE_MS` and a
   browser can re-bind to it (`?attach=`, automatic on reload, via the
   Reconnect button) — see
-  [Sessions outlive their window](#sessions-outlive-their-window).
+  [the detach grace](docs/sessions.md#sessions-outlive-their-window).
 - **Automated data-entry launches**: open the app in an iframe with `?auto=1`
   and it signs on with a server-held identity (`AUTO_SIGNON_*`), types a
   caller-supplied string into the user profile's initial-program screen, and
   `postMessage`s the embedding page when the user exits and the host drops
-  the session — one-line deep links for other apps' data-entry screens.
+  the session — one-line deep links for other apps' data-entry screens; see
+  [Automation](docs/automation.md).
 - **Spool printing to the browser (TN5250E printer sessions)**: the
   gateway opens one printer device per system on demand (RFC 4777 printer
   flow — terminal type `IBM-3812-1`, no extra host infrastructure): it
@@ -151,31 +152,31 @@ the system catalog is mocked up through the admin API.
   Storage is bounded (`PRINTJOBS_*`), jobs never contain credentials, and
   a collision on the configured device name surfaces as an error instead
   of a silent rename; see
-  [Spool printing (printer sessions)](#spool-printing-printer-sessions).
+  [Spool printing](docs/printing.md).
 - **Session console (admin)**: the PIN-gated admin editor gains Sessions /
   Recordings / Audit tabs — see every live session (who, where, which
   device, signed-on user), open a view-only mirror of any of them, show a
   banner on a user's screen, or end a session outright (device and message
   queue freed immediately); plus a recording browser with replay and JSONL
   download, and an audit trail of every console action; see
-  [Session console](#session-console).
+  [Session console](docs/admin.md#session-console).
 - **Maintenance windows**: block new sessions per system or gateway-wide
   with a message on the menu, warn the users of live sessions
   (T-10 / T-5 / T-1), and drain them at a deadline — the host-backup /
   IPL ritual without walking anyone off the system; see
-  [Maintenance windows](#maintenance-windows).
+  [Maintenance windows](docs/admin.md#maintenance-windows).
 - **Remote assist — consent-based shared control**: a viewer of a share
   link can *request control*; the owner gets a Grant / Deny / Deny+block
   prompt and can revoke at any moment. The lease is bounded, idle-released,
   one controller at a time, and every controller keypress is named on the
   owner's screen (`Tab · HELPDESK`). Assist never sees a password (the
-  stream was already blanked server-side); see [Remote assist](#remote-assist).
+  stream was already blanked server-side); see [Remote assist](docs/sharing-and-assist.md#remote-assist).
 - **Session recording & replay**: systems can opt into recording; the
   gateway stores exactly the wire stream a mirror would have seen —
   passwords are blanked *before* capture — as seekable JSONL. Users replay
   their own sessions from the **History** button; admins replay anyone's
   from the console. Replay links are revocable bearer tokens; see
-  [Session recording & replay](#session-recording--replay).
+  [Recording & replay](docs/recording.md).
 - **Proxy-friendly**: relative asset paths (works under any sub-path),
   accepts upgrades on any `…/ws` path, WebSocket keepalive pings, `/healthz`
   for uptime checks, zero client-side dependencies beyond static assets.
@@ -218,7 +219,7 @@ same way, or keep using the build variant with `docker compose up -d
 Then open the published Pangolin resource (or `http://localhost:8080` for
 local testing). You'll land on the **System Selection** menu — pick a system
 (or press **Admin** to edit the list, see
-[System selection & admin](#system-selection--admin)) and sign on. See
+[Systems, admin & console](docs/admin.md)) and sign on. See
 [Connecting to IBM i](#connecting-to-ibm-i) for port/TLS/code page details.
 
 ### Without an IBM i (built-in demo)
@@ -231,595 +232,22 @@ IBM_I_HOST=mock-host IBM_I_PORT=8023 docker compose --profile demo up -d --build
 open http://localhost:8080            # any non-empty user + password signs on
 ```
 
-## CI / CD
-
-`.gitlab-ci.yml` runs two stages on every push:
-
-- **validate** — `npm ci` + typecheck + full build (Node 22 alpine).
-- **web5250-image** — multi-stage Docker build via rootless BuildKit (no
-  privileged runner), pushed to the project's GitLab container registry:
-
-  | Event | Tags pushed |
-  | :--- | :--- |
-  | any commit | `:$CI_COMMIT_SHORT_SHA` |
-  | branch push | additionally `:$CI_COMMIT_REF_SLUG` |
-  | default branch (`main`) | additionally `:latest` |
-  | tag | additionally `:$CI_COMMIT_REF_NAME` and `:latest` |
-
-  Merge-request pipelines build without pushing (validation only). Registry
-  credentials come from the built-in CI job token — nothing to configure.
-
-## Configuration
-
-All configuration is via environment variables — see [`.env.example`](.env.example)
-for a commented template and `docker-compose.yml` for the full wiring:
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `PORT` | Published web port on the host (the container always listens on 8080 internally) | `8080` |
-| `HOST` | Bind address | `0.0.0.0` |
-| `IBM_I_HOST` | Target IBM i IP or hostname | `127.0.0.1` |
-| `IBM_I_PORT` | TN5250 port (23 telnet, 992 TLS) | `23` |
-| `IBM_I_SSL` | TLS connection to host (`true`/`false`) | `false` |
-| `IBM_I_CODEPAGE` | EBCDIC code page: `cp037` `cp273` `cp277` `cp278` `cp280` `cp284` `cp285` `cp297` `cp500` `cp871` `cp1047` `cp1140` | `cp037` |
-| `IBM_I_TERM_TYPE` | Terminal model (`IBM-3477-FC` = color + 27×132, `IBM-3179-2` = 24×80 color, …) | `IBM-3477-FC` |
-| `IBM_I_DEV_PREFIX` | Prefix for auto-generated device names (max 10 chars total) | `PANG_` |
-| `IBM_I_PROXY_HOST` | SOCKS5 proxy the first-boot seed system tunnels through (per-system afterwards, in the admin editor) | – |
-| `IBM_I_PROXY_PORT` | SOCKS5 proxy port | `1080` |
-| `IBM_I_PROXY_USER` | SOCKS5 username (RFC 1929, with `IBM_I_PROXY_PASSWORD`) | – |
-| `IBM_I_PROXY_PASSWORD` | SOCKS5 password — stored in SQLite on the data volume, never served to unauthenticated browsers | – |
-| `IBM_I_PRINTER_ENABLED` | First-boot seed: keep a printer session up for the seeded system (per-system afterwards, in the admin editor) | `false` |
-| `IBM_I_PRINTER_DEVNAME` | Printer device name the seed system claims (`CRTDEVPRT … TYPE(3812) MODEL(1)`, or let `QAUTOVRT` auto-configure) | `WEB5250P` |
-| `IBM_I_PRINTER_MODE` | Seed printer delivery mode: `text` (extract plain text from SCS) or `raw` (store host-print-transform bytes, sniff `%PDF`/PCL) | `text` |
-| `PRINTER_IDLE_MS` | Printer sessions are demand-driven: stop a system's printer this long after the last display session to it ends; `0` = always-on | `300000` (5 min) |
-| `PRINTJOBS_MAX_COUNT` | Spool-job retention: newest jobs kept per system (drop-oldest) | `200` |
-| `PRINTJOBS_MAX_BYTES` | Spool-job retention: total bytes kept per system (drop-oldest) | `104857600` (100 MB) |
-| `PRINTJOBS_TTL_MS` | Spool-job retention: age limit, swept periodically and at boot | `2592000000` (30 days) |
-| `AUDIT_TTL_MS` | Audit-trail retention: rows older than this are pruned (a 5000-row cap bounds size on busy systems) | `2592000000` (30 days) |
-| `TRUSTED_USER_HEADER` | Edge-injected identity header (e.g. the header Pangolin sets). Stamps sessions with the user's identity (console, assist prompts, audit, History). Only safe when the container is reachable solely through the edge | – |
-| `ASSIST_ENABLED` | Remote assist: viewers of a share link may request control | `true` |
-| `ASSIST_MAX_MS` | Remote assist: maximum control-lease duration | `1800000` (30 min) |
-| `ASSIST_IDLE_MS` | Remote assist: auto-release after this much controller inactivity | `300000` (5 min) |
-| `ASSIST_CONSENT_TIMEOUT_MS` | Remote assist: how long an unanswered consent request waits | `30000` (30 s) |
-| `ASSIST_CONSENT_DEFAULT` | What an unanswered request does: `allow` (auto-grant) or `deny` | `allow` |
-| `ADMIN_ASSIST_BREAKGLASS` | Admin may take control without owner consent (audited loudly) | `false` |
-| `RECORDINGS_MAX_COUNT` | Recording retention: newest recordings kept (drop-oldest) | `200` |
-| `RECORDINGS_MAX_BYTES` | Recording retention: total bytes kept | `524288000` (500 MB) |
-| `RECORDINGS_TTL_MS` | Recording retention: age limit, swept periodically | `2592000000` (30 days) |
-| `ALLOW_CUSTOM_HOST` | Let users point a session at another host via query params (`?host=&port=&ssl=1&term=&cp=&devname=`) | `false` |
-| `ALLOW_HOST_URL_OPEN` | Let host `STRPCCMD` commands that carry an http(s) URI open it in the user's browser (the browser's own popup warning/consent applies) | `true` |
-| `ADMIN_PIN` | PIN for the connection-menu admin editor (≥ 4 chars; empty disables admin) | – |
-| `WEB5250_DB` | SQLite file for the system catalog (compose mounts the `web5250-data` volume at `/data`) | `/data/web5250.db` in the container, `data/web5250.db` locally |
-| `IBM_I_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for host TLS (IBM i certs are usually self-signed) | `false` |
-| `WS_PING_INTERVAL_MS` | Browser-liveness ping cadence; a vanished front-end's socket is dropped after `WS_PING_MAX_MISSES` missed pongs — grace ≈ interval × misses | `30000` |
-| `WS_PING_MAX_MISSES` | Consecutive missed pongs tolerated before a dead browser socket is dropped | `4` |
-| `SESSION_GRACE_MS` | How long a session with no attached browser stays alive and re-attachable (`?attach=<token>`, reload resume, pop-out); `0` = strict legacy teardown on socket close | `300000` |
-| `AUTO_SIGNON_USER` | User profile for `?auto=1` automated data-entry launches (server-held; required together with `AUTO_SIGNON_PASSWORD`, otherwise auto upgrades are refused) | – |
-| `AUTO_SIGNON_PASSWORD` | Its password — never leaves the server or crosses the WebSocket | – |
-| `DIRECTORY_URL` | Base URL of a [directory service](#directory-systems-menu--automatic-sign-on-from-your-database) microservice; menu entries + per-entry sign-on credentials (see [docs/directory-service.md](docs/directory-service.md)). Unset = feature off | – |
-| `DIRECTORY_TOKEN` | Bearer token the directory service requires | – |
-| `DIRECTORY_SYNC_INTERVAL_MS` | Directory re-sync cadence (clamped 15 s–24 h) | `300000` |
-| `DIRECTORY_TIMEOUT_MS` | Per-request timeout for directory service calls | `5000` |
-| `DIRECTORY_TLS_REJECT_UNAUTHORIZED` | Enforce CA validation for the directory service TLS certificate | `true` |
-| `DIRECTORY_TEMPLATE_*` | Connection settings every directory entry inherits — `NAME`/`DESCRIPTION` (`{name}`/`{host}` patterns), `PORT`, `SSL`, `TERM_TYPE`, `CODEPAGE`, `DEV_PREFIX`, `PROXY_HOST/PORT/USER/PASSWORD`, `PRINTER_ENABLED/DEVNAME/MODE`, `RECORDING`; entries may override `port`/`ssl` per row | port 23, else the gateway defaults |
-| `FRAME_ANCESTORS` | When set, HTML responses carry `Content-Security-Policy: frame-ancestors …` to restrict which origins may embed the app in an iframe (e.g. `https://angular.internal`) | unset (any) |
-| `SHOW_DIAG_BUTTON` | Show the `Diag` button in the top bar (copies raw 5250 session diagnostics to the clipboard for bug reports) | `false` |
-| `IBM_I_TRACE_CONSOLE` | Mirror the per-session 5250 protocol trace (negotiation bytes, first records' hex, field maps) into the container log; `false` keeps the trace in memory for the Diag button only | `true` |
-| `IBM_I_TRACE_RECORDS` | Cap on how many inbound records each session's Diag trace captures | `200` (clamped 8–5000) |
-| `WEB5250_TRACE` | `1` dumps raw TN5250 hex traffic to the log (debugging) | – |
-
-Each browser session gets its own 5250 device. Device names are generated as
-`<prefix><random>`; if the name collides, the gateway automatically retries
-with a numbered suffix (RFC 2877 behaviour).
-
-## System selection & admin
-
-On first start the app shows a 5250-style menu of systems. Connection
-parameters resolve in order: URL overrides (`ALLOW_CUSTOM_HOST`) → the
-menu-selected system → the `IBM_I_*` environment defaults. On first boot the
-catalog is seeded with the environment host, so existing single-host
-deployments see exactly one entry and behave as before. Deep links work:
-`?system=<id>` opens that system directly, `?host=…` keeps the legacy
-custom-host behaviour.
-
-**Pages and filter at catalog scale.** Hundreds of directory + manual hosts
-don't fit one panel, so the list shows one page at a time — 10 rows on the
-landing menu, 6 in the split-pane picker — under a ‹ Prev / Page x / y /
-Next › bar: PgUp/PgDn turns pages, arrows walk across page boundaries with
-the cursor kept visible, and a typed number jumps to its page. The field is
-dual-mode (**Option/Filter ==>**): digits alone keep the classic
-jump/select (4 digits now), while any letter turns it into a live filter
-over name, description and host — whitespace-separated terms AND together,
-rows renumber within the matches, an `N of M` count appears while
-filtering, a letter typed over the echoed number overtakes it 5250-style,
-and Esc clears the filter first. `A` opens admin anywhere outside the
-field, so a filter may start with a letter.
-
-**Admin** (bottom of the menu, or press `A`): enter `ADMIN_PIN`, then add /
-edit / delete / reorder systems. Edits persist to SQLite (mount the compose
-`web5250-data` volume) and apply immediately — no restart needed. Every
-system carries its own host, port, TLS flag, terminal model, code page and
-optional device prefix, can be routed through a **SOCKS5 proxy** (host,
-port, optional username/password), can keep a **printer session** up
-(enabled flag, printer device name, `text`/`raw` mode — see
-[Spool printing](#spool-printing-printer-sessions)), and can have sessions
-**recorded** for replay (see
-[Session recording & replay](#session-recording--replay)): the gateway's TN5250
-connection is tunneled through the proxy with TLS-to-host still layered
-inside the tunnel when the system has TLS enabled, and the printer session
-follows the same connection settings. Proxy and printer-infrastructure
-details are visible only inside the authenticated editor; the public menu
-list shows just a `SOCKS5` / `printer` marker.
-
-**Export / import**: the editor's `Export` button downloads every system —
-proxy and printer settings included — as a JSON file to your computer;
-`Import` uploads such a file back and **replaces the whole list** (the
-Import button asks for a second click first, since the previous list is
-gone). Every row is validated before anything changes, so a file with one
-bad system imports nothing; a good file's rows land in menu order. Handy
-for backing up before an experiment, cloning one deployment into another,
-or moving the catalog out of a throwaway container's volume.
-
-**Display name** (the `Display` field on the menu): an optional 5250
-device name for this browser's sessions, saved in `localStorage` and sent
-as `?devname=` on connect. The gateway keeps live display names unique —
-if another session already holds yours it appends a number (`TOM` →
-`TOM1` → `TOM2`, always within the 10-character device-name limit) and
-logs the substitution; the actual name is shown next to the connection
-state once the session opens. Leave it empty to use the configured device
-prefix with a random suffix.
-
-The JSON API behind it (all sub-path tolerant, like `/healthz`):
-
-| Method & path | Auth | Purpose |
-| :-- | :-- | :-- |
-| `GET /api/meta` | – | admin enabled?, terminal models, code pages, form defaults |
-| `GET /api/systems` | – | the menu list |
-| `GET /api/printer-status` | – | per-system printer session state (ready / connecting / error / idle) |
-| `GET /api/printjobs` | – | spool jobs, newest first (token, system, device, size, pages, time) |
-| `GET /api/printjobs/<token>` | – | job download (content type by format; `no-store`) |
-| `DELETE /api/printjobs/<token>` | – | delete one job (any spool viewer; audited) |
-| `POST /api/admin/auth` | PIN | `{pin}` → `{token}` (8 h bearer token) |
-| `POST /api/admin/systems` | token | create |
-| `PUT /api/admin/systems/<id>` | token | update |
-| `DELETE /api/admin/systems/<id>` | token | delete |
-| `POST /api/admin/systems/<id>/move` | token | `{dir: up\|down}` reorder |
-| `GET /api/admin/config` | token | export all systems as a JSON download (attachment) |
-| `PUT /api/admin/config` | token | import a JSON export — replaces the whole list |
-| `GET /api/admin/sessions` | token | live session list (internal ids, no tokens) |
-| `POST /api/admin/sessions/<id>/view` | token | mint a `?view=` mirror link for one session |
-| `POST /api/admin/sessions/<id>/signal` | token | `{message, level}` banner on that session's screen |
-| `POST /api/admin/sessions/<id>/end` | token | end the session now (`{notice}` shows briefly first) |
-| `POST /api/admin/systems/<id>/maintenance` | token | `{on, message, deadlineMs?}` window for one system |
-| `POST /api/admin/maintenance` | token | the same, gateway-wide |
-| `GET /api/admin/maintenance` | token | current windows |
-| `GET /api/admin/audit` | token | audit trail, newest first, paged (`?limit=&offset=`, body carries `total`) |
-| `GET /api/admin/recordings` | token | recording metadata, newest first |
-| `GET /api/admin/recordings/<id>/download` | token | raw JSONL event stream (attachment) |
-| `POST /api/admin/recordings/<id>/link` | token | mint a replay link |
-| `DELETE /api/admin/recordings/<id>` | token | delete one recording (a live one is stopped first) |
-| `DELETE /api/admin/replay/<token>` | token | revoke a replay link |
-| `GET /api/recordings/mine` | edge identity | the requesting user's own recordings |
-| `POST /api/replay/mint` | edge identity | mint a replay link for an own recording |
-| `GET /api/replay/<token>` | – | one recording: metadata + frames (revocable token) |
-
-WebSocket sessions target a system with `?system=<id>` (rejected with 404 if
-the id no longer exists — the browser falls back to the menu). Failed PIN
-attempts lock administration for 60 s after 5 tries.
-
-## Spool printing (printer sessions)
-
-The 5250 display protocol has no file transfer — the only channel a host
-can push bytes down is a **TN5250E printer session** (the mechanism ACS and
-tn5250 use for "print to local printer"). When a system has its printer
-enabled, the gateway opens one printer device per **demand**: it connects
-when the first display session opens to the system, stays connected while
-any do (reconnected with backoff), and stops `PRINTER_IDLE_MS` (default 5
-minutes) after the last one ends — like a real printer being powered on
-when people arrive and off after they leave, because the device must be
-there for the host's writer to send to it. Spool files released while no
-session is up are not lost: the writer holds or errors them on the host
-and delivers on the next connect. `PRINTER_IDLE_MS=0` restores an
-always-on device. Print on the host — or move any spool file to the
-device's output queue — that's the queue **named like the device**, which
-CRTDEVPRT auto-created in QUSRSYS (device descriptions have no OUTQ
-parameter; the attached session is the writer, so `WRKCFGSTS` shows the
-device ACTIVE while it's connected; files with a blank form type raise the
-CPA3394 form-type inquiry — the scoped fix is `FORMTYPE(*STD)` on routed
-files, `CHGWTR … FORMTYPE(*ALL) OPTION(*IMMED)` for the live writer, or a
-reply-list entry only if every printer on the system is unattended)
-— and the job lands in the browser: the top-bar
-**Spool** button (with a pending-jobs count) opens the job list, where each
-job can be **downloaded** or **printed** on a locally connected printer.
-
-Two delivery modes per system:
-
-- **`text`** (default): the device is an SCS printer (`IBM-3812-1`); the
-  gateway extracts plain text from the SCS stream — form feeds become page
-  breaks, page counts are shown, the print view paginates properly. Zero
-  host-side transform configuration.
-- **`raw`**: for devices created with host print transform
-  (`CRTDEVPRT … TRANSFORM(*YES) MFRTYPMDL(...)` or a WSCST), the gateway
-  stores the bytes as-is and sniffs the format — `%PDF` jobs download as
-  real PDFs and print through the browser's PDF viewer; PCL is
-  download-only (browsers cannot render it).
-
-Host-side setup (once, as an admin): a `*VRT` device must name a virtual
-controller, and a manually created one starts varied off — `CRTCTLVDE
-CTLD(QVIRCD0001)` (if it doesn't exist) and `VRYCFG … CFGTYPE(*CTL)
-STATUS(*ON)` — without the controller vary-on the device sits at "Powered
-off or not yet available" (and with no controller at all, vary-on fails
-with reason code 2301). Then `CRTDEVPRT DEVD(WEB5250P) DEVCLS(*VRT)
-CTL(QVIRCD0001) TYPE(3812) MODEL(1) FONT(011) FORMFEED(*CONT)` and
-`VRYCFG … STATUS(*ON)`. Or skip the manual commands entirely and let
-`QAUTOVRT` auto-configure the device when the session first connects (it
-arrives with the exact DEVNAME, so the created device carries that name,
-controller and all). The printer device name is exact — its output queue
-is per device — so a name collision is reported as an error in the spool
-list (and `printer-status`) instead of being silently renamed; rename the
-configured device to fix it. The full byte-level
-protocol write-up is in
-[`docs/printer-session-notes.md`](docs/printer-session-notes.md); the design
-discussion in [`docs/printer-session.md`](docs/printer-session.md).
-
-Jobs live in a bounded store on the data volume next to the SQLite DB
-(`<data>/printjobs/…`): newest `PRINTJOBS_MAX_COUNT` jobs / total
-`PRINTJOBS_MAX_BYTES` bytes per system (drop-oldest) and a
-`PRINTJOBS_TTL_MS` age limit, with the per-job download keyed by an
-unguessable token under the app's usual edge-authentication trust model.
-Job files never contain credentials. Anyone viewing the Spool window can
-also remove individual jobs (the gateway deletes the stored file and
-records the removal in the audit trail) — the shared list is readable by
-every gateway user, so removal follows the same visibility.
-
-## Multiple sessions on one page
-
-The gateway gives **every WebSocket its own 5250 device**, so one browser can
-hold several concurrent sessions. The layout is a **split tree** grown in
-place — **no nested views, no iframes**: a pane's **↔** button divides it
-into left and right halves, **↕** into top and bottom, and the same buttons
-live on every pane (single-session view included, alongside **☰** pick a
-system, **↗** pop out and **×** close). Splitting keeps the session running
-in its half; the fresh half shows its own **system picker inside the pane**
-(the full-page menu stays the landing state of the single-session view).
-Splits nest freely — split the bottom half of a ↔/↕ pair side by side and
-you get one large pane over two smaller ones — up to 6 panes. Every
-**divider line is draggable** to resize the two sides it separates
-(double-click resets a divider to halves), **dragging a pane by its header
-onto another pane swaps the two** — or onto one of its **edges to split
-that pane's slot** with the dragged pane taking that side — and the
-arrangement plus divider positions survive a reload. **+ Pane** splits the
-roomiest pane, and clicking a pane (or its tab in Tabs mode) hands it the
-keyboard; the top bar always describes the focused session.
-
-Deep links preassign panes: `?grid=2&systems=1,3` opens two panes that
-connect straight to system 1 and system 3 (ids from the menu's admin
-editor). Without `systems=`, every pane boots into its in-pane picker for a
-per-pane pick. If a **Display** name is set, the gateway dedupes it across
-panes (`TOM` → `TOM1`), exactly as it does across browsers.
-
-**Tabs.** The **Tabs** button switches to one session at a time with a tab
-strip up top; the hidden sessions keep running, and clicking a tab brings
-that session back and hands it the keyboard. Nothing ever reloads — panes
-are plain DOM. Dragging a pane by its header (or a tab) onto another pane
-swaps the two. The Tiles/Tabs choice and the active tab are remembered.
-
-**Pop-out: a pane becomes a real browser window.** The ↗ button on a pane
-header opens a popup window that takes over the pane's running session — same
-5250 device, same screen, mid-typing — and the pane disappears from the
-layout. This works because sessions live in the gateway, not in the page (see
-[Sessions outlive their window](#sessions-outlive-their-window)).
-
-## Sharing a session (view-only mirror)
-
-Every session carries a second unguessable **share token** (independent of
-the re-attach token — one can never be used as the other). The **share
-button** on a pane header (between ☰ and ↗) copies a link like
-
-```
-https://as400.yourdomain.com/?view=<share token>
-```
-
-Opening that URL — in another window, on a remote computer, in any browser
-that can reach the gateway through your edge — shows a **live, view-only
-mirror** of that session:
-
-- The mirror receives the same screen stream as the owner: cells, cursor,
-  OIA indicators, even host-drawn windows and pull-downs, in real time.
-- **The owner's special keys are named in the mirror's status bar.** Keys
-  that don't echo as text — Enter, F1–F24, Tab, Field Exit, SysReq, Reset,
-  Roll, arrows … — appear in the OIA strip for two seconds (or until the
-  next one), so a viewer can keep up with what is driving the screen.
-  Printable characters are not announced; they echo on the screen anyway.
-- **Nothing a viewer does reaches the host.** Keystrokes, clicks, paste and
-  the on-screen keypad are all dropped client- and server-side; the mirror
-  has no keyboard at all. Local text selection and copy still work.
-- **Any number of viewers** can watch at once; they neither evict the owner
-  nor each other, and the owner is never told they connected.
-- Non-display (password) fields are blanked server-side before anything is
-  sent, exactly as for the owning browser — the mirror never sees a
-  password.
-- The mirror follows the session's life: it ends (with a notice) when the
-  owner ends or the session expires after its grace period, and it
-  reconnects on reload. Viewers do **not** keep an abandoned session alive
-  — a mirror nobody can type into must not hold a 5250 device hostage.
-
-The share link is a bearer credential for *watching* the session, with the
-same trust model as the rest of the app: Pangolin (or whatever fronts the
-gateway) authenticates who may open the URL at all. Treat the link like a
-live window into that terminal — it shows everything the signed-on user
-sees; revoke it by ending the session.
-
-**Close (×) ends the session.** After its confirmation (skipped on the
-sign-on screen and for never-assigned panes), closing a pane ends the host
-session outright: the device name and the signed-on user's message queue
-free up immediately. That matters because IBM i shows
-*Message queue USER is allocated to another job* on the next sign-on of the
-same user while one of their jobs lingers — the detach grace is exactly such
-a lingering job, so × refuses to leave one behind. The grace still covers
-its intended cases: a closed tab, a reload, a dropped connection and the
-moment of a pop-out transfer.
-
-Two deployment notes:
-
-- `FRAME_ANCESTORS` keeps working for external embedders (the split view no
-  longer frames anything itself).
-- A browser tab holds one 5250 device per pane. With the default grace
-  period the sessions survive the tab closing for a while and are then
-  cleaned up host-side; use **Exit split** (or a pane's ×) to end them
-  immediately.
-
-## Session console
-
-The admin editor grows three tabs next to Systems (one PIN, one token):
-
-- **Sessions** — every live session on this gateway: device name, the
-  signed-on IBM i user (captured from the sign-on screen as it is
-  submitted), the edge identity or source address, state (active /
-  connecting / detached-with-grace-countdown), started and last-active
-  times, viewer count, assist holder, REC marker. Row actions:
-  **Mirror** (opens a `?view=` window — from there a console operator can
-  request control like any assist), **Signal** (a banner on that user's
-  screen, never painted into the 5250 buffer), **End** (same path as the
-  pane × button: the device and the user's message queue free up
-  immediately, after an optional warning banner). The list auto-refreshes
-  every 5 s and never carries session/share tokens — those are minted per
-  action.
-- **Recordings** — every finished recording: play (opens the replay
-  player), download the raw JSONL (evidence export), mint replay links.
-- **Audit** — who did what to which session, when: console actions,
-  assist lifecycle (request / grant / deny / revoke / break-glass),
-  maintenance transitions, replay-link minting. Append-only, bounded
-  (5000 entries), lives in the SQLite DB; rows older than `AUDIT_TTL_MS`
-  (30 days) are pruned on a periodic sweep and at boot. The tab pages
-  100 entries at a time — Prev / Next with a page counter, Refresh back
-  to the newest page.
-
-Sessions are also maintenance control: the same tab starts and stops
-[windows](#maintenance-windows) per system or gateway-wide.
-
-## Maintenance windows
-
-A maintenance window blocks *new* sessions on a system (or gateway-wide)
-and asks everyone signed on to sign out immediately — they can sign back
-in when the window ends. The menu entry shows a MAINTENANCE line with the
-message, and a connect attempt is refused with the reason. With a
-deadline (minutes), the live sessions get banner reminders at T-10, T-5
-and T-1 minutes and any left running are ended at the bell — the
-host-backup / IPL ritual without having to walk anyone off. Window state
-is runtime-only by design: a gateway restart clears it, which is the safe
-failure direction. Every
-transition is audited.
-
-## Remote assist
-
-A share-link viewer watches; with assist it can also *drive* — but only
-with consent, and only for a while:
-
-1. The viewer clicks **Request control** on the mirror. The owner's screen
-   shows a modal: *"BOB requests control of this session"* with
-   **Grant / Deny / Deny + block 1h**. An unanswered request waits
-   `ASSIST_CONSENT_TIMEOUT_MS` (default 30 s) and then follows
-   `ASSIST_CONSENT_DEFAULT`: `allow` (default) grants control automatically,
-   `deny` declines it. One pending request at a time.
-2. On Grant, that viewer's socket gains the owner's input set — keys,
-   SysReq, host-programmed mouse, pull-down picks — under a **lease**:
-   bounded (`ASSIST_MAX_MS`), auto-released after `ASSIST_IDLE_MS` of
-   controller silence, ended by the owner's ever-visible **Revoke**
-   button, the helper's own **Release**, or the session ending. One
-   controller at a time.
-3. Nobody loses the keyboard: owner and helper can both type, like two
-   people at one desk. Every controller keypress is named on the owner's
-   status bar (`Enter · BOB`), and the owner alone can end the session or
-   receive host-pushed `STRPCCMD` windows.
-4. Everyone sees the state: the owner's bar counts down the lease, other
-   mirrors see who holds control, and a late joiner's hello carries the
-   current lease.
-
-The privacy invariant is inherited, not added: a controller sees exactly
-what a mirror sees, and non-display fields were blanked server-side before
-the stream existed — an assist session cannot leak a password, same as a
-colleague leaning over a shoulder never learns one. Admins assist through
-a session's Mirror like anyone else; with `ADMIN_ASSIST_BREAKGLASS=true`
-an authenticated console may take control *without* consent — every use
-lands in the audit log, which is why the default is off. A takeover is
-built for shutdown: its bar offers **End session**, which signs the host
-job off and closes every viewer (the takeover included), audited like the
-console End — so an unattended session the admin had to seize always ends
-cleanly instead of being hard-dropped or left signed on.
-
-Identity comes from `TRUSTED_USER_HEADER` (the header your edge sets after
-authenticating — Pangolin does): requests are named with it, sessions are
-stamped with it, and without it the gateway falls back to device names.
-Only set it when the container is reachable solely through the edge.
-
-## Session recording & replay
-
-A system with **Recording** enabled in the admin editor lets its users
-record sessions. Nothing is captured by default: the owner clicks the
-top-bar **REC** button to start and clicks it again to stop. While a
-recording runs, the gateway stores exactly the outbound wire stream — full
-screen snapshots (one per host screen; these are the player's seek
-points), cell diffs, OIA states, statuses, named keys with their origin,
-notice and assist events — as one JSON frame per line on the data volume,
-with SQLite metadata. Retention mirrors the spool store: newest
-`RECORDINGS_MAX_COUNT` recordings, `RECORDINGS_MAX_BYTES` total,
-`RECORDINGS_TTL_MS` age, drop-oldest. A restart also cleans up after a
-crash: recordings left live by a dead writer are finalized (aged from the
-file's last write) and files with no metadata row are removed, and one
-retention sweep runs at boot so nothing stale waits for the next tick.
-
-**A replay contains exactly what a view-only mirror would have seen —
-nothing more.** Password fields are blanked by the wire encoder *before*
-the recorder runs; keys typed into hidden fields leave no recoverable
-trace. Recording is per-system opt-in and owner-only — mirrors cannot
-start or stop one — and every start, stop and console removal is audited.
-
-- **Users** replay their own finished sessions from the top-bar
-  **History** button (needs `TRUSTED_USER_HEADER`, which is what makes
-  "own" mean anything) and can mint replay links for their recordings.
-- **Admins** replay everything from the console's Recordings tab, download
-  JSONL, mint links, and **Remove** recordings entirely (file, metadata and
-  every replay link die together; a still-live recording is stopped first,
-  which also clears the session's REC marker). Removal is audited.
-- **Replay links** are unguessable bearer tokens (`?replay=<token>`) under
-  the same trust model as share links; they are revocable (console or by
-  outliving their recording) and the player is the terminal renderer
-  itself — scrub bar, 1×–16× speed, a clickable event lane (keys, assist
-  grants, notices) and wall-clock timestamps.
-
-## Sessions outlive their window
-
-Every session gets an unguessable token (sent to the browser in the `hello`
-handshake). The browser holds the session with a WebSocket; when the socket
-drops — tab closed, page reloaded, network blip, split-view pane popped out —
-the **host session keeps running** for `SESSION_GRACE_MS` (default 5 minutes)
-and can be re-bound to a new connection:
-
-- **Reload** (F5) of a session page resumes it: the browser remembers the
-  token in `sessionStorage` and reattaches instead of dropping you at the
-  menu.
-- **Pop-out** uses the same mechanism to move a pane's session into a real
-  browser window (`?attach=<token>` deep link).
-- The **Reconnect** button first tries to reattach, so a dropped Wi-Fi link
-  no longer costs you your sign-on or your half-filled screen.
-- After the grace expires with nobody reattached, the session is torn down
-  and its device name freed, exactly as a closing socket did before.
-
-`?attach=<token>` without a live session (expired, or the gateway restarted —
-the registry is in-memory) reports the failure and, if the URL also carries
-`?system=<id>`, falls back to a fresh session on that system. The token is a
-bearer credential for the session within your origin — the same trust model
-as the rest of the app (Pangolin enforces identity at the edge) — and
-`SESSION_GRACE_MS=0` restores the strict socket-closed-equals-session-ended
-behaviour everywhere. `?auto=1` embedded launches always keep that strict
-contract, so embedders' "removing the iframe ends the session" assumption
-holds unchanged.
-
-## Automated data-entry launches
-
-> **Embedding in another app?** See [docs/angular-integration.md](docs/angular-integration.md)
-> for the full integration guide written for the embedding side (Angular):
-> launch URL reference, the `postMessage` contract, a ready-to-adapt
-> component, local development with the mock host, and troubleshooting.
-
-For embedding a single data-entry session inside another app (e.g. Angular),
-open the gateway in an **iframe** with `?auto=1` and optional launch
-parameters:
-
-```
-https://gateway.example/?system=3&auto=1&input=CUST123&parentorigin=https://angular.internal
-```
-
-| Param | Default | Meaning |
-| :--- | :--- | :--- |
-| `auto` | – | `1` activates the automated launch |
-| `input` | – | String (≤ 256 printable ASCII) typed into the initial program's screen |
-| `inputenter` | `1` | Press Enter after typing `input` (`0` = type only) |
-| `inputdelay` | `500` | Minimum wait (ms, 0–10000) after the screen is ready before typing |
-| `parentorigin` | `*` | `targetOrigin` used for the end-of-session `postMessage` to the parent page |
-
-What happens:
-
-1. The gateway signs on itself using `AUTO_SIGNON_USER` / `AUTO_SIGNON_PASSWORD`
-   — the credentials live only in the server environment; the password is
-   typed into the non-display field server-side and never reaches the browser.
-2. The user profile's **initial program** (INLPGM) on the IBM i opens the
-   data-entry screen — nothing is typed by the gateway beyond the sign-on.
-3. Once that screen invites input (plus `inputdelay` ms), the gateway types
-   `input` and optionally presses Enter. User keystrokes are held back only
-   during the injection; from then on the user works the screen normally
-   (the system menu is hidden in this mode).
-4. When the user exits the program, the IBM i signs off and drops the
-   connection; the gateway tears the session down.
-5. The page notifies its parent via `postMessage` so the embedding app can
-   remove the iframe:
-
-```js
-// Angular side
-window.addEventListener('message', (e) => {
-  if (e.data?.source === 'web5250' && e.data?.type === 'session-end') {
-    // e.data.reason: 'closed' | 'error' | 'signon-failed' | 'timeout'
-    removeTerminalIframe();
-  }
-});
-iframe.src = 'https://gateway.example/?system=3&auto=1&input=CUST123';
-// The iframe needs focus (a click) before keyboard input reaches the terminal.
-```
-
-Failure modes end the launch the same way: a rejected sign-on or a screen
-that never appears (30 s) produce `session-end` with `signon-failed` /
-`timeout`, and an unconfigured gateway (`AUTO_SIGNON_*` unset) refuses the
-WebSocket upgrade outright. Set `FRAME_ANCESTORS` to restrict which origins
-may embed the app at all.
-
-## Directory systems (menu + automatic sign-on from your database)
-
-> Full guide: [docs/directory-service.md](docs/directory-service.md) ·
-> API contract: [docs/directory-service-openapi.yaml](docs/directory-service-openapi.yaml) ·
-> runnable reference service: [docs/directory-service.mjs](docs/directory-service.mjs).
-
-If you keep your 5250 hosts and their accounts in a database, point web5250
-at a small read-only microservice in front of it (`DIRECTORY_URL`) and the
-gateway will
-
-1. list every host on the connection menu — materialized from a
-   `DIRECTORY_TEMPLATE_*` template so the proxy, code page, terminal model,
-   printer and recording settings are set once for all of them (marked
-   `· directory` on the menu), and
-2. sign users on automatically when they pick one — the entry's
-   username/password is fetched at session start, typed into the host's
-   sign-on screen by the same server-side automation `?auto=1` uses, and
-   forgotten. Credentials never touch the gateway's SQLite file or the
-   browser; entries without a stored credential open on the normal manual
-   sign-on screen (marked plainly, no `· auto sign-on`).
-
-The list re-syncs on a timer (`DIRECTORY_SYNC_INTERVAL_MS`, default 5 min)
-and on demand from the admin editor's **Sync directory** button; rows keep
-their `dir:<entry id>` address across syncs, so live sessions, printer
-devices and deep links survive every sync. Directory hosts are **held in
-memory only — never written to the catalog**: they list after the manual
-ones, are absent from the admin editor and export/import (they are managed
-at the directory, not locally), and a failed sync (service down, wrong
-token) removes them from the menu until the service answers again — a down
-directory shows nothing instead of stale hosts. Syncs and failures land in
-the Audit tab (`directory.sync` / `directory.error`).
-
-Manually-configured systems can do the same without a directory: the admin
-editor's **Sign-on user / Sign-on password** fields store an account on the
-system row (the proxy password's trust model — admin-only view, never on the
-public list, never in the browser) and opening the system signs on
-with it. Empty both fields to return to the normal sign-on screen; import/
-export files carry the pair like every other setting.
-
-Both kinds of automatic sign-on can be gated by an optional system-wide
-**protection PIN** (admin console → Settings → *Automatic sign-on
-protection*): while it is set, users are asked for the PIN the first time a
-system would sign them on automatically (once per page). Entering it wrong —
-or choosing *Sign on myself* — still connects, just without the automatic
-sign-on. The PIN is stored hashed, and the browser exchanges it for a
-single-use ticket so the PIN itself never appears in a URL. Unattended
-`?auto=1` launches on the shared `AUTO_SIGNON_*` account are exempt.
+## Documentation
+
+| Guide | Contents |
+| :-- | :-- |
+| [Configuration](docs/configuration.md) | Every environment variable |
+| [Systems, admin & console](docs/admin.md) | Connection menu, admin editor, JSON API, session console, maintenance windows |
+| [Spool printing](docs/printing.md) | Printer sessions, `text`/`raw` delivery, host-side device setup, job retention |
+| [Sessions](docs/sessions.md) | Split view, tabs, pop-out windows, detach grace & re-attach |
+| [Sharing & remote assist](docs/sharing-and-assist.md) | View-only mirror links, consent-based control leases |
+| [Recording & replay](docs/recording.md) | Session recording, the replay player, retention |
+| [Automation](docs/automation.md) | `?auto=1` data-entry launches, directory systems, stored sign-on accounts |
+| [Keyboard & mouse](docs/keyboard.md) | Key mapping, screen selection, clipboard and paste |
+| [Architecture](docs/architecture.md) | How the gateway works inside |
+| [Development & CI](docs/development.md) | Local development, test suites, pipelines |
+| [Angular embedding](docs/angular-integration.md) | Full integration guide for the embedding side |
+| [Directory service](docs/directory-service.md) | Contract for the menu/sign-on microservice |
 
 ## Connecting to IBM i
 
@@ -836,62 +264,6 @@ single-use ticket so the PIN itself never appears in a URL. Unattended
    cursor waiting in the **User** field. Type your user profile, `Tab`,
    password (typed characters stay invisible — that's the 5250 non-display
    attribute doing its job), then `Enter`.
-
-## Keyboard mapping
-
-| Browser key | 5250 function |
-| :--- | :--- |
-| `Enter` | Enter (transmit screen) |
-| `Tab` / `Shift+Tab` | Next / previous field |
-| `F1`–`F12` | PF1–PF12 |
-| `Shift+F1`–`Shift+F12` | PF13–PF24 |
-| `Numpad +` or `Ctrl+Enter` | Field Exit |
-| `Numpad -` | Field− |
-| `Esc` | SysReq (`Shift+Esc` = Attn) |
-| `Insert` | Insert / overwrite toggle |
-| `Delete` | Delete character (shift field left) |
-| `Backspace` | Cursor left (authentic non-destructive 5250 backspace) |
-| `Home` / `End` | Home field / end of field |
-| `PageUp` / `PageDown` | Roll Up / Roll Down |
-| `Ctrl+R` or `Alt+R` | Reset (clears `X II` keyboard errors) |
-| `Alt+H` / `Alt+P` | Help / host print |
-
-While the OIA shows `X SYSTEM` or `X II`, data keys are blocked exactly like
-a real terminal (SysReq, Attn and Reset still work). The on-screen keypad
-(button in the top bar) mirrors everything for touch devices.
-
-### Mouse selection and clipboard
-
-Right-click opens the local menu (**Copy selection** / **Copy screen** /
-**Paste**). Text can also be marked directly on the screen, the way a desktop
-terminal emulator does:
-
-- **Left-drag** marks a text-flow selection and copies it to the clipboard on
-  release. **Alt+drag** marks a column rectangle instead (handy for option
-  numbers or record columns).
-- **Double-click** marks the word under the mouse (unless the host programmed
-  the double click itself).
-- **Ctrl+C** / **Cmd+C** re-copies the standing mark; a plain click clears it
-  and places the host cursor as before.
-- **Ctrl+V** / **Cmd+V** pastes at the cursor with no browser prompt. The paste
-  follows the screen's field layout: each line break continues on the next
-  input line (a multiline SQL statement fills one row per line, a sign-on
-  fills User then Password), a line longer than the field rolls into the next
-  field instead of losing its tail, tabs advance one field - and on screens
-  whose input is a single command line, each line is submitted with Enter and
-  the next types into whatever the host answers (pasting a command script
-  runs it). A trailing line break never submits; when the paste runs out of
-  screen it stops and beeps.
-- **Paste** (the right-click item) has to *read* the clipboard, and the
-  browser answers that read with its own confirmation box (Safari and Firefox
-  every time, Chrome once and then remembered). That box is the browser's
-  clipboard privacy rule, not something the page can skip - use **Ctrl+V** /
-  **Cmd+V** to paste in one step.
-- Text in hidden (non-display) fields - e.g. the sign-on password - always
-  copies as blanks.
-
-On plain-HTTP origins without the async clipboard API the copy falls back to
-`execCommand`, and to a selectable dialog box if the browser blocks that too.
 
 ## Publishing through Pangolin
 
@@ -924,92 +296,6 @@ directly to the internet.
 4. Attach your Pangolin **access rules** (users/groups) as usual. Every
    browser tab holds one 5250 session; closing the tab ends the device
    session on the host.
-
-## Local development
-
-```bash
-npm install
-npm run gen:ebcdic      # regenerate EBCDIC tables (requires iconv; committed already)
-npm run mock            # mock IBM i on :8023
-npm run dev:server      # backend on :8080 (Node type-stripping + watch)
-npm run dev:client      # Vite dev server on :5173, proxies /ws to :8080
-```
-
-Local runs keep the SQLite catalog in `./data/web5250.db` (git-ignored) —
-override with `WEB5250_DB`. Set `ADMIN_PIN` to try the admin editor.
-
-Build + verify (Node ≥ 22.13 for `node:sqlite`):
-
-```bash
-npm run build           # vite (SPA) + esbuild (server, mock) -> dist/
-npm run smoke           # end-to-end: mock host + gateway + WS client
-npm run test:real       # regression: real-IBM-i SF-order dialect (no FFW bytes,
-                        #   WCC0 lock bits, attr-only Start-of-Field orders)
-node scripts/mock-host.mjs &   # visual/mobile tests drive real Chromium
-PORT=8080 IBM_I_HOST=127.0.0.1 IBM_I_PORT=8023 ADMIN_PIN=1234 npm start &
-npm run visual          # screenshots land in artifacts/
-npm run test:zoomgrid   # split view: fit-to-window sizing, ?grid=2|4 panes,
-                        #   per-pane device-name dedupe, exit flow
-npm run test:share      # share button + ?view= mirror: link copy, live
-                        #   updates, read-only enforcement, session end
-npm run test:admin      # admin PIN/editor keyboard: Enter in the PIN form
-                        #   opens the editor (not a connection), menu keys
-                        #   intact (gateway needs ADMIN_PIN=1234)
-npm run test:socks      # SOCKS5 per-system proxy: tunnelled session,
-                        #   username/password auth, failure paths, proxy
-                        #   credentials kept off the public API, SQLite
-                        #   migration of pre-proxy databases
-npm run test:printer    # TN5250E printer sessions: SCS jobs arrive/list/
-                        #   download, framing stress (records + TCP
-                        #   segments), retention purge, host-refusal and
-                        #   device-collision paths, raw-mode PDF sniffing
-npm run test:console    # session console: identity stamping, sign-on
-                        #   capture, signal banners, assist consent/lease/
-                        #   revoke, maintenance windows + drain, recording
-                        #   + replay tokens + history, audit trail
-npm run test:pcuri      # STRPCCMD: host-pushed URI arrives as an openurl
-                        #   message (never painted), Enter completion,
-                        #   non-URI commands ignored, mirrors excluded
-npm run test:mobile     # phone-size viewport: fit, soft-keyboard focus,
-                        #   keypad, keyboard open/close shrink+expand
-```
-
-The smoke test covers: sign-on rendering, cursor placement, X II error +
-Reset, typing, Tab, Field Exit, password non-display over the wire, Enter →
-MAIN menu, F1/F3, option entry and sign-off — plus the menu API (list, PIN
-auth, system CRUD, `?system=` sessions, rate limiting), session
-attach/takeover/grace, and the `?view=` share mirrors (token separation,
-live updates, input rejection, teardown).
-
-`test:real` replays a QDSIGNON-shaped stream the way a live IBM i emits it
-(field length counts data cells only, attribute-only SF orders, keyboard-lock
-WCC bits) and guards against the class of bugs where fields parse but turn
-out unenterable (bypass-poisoned) or the read response lands at the wrong
-buffer address (CPF1296 on valid input).
-
-## How it works
-
-- `src/server/tn5250/` — protocol: `telnet.ts` (negotiation + GDS framing),
-  `parser.ts` (inbound command/order engine), `screen.ts` (cell matrix,
-  field table, OIA, local key semantics), `client.ts` (session + AID
-  transmission), `ebcdic*.ts` (bidirectional code page tables).
-- `src/server/gateway.ts` — one WebSocket ⇄ one 5250 session; browsers send
-  logical key events, receive batched cell diffs + OIA updates. `?view=`
-  sockets attach as read-only mirrors that receive the same broadcast.
-- `src/server/systems.ts` + `src/server/api.ts` — SQLite-backed system
-  catalog (node:sqlite) and the JSON API feeding the connection menu and its
-  PIN-gated admin editor.
-- `src/server/index.ts` — HTTP static serving (sub-path tolerant), `/healthz`,
-  `/api/*`, WS upgrade handling with menu-system resolution.
-- `src/client/` — canvas terminal, keyboard interception, OIA bar, keypad.
-- `scripts/mock-host.mjs` — scriptable mock IBM i (also bundled into the
-  image for the compose `demo` profile).
-
-Protocol constants were verified against RFC 1205, RFC 2877 and the
-tn5250j/tn5250 implementations rather than inferred; quirks that matter for
-real hosts (GDS `12A0` framing, escape-separated command streams, SF length
-including the attribute cell, WSF query reply bytes, DEVNAME via
-NEW-ENVIRON) are all implemented faithfully.
 
 ## Troubleshooting
 
