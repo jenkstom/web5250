@@ -18,14 +18,27 @@ the [Pangolin](https://pangolin.notrs.com) zero-trust reverse proxy.
 
 ## Screenshots
 
-Taken against the bundled mock host (`npm run shots` regenerates them);
-the system catalog is mocked up through the admin API.
+Taken against the bundled mock host (`npm run shots` and `npm run shots:admin`
+regenerate them); the system catalog and keymaps are mocked up through the
+admin API.
 
 | | |
 |---|---|
 | ![System selection](docs/screenshots/menu.png)<br>**System selection** — the admin-maintained catalog with TLS, SOCKS5-tunnel and auto sign-on markers | ![Sign-on](docs/screenshots/signon.png)<br>**Sign-on** — the host's own QDSIGNON screen; password cells never leave the server |
 | ![IBM i main menu](docs/screenshots/main-menu.png)<br>**IBM i main menu** — attribute-driven colors, command line, click-to-position cursor | ![Work list](docs/screenshots/worklist.png)<br>**Work list** — option columns, one input field per row |
 | ![Multiline SQL paste](docs/screenshots/sql-paste.png)<br>**Multiline paste** — a pasted SQL statement fills one input line per row | ![Split view](docs/screenshots/split.png)<br>**Split view** — two independent sessions side by side, draggable divider |
+
+### Administration & configuration
+
+The PIN-gated admin console (`A` on the menu, or the Admin button) — the
+[full guide](docs/admin.md) covers every field and endpoint.
+
+| | |
+|---|---|
+| ![Admin sign-on](docs/screenshots/admin-pin.png)<br>**Admin sign-on** — the console is gated by `ADMIN_PIN`, compared in constant time with a lockout | ![System catalog](docs/screenshots/admin-systems.png)<br>**System catalog** — every host with its TLS / SOCKS5 / auto sign-on markers, reorderable |
+| ![System editor](docs/screenshots/admin-system-form.png)<br>**System editor** — connection, SOCKS5 proxy, printer session, recording, stored sign-on account, and the per-host keymap | ![Keymaps](docs/screenshots/admin-keymaps.png)<br>**Keymaps** — uploaded `.kmp` files and hand-built maps, one as the gateway default |
+| ![Keymap editor](docs/screenshots/admin-keymap-editor.png)<br>**Visual keymap editor** — click a keycap, set what its Plain/Shift/Ctrl/Alt states send; the built-in behavior is shown for every state | ![Session console](docs/screenshots/admin-sessions.png)<br>**Session console** — live sessions (device, signed-on user, origin) with Mirror / Signal / End, plus maintenance windows per system or gateway-wide |
+| ![Settings](docs/screenshots/admin-settings.png)<br>**Settings** — the sign-on protection PIN: one shared secret in front of automatic sign-ons | ![Audit trail](docs/screenshots/admin-audit.png)<br>**Audit trail** — who exercised power over which session, when |
 
 ## Features
 
